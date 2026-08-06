@@ -502,8 +502,8 @@ function carCellOk(sv, gx, gy, dirIdx, tileAt, dirCache, secondCache, cellOkCach
 // 跨帧推进（确定性：与 CPU 速度无关，慢机器/测试环境帧数一致）：d._bfs 持有中间状态，
 // 每帧跑一小块，全部完成才产出 route。首建（车在等待）预算放宽。
 // 代价估算：每格 ~0.8µs（带缓存），6000 格 ≈ 5ms/帧；最坏 6 万格 ≈ 10 帧 ≈ 0.17s。
-const CHAUFFEUR_BFS_FIRST_CELLS = 1000000000;    // 首建/换目标：车等待中，可多跑（典型路径 1~3 帧完成）
-const CHAUFFEUR_BFS_REBUILD_CELLS = 1000000000;  // 被挡重建：旧路径继续行驶，重建不阻塞行车
+const CHAUFFEUR_BFS_FIRST_CELLS = 6000;    // 首建/换目标：车等待中，可多跑（典型路径 1~3 帧完成）
+const CHAUFFEUR_BFS_REBUILD_CELLS = 3000;  // 被挡重建：旧路径继续行驶，重建不阻塞行车
 function chauffeurBfsInit(sv, d, gx, gy) {
     const sx = Math.floor(d.x / TS), sy = Math.floor(d.y / TS);
     const MARGIN = 36 + Math.min(144, (d._marginN || 0) * 18);
