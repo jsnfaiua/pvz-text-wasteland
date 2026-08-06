@@ -8,6 +8,7 @@
 import { WEAPONS, AMMO_INFO } from '../core/constants.js';
 import AudioSystem from '../systems/audio.js';
 import { saveData } from '../core/state.js';
+import * as MSG from './wmsg.js';
 import { WEDGE_INFO, parseFragmentId } from './wwordcraft-rules.js';
 
 export const ITEMS = {
@@ -366,6 +367,29 @@ function infoHtml() {
 }
 
 // ---------- 背包 ----------
+// 整理背包：同类合并（同 id 累加 n）+ 非空格前移 + 排序（普通物品按 id，loot 袋排最后）。
+// 快捷栏存的是物品 id（非格索引），整理后按 id 自动寻新格，绑定零错位。
+export function sortBag(sv) {
+    const out = [];
+    const byId = new Map();
+    for (const s of sv.inv) {
+        if (!s) continue;
+        if (String(s.id).startsWith('loot:')) { out.push(s); continue; }   // 战利品袋各带独立 contents，不合并
+        const t = byId.get(s.id);
+        if (t) t.n += s.n;
+        else { const c = { ...s }; byId.set(s.id, c); out.push(c); }
+    }
+    out.sort((a, b) => {
+        const al = String(a.id).startsWith('loot:') ? 1 : 0;
+        const bl = String(b.id).startsWith('loot:') ? 1 : 0;
+        if (al !== bl) return al - bl;
+        return String(a.id).localeCompare(String(b.id));
+    });
+    const len = Math.max(BAG_SIZE, sv.inv.length);   // 保持现有容量（含 dev 无限背包扩容格）
+    sv.inv = out.concat(Array(Math.max(0, len - out.length)).fill(null));
+    return out.length;
+}
+
 export function showBag(sv) {
     if (!bagEl) return;
     hideChest();
@@ -393,6 +417,7 @@ export function renderBag(sv) {
     bagEl.innerHTML =
         `<div class="wsl-bag-head"><span>背 包 ${used}/${cap}${cap > BAG_SIZE ? ' · 无限' : ''}</span>` +
         `<span class="wsl-bag-tip">左键使用/装备 · 右键查看详情/丢弃 · 拖到下方丢弃区 · 选中后按 1-6 绑定快捷栏</span>` +
+        `<button class="wsl-sort-btn" id="wsl-bag-sort" title="同类合并 + 排序（战利品袋独立保留）">整 理</button>` +
         `<button class="wsl-close-btn" id="wsl-bag-close" title="关闭 (B/ESC)">×</button></div>` +
         legendHtml() +
         `<div class="wsl-bag-grid">${cells}</div>` +
@@ -400,6 +425,12 @@ export function renderBag(sv) {
         infoHtml();
     const bagClose = bagEl.querySelector('#wsl-bag-close');
     if (bagClose) bagClose.addEventListener('click', () => hideBag());
+    const bagSort = bagEl.querySelector('#wsl-bag-sort');
+    if (bagSort) bagSort.addEventListener('click', () => {
+        const merged = sortBag(sv);
+        MSG.pushMsg(sv, merged > 0 ? `背包已整理：${merged} 组物品排序完成` : '背包是空的', merged > 0 ? '#7DFF7D' : '#FFB347');
+        renderBag(sv);
+    });
     bagEl.querySelectorAll('.wsl-cell[data-i]').forEach(el => {
         el.addEventListener('click', () => onBagClick(sv, +el.dataset.i));
     });

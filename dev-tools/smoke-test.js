@@ -379,6 +379,18 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
     applyCharacter(noChar, null, deps);
     assert(noChar.characterName === '幸存者' && noChar.inv.length === 24, 'wstate-char: null character keeps defaults');
 
+    // 7c. 高帧率（无锁帧）dt 数值断言：主循环 dt = Math.min(realDelta, 0.05)，
+    //     只有上限 clamp（防低帧跳变），无下限钳制 —— 144/240Hz 高刷下 dt 不被压缩
+    {
+        const dtOf = (realMs) => Math.min(realMs / 1000, 0.05);
+        const eq = (a, b) => Math.abs(a - b) < 1e-12;   // 浮点容差（除法路径舍入差异）
+        assert(eq(dtOf(1000 / 60), 1 / 60), 'fps60: dt exactly 1/60');
+        assert(eq(dtOf(1000 / 144), 1 / 144), 'fps144: dt not clamped (high refresh supported)');
+        assert(eq(dtOf(1000 / 240), 1 / 240), 'fps240: dt not clamped (high refresh supported)');
+        assert(dtOf(3000) === 0.05, 'lowfps: dt upper clamp 0.05s prevents jump');
+        assert(dtOf(1 / 1000) > 0, 'fps1000: sub-ms dt stays positive');
+    }
+
     // 7. 联机协议层（P0-3）：僵尸合并语义 + 快照白名单 + cull 裁剪
     {
         // 7a. mergeZombieList：同 id 原地保留（位置不动、_tx/_ty 指向快照）、新 id 追加、缺失 id 移除
