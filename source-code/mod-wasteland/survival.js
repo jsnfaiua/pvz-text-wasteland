@@ -30,6 +30,7 @@ import * as WW from './wwordcraft.js';
 import { showLookCreator, normalizeLook } from './wlook.js';
 import * as WNPC from './wnpc.js';
 import * as HUD from './whud.js';
+import * as TUT from './wtut.js';
 import { districtAt, cityCenterAt, arterialClassAt, blockAt } from './wdistrict.js';
 
 // 废墟残路带判定：ruins 区 rx<4||ry<4（残路带相位）→ 该格的碎石是"破损路面"可压过；
@@ -3588,6 +3589,7 @@ function startRun(opts) {
         }
     }
     WDEV.init(sv);
+    TUT.showIfFirst(sv);   // 首次进入：生存指南提示卡（本地标记，不打断老玩家）
 
     if (sv._legacyNote) log('检测到旧版荒原存档（已备份），已为你开启全新无限荒原！');
     else if (sv.playT > 0 || sv.day > 1) log(`欢迎回到荒原 · 第 ${sv.day} 天`);
