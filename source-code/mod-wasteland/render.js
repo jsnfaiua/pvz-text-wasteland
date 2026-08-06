@@ -1289,6 +1289,9 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
     if (t === T.GROUND || t === T.WEED) {
         // 草地（独立模块 wgrass.js）：biome 平滑 + 季节背景 + 颗粒 + 低对比噪声
         WGRASS.grassRenderGround(ctx, sv, tx, ty, x0, y0);
+        // 草地→相邻表面（路面/人行道）边缘 4px 渐变混合带：
+        // 恢复 wgrass 接入前被 return 跳过的边缘过渡，避免草地与路面硬切出"草地边缘线"
+        drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, 42, 56, 42, t);
         return;
     } else {
         const vary = Math.floor(n * 6) - 3;
