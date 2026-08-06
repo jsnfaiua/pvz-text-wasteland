@@ -252,25 +252,17 @@ export function grassRenderGround(ctx, sv, tx, ty, x0, y0) {
   const season = sv._season == null ? 1 : sv._season;
   const st = SEASONS[season];
   const bc = biomeColor(seed, tx, ty);
-  const grit = BIOME_GRIT[hash2(seed, tx >> 4, ty >> 4) * 4 | 0] || 5;
-  // 坐标取整（静态层 x0 可能带小数偏移 → 整数对齐避免格间露底 1px 深色缝）
   const ox = Math.round(x0), oy = Math.round(y0);
-  // 6px 颗粒 + 密度明暗：密度场在【子块级】采样（cell=8 连续值噪声，6px 子块间差 ≤1 级）
-  for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 6; sx++) {
-    const vx = tx * 6 + sx, vy = ty * 6 + sy;
-    const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
-    const hi = hash2(seed ^ 0x77E1, vx, vy);
-    const dens = Math.round((0.5 - grassNoise(seed ^ 0xABCD, vx, vy, 8)) * 6);  // cell=8 子块级 ±3
-    const vary = Math.round((lo - 0.5) * grit * 1.1 + (hi - 0.5) * 2);
-    const r = Math.max(0, Math.min(255, bc[0] + st.bg[0] + vary + dens));
-    const g = Math.max(0, Math.min(255, bc[1] + st.bg[1] + vary + dens));
-    const b = Math.max(0, Math.min(255, bc[2] + st.bg[2] + vary + dens));
-    // 最后一行/列子块 +1px 防缝（整数对齐 + 覆盖重叠 → 格间无露底）
-    const cw = sx === 5 ? 7 : 6, ch = sy === 5 ? 7 : 6;
-    ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(ox + sx * 6, oy + sy * 6, cw, ch);
-  }
-  // 3 层无缝噪声 overlay（低对比防条纹）
+  // 基底 = 整格纯色（biome 平滑 + 季节 + 格级密度场连续明暗）：
+  //   密度场 cell=6 在格坐标上连续（相邻格差 ≤1 级），格间柔和渐变；
+  //   去掉 6px 子块颗粒 —— 子块逐块 fillRect 的量化是"线条状深色"的主源。
+  const dens = Math.round((0.5 - grassNoise(seed ^ 0xABCD, tx, ty, 6)) * 6);   // ±3 大块平滑
+  const r = Math.max(0, Math.min(255, Math.round(bc[0] + st.bg[0] + dens)));
+  const g = Math.max(0, Math.min(255, Math.round(bc[1] + st.bg[1] + dens)));
+  const b = Math.max(0, Math.min(255, Math.round(bc[2] + st.bg[2] + dens)));
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+  ctx.fillRect(ox, oy, TS + 1, TS + 1);   // TS+1 防缝（原版做法，坐标取整后相邻格无缝）
+  // 颗粒/纹理：3 层无缝噪声 overlay（滚动采样连续，无量化线；低对比防条纹）
   ctx.globalCompositeOperation = 'overlay';
   ctx.globalAlpha = 0.4;
   drawWrap(ctx, _noiseTiles.tex, ox, oy, tx, ty);
