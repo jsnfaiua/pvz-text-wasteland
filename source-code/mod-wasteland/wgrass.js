@@ -253,14 +253,13 @@ export function grassRenderGround(ctx, sv, tx, ty, x0, y0) {
   const st = SEASONS[season];
   const bc = biomeColor(seed, tx, ty);
   const grit = BIOME_GRIT[hash2(seed, tx >> 4, ty >> 4) * 4 | 0] || 5;
-  // 密度明暗场（cell=4 大块平滑）：草密处暗/草疏处亮，±4
-  const densField = grassNoise(seed ^ 0xABCD, tx, ty, 4);
-  const dens = Math.round((0.5 - densField) * 8);
-  // 6px 颗粒
+  // 6px 颗粒 + 密度明暗：密度场在【子块级】采样（cell=8 连续值噪声，6px 子块间差 ≤1 级，
+  // 跨格也连续）→ 无"每格一块深色"的粗线条/硬切带。幅度 ±3 柔和。
   for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 6; sx++) {
     const vx = tx * 6 + sx, vy = ty * 6 + sy;
     const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
     const hi = hash2(seed ^ 0x77E1, vx, vy);
+    const dens = Math.round((0.5 - grassNoise(seed ^ 0xABCD, vx, vy, 16)) * 4);  // cell=16 + ±2：草地微起伏，无"区块"感
     const vary = Math.round((lo - 0.5) * grit * 1.1 + (hi - 0.5) * 2);
     const r = Math.max(0, Math.min(255, bc[0] + st.bg[0] + vary + dens));
     const g = Math.max(0, Math.min(255, bc[1] + st.bg[1] + vary + dens));
