@@ -1149,7 +1149,34 @@ function grassNoise(seedSalt, tx, ty, cell) {
     return (v00 * (1 - sx) + v10 * sx) * (1 - sy) + (v01 * (1 - sx) + v11 * sx) * sy;
 }
 // 草地底色按 biome 分色：与各区背景色/建筑色调统一，避免同一块草在不同生态区里显得突兀。
-const BIOME_GRASS = [[38, 52, 38], [40, 55, 36], [34, 58, 34], [46, 50, 34]];   // 城区 / 郊区 / 荒野 / 废墟（枯草）
+// 色调目标：柔和自然绿——G 明显高于 R/B，避免偏黄；废墟保留枯草但不过度黄。
+const BIOME_GRASS = [
+    [42, 56, 42],   // 城区：沉稳暖灰绿
+    [46, 62, 42],   // 郊区：柔和草绿
+    [38, 64, 40],   // 荒野：明亮自然绿
+    [50, 54, 40],   // 废墟：枯草（偏枯但保持绿感）
+];
+
+// biome 草地色平滑过渡（消除分块接缝）：草地按 16 格 chunk 取 biome 色会离散跳变，
+// 在 chunk 边界产生明显的颜色分界线。此函数取当前格所在 chunk 四角的 biome 色，
+// 按格在 chunk 内的归一化位置做双线性 smoothstep 插值 —— biome 交界处颜色连续渐变，
+// 不再有"一条线切开两块不同绿色"的视觉接缝。
+function grassBiomeColor(seed, tx, ty) {
+    const cx = Math.floor(tx / CHUNK), cy = Math.floor(ty / CHUNK);
+    const fx = (tx - cx * CHUNK) / CHUNK, fy = (ty - cy * CHUNK) / CHUNK;
+    const s = x => x * x * (3 - 2 * x);   // smoothstep
+    const sx = s(fx), sy = s(fy);
+    const a = BIOME_GRASS[chunkBiome(seed, cx, cy)] || BIOME_GRASS[0];
+    const b = BIOME_GRASS[chunkBiome(seed, cx + 1, cy)] || BIOME_GRASS[0];
+    const c = BIOME_GRASS[chunkBiome(seed, cx, cy + 1)] || BIOME_GRASS[0];
+    const d = BIOME_GRASS[chunkBiome(seed, cx + 1, cy + 1)] || BIOME_GRASS[0];
+    const m = (p, q, t) => p + (q - p) * t;
+    return [
+        m(m(a[0], b[0], sx), m(c[0], d[0], sx), sy),
+        m(m(a[1], b[1], sx), m(c[1], d[1], sx), sy),
+        m(m(a[2], b[2], sx), m(c[2], d[2], sx), sy),
+    ];
+}
 
 function isGroundTile(t) {
     return t === T.GROUND || t === T.FLOOR || t === T.ROAD || t === T.SIDEWALK || t === T.WEED || t === T.CROP;
@@ -1230,16 +1257,17 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
     // 阴影草地 = 比普通草地更暗的绿色 + 草叶斑点 + 靠墙檐影，明确表达"可通行的楼缝"而非路面。
     // 后巷只做纯视觉，不修改地图碰撞/寻路。
     if ((t === T.GROUND || t === T.WEED) && (alleyNS || alleyEW)) {
-        const vary = Math.floor(n * 6) - 3;
-        ctx.fillStyle = `rgb(${30 + vary},${42 + vary},${30 + vary})`;
+        // 楼间阴影草地：比普通草地略暗即可（柔和），草叶弱化避免生硬
+        const vary = Math.floor(n * 4) - 2;
+        ctx.fillStyle = `rgb(${35 + vary},${48 + vary},${36 + vary})`;
         ctx.fillRect(x0, y0, TS + 1, TS + 1);
         ctx.imageSmoothingEnabled = false;
-        // 稀疏草叶（短线簇，非整齐网格）
+        // 稀疏草叶（短线簇，透明度降低）
         const s = (n * 4294967296) | 0;
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < 3; i++) {
             const v = ((s >> (i * 7)) & 0x7F);
             const dx = (v % (TS - 4)) + 2, dy = ((v >> 3) % (TS - 4)) + 2;
-            ctx.strokeStyle = i % 2 ? 'rgba(52,72,48,0.55)' : 'rgba(16,28,16,0.45)';
+            ctx.strokeStyle = i % 2 ? 'rgba(56,76,52,0.35)' : 'rgba(20,32,20,0.28)';
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(x0 + dx, y0 + dy);
@@ -1257,14 +1285,15 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
     }
     let r, g, b;
     if (t === T.GROUND || t === T.WEED) {
-        // 草地：biome 底色 + 双层低频值噪声贴片（大补丁 ±5 / 小补丁 ±2.5）+ 极小逐格细节（±1）。
-        // 噪声空间连续 → 相邻格颜色相关，过渡自然；逐格白噪声只留 ±1 细节避免大色块平板感。
-        const bc = BIOME_GRASS[biome] || GROUND_COLORS[T.GROUND];
+        // 草地：biome 平滑色 + 双层低频值噪声贴片（大补丁 ±4 / 小补丁 ±2）+ 极小逐格细节（±1）。
+        // 噪声空间连续 → 相邻格颜色相关，过渡自然；biome 色双线性插值 → chunk 边界无缝。
+        // 幅度刻意收窄（旧版 ±8.5 会让同一片草深浅割裂、过渡生硬）。
+        const bc = grassBiomeColor(sv.world.seed, tx, ty);
         const lo = grassNoise(sv.world.seed ^ 0x1A5C, tx, ty, 8);
         const hi = grassNoise(sv.world.seed ^ 0x77E1, tx, ty, 3);
-        const vary = Math.round((lo - 0.5) * 10 + (hi - 0.5) * 5 + (n - 0.5) * 2);
+        const vary = Math.round((lo - 0.5) * 8 + (hi - 0.5) * 4 + (n - 0.5) * 2);
         r = bc[0] + vary; g = bc[1] + vary; b = bc[2] + vary;
-        if (t === T.WEED) { r += 3; g += 8; b += 2; }   // 杂草：同噪声场上微提亮，不再用独立亮绿底色硬跳
+        if (t === T.WEED) { r += 2; g += 6; b += 1; }   // 杂草：同噪声场上微提亮，不再用独立亮绿底色硬跳
     } else {
         const vary = Math.floor(n * 6) - 3;
         r = base[0] + vary; g = base[1] + vary; b = base[2] + vary;
@@ -1281,24 +1310,26 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
         } else {
             const s = (n * 4294967296) | 0;
             if (t === T.WEED) {
-                for (let i = 0; i < 4; i++) {
+                // 杂草细节弱化：3 根短线（旧 4），色偏更贴底、透明度降低，避免"生硬竖条"
+                for (let i = 0; i < 3; i++) {
                     const v = ((s >> (i * 7)) & 0x7F);
                     const dx = (v % (TS - 6)) + 3, dy = ((v >> 3) % (TS - 6)) + 3;
-                    const gv = (v & 0x1F) - 15;
-                    ctx.fillStyle = `rgb(${34 + gv},${62 + gv},${30 + gv})`;
+                    const gv = (v & 0x1F) - 12;
+                    ctx.fillStyle = `rgb(${40 + gv},${64 + gv},${36 + gv})`;
                     ctx.fillRect(x0 + dx, y0 + dy, 1, 2 + (v & 3));
                 }
-                if (n2 > 0.8) {
-                    // 花点降频降饱和：旧版亮金黄 #c8a832 在暗草地上过刺眼，改为低饱和枯黄/草绿
-                    ctx.fillStyle = n2 > 0.9 ? '#a89244' : '#6d8a44';
+                if (n2 > 0.85) {
+                    // 花点进一步降频降饱和：只在少数格出现，色近草绿/暗枯黄，不再刺眼
+                    ctx.fillStyle = n2 > 0.93 ? '#8a7a42' : '#5e7a44';
                     ctx.fillRect(x0 + ((s >> 4) % 20) + 6, y0 + ((s >> 12) % 20) + 6, 2, 2);
                 }
             } else {
-                for (let i = 0; i < 3; i++) {
+                // 普通草地细节弱化：2 点（旧 3）、偏移 +5/+3/+1（旧 +8/+5/+2）——更贴底色不突兀
+                for (let i = 0; i < 2; i++) {
                     const v = ((s >> (i * 9)) & 0xFF);
                     const dx = (v % (TS - 4)) + 2, dy = ((v >> 4) % (TS - 4)) + 2;
                     const pv = (v & 0x0F) - 8;
-                    ctx.fillStyle = `rgb(${r + pv + 8},${g + pv + 5},${b + pv + 2})`;
+                    ctx.fillStyle = `rgb(${r + pv + 5},${g + pv + 3},${b + pv + 1})`;
                     ctx.fillRect(x0 + dx, y0 + dy, 1, 1);
                 }
             }

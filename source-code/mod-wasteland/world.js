@@ -310,15 +310,24 @@ function buildHouse(tiles, H, seed, cx, cy, idx) {
         };
         // 楼间距约束：新建筑与已有墙体的间距只能是 0（贴合合并成 L/连体）或 ≥2，
         // 禁止恰好 1 格的楼缝——1 格缝渲染成幽闭暗巷，视觉上突兀且难以通行。
-        // 注：仅约束本区块内（跨区块 1 格缝为小概率残留，生成时看不到邻区块）。
-        const gapSafe = (x, y) => {
-            for (let yy = Math.max(0, y - 1); yy < Math.min(CHUNK, y + h + 1); yy++)
-                for (let xx = Math.max(0, x - 1); xx < Math.min(CHUNK, x + w + 1); xx++) {
-                    if (xx >= x && xx < x + w && yy >= y && yy < y + h) continue;   // 矩形内部（允许贴合/相交）
-                    const tv = tiles[yy * CHUNK + xx];
-                    if (tv === T.WALL || tv === T.DOOR) return false;
-                }
-            return true;
+        // 检测：距离 2 处（中间恰隔一格）且与新矩形行列重叠的墙体才会夹出楼缝；
+        // 贴合（距离 1）与相交合法，不计冲突。跨区块缝由上方边缘预留防护。
+        const violationCount = (x, y) => {
+            let c = 0;
+            const isWallAt = (xx, yy) => {
+                if (xx < 0 || xx >= CHUNK || yy < 0 || yy >= CHUNK) return false;
+                const tv = tiles[yy * CHUNK + xx];
+                return tv === T.WALL || tv === T.DOOR;
+            };
+            for (let yy = y; yy < y + h; yy++) {
+                if (isWallAt(x - 2, yy)) c++;          // 左侧隔一格墙体
+                if (isWallAt(x + w + 1, yy)) c++;      // 右侧隔一格墙体
+            }
+            for (let xx = x; xx < x + w; xx++) {
+                if (isWallAt(xx, y - 2)) c++;          // 上方隔一格墙体
+                if (isWallAt(xx, y + h + 1)) c++;      // 下方隔一格墙体
+            }
+            return c;
         };
         // 贴合判定：新矩形四邻存在既有墙体（降级时优先贴合，合并成连体建筑群而非造 1 格缝）
         const touchesWall = (x, y) => {
@@ -332,8 +341,9 @@ function buildHouse(tiles, H, seed, cx, cy, idx) {
             }
             return false;
         };
-        // 落位得分：候选顺序按哈希旋转后逐个试，三级降级——
-        // ① 避主干道环 + 无 1 格缝；② 避环 + 贴合既有建筑；③ 仅避环（兜底，罕见）
+        // 落位选择：候选顺序按哈希旋转后逐个试，两级降级——
+        // ① 避主干道环 + 零楼缝冲突；② 无零冲突候选时取冲突最少者（同分时优先贴合，合并成连体建筑群）。
+        // 全程确定性（同 seed 同结果）。
         const candList = [];
         for (let a = 0; a < candX.length; a++) {
             const cx2 = candX[(Math.floor(H(50 + idx, cx, cy) * candX.length) + a) % candX.length];
@@ -343,9 +353,15 @@ function buildHouse(tiles, H, seed, cx, cy, idx) {
             }
         }
         let placed = null;
-        for (const [px, py] of candList) if (gapSafe(px, py)) { placed = { x: px, y: py }; break; }
-        if (!placed) for (const [px, py] of candList) if (touchesWall(px, py)) { placed = { x: px, y: py }; break; }
-        if (!placed && candList.length) placed = { x: candList[0][0], y: candList[0][1] };
+        for (const [px, py] of candList) if (violationCount(px, py) === 0) { placed = { x: px, y: py }; break; }
+        if (!placed && candList.length) {
+            let best = null, bestScore = Infinity;
+            for (const [px, py] of candList) {
+                const score = violationCount(px, py) * 2 - (touchesWall(px, py) ? 1 : 0);
+                if (score < bestScore) { bestScore = score; best = { x: px, y: py }; }
+            }
+            placed = best;
+        }
         if (!placed) return;   // 全部候选都压主干道环则跳过
         x0 = placed.x;
         y0 = placed.y;
