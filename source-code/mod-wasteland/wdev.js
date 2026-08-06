@@ -171,7 +171,8 @@ export function init(sv) {
         sv._devHud = true;
         HUD.update(sv, performance.now());
     }
-    if (p && p._devGfx != null) sv._devGfx = p._devGfx;
+    // profile 画质恢复：仅当面板设置（startRun opts.gfx）未指定时生效——面板设置优先
+    if (p && p._devGfx != null && sv._devGfx == null) sv._devGfx = p._devGfx;
     const screen = document.getElementById('game-container');
     if (!screen || devEl) return;
     devEl = document.createElement('div');

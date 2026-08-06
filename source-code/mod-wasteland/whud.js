@@ -50,9 +50,13 @@ export function destroy() {
 
 function pad(n) { return n < 10 ? '0' + n : '' + n; }
 
-// 每帧由 survival.loop 调用（HUD 关闭时零开销）
+// 每帧由 survival.loop 调用（两种模式都关闭时零开销）：
+//   sv._showFps = 普通玩家「显示帧率」开关（右上角小行，仅 FPS）
+//   sv._devHud  = 开发者完整 HUD（FPS/实体数/状态）
 export function update(sv, now) {
-    if (!sv || !sv._devHud) { if (el) destroy(); return; }
+    const showFps = !!(sv && sv._showFps);
+    const showFull = !!(sv && sv._devHud);
+    if (!showFps && !showFull) { if (el) destroy(); return; }
     // FPS / 帧耗时统计（500ms 窗口 EMA）
     fpsAcc++;
     const dtMs = now - lastNow;
@@ -62,8 +66,22 @@ export function update(sv, now) {
     if (fpsT >= REFRESH_MS) {
         fps = Math.round((fpsAcc * 1000) / fpsT);
         fpsAcc = 0; fpsT = 0;
-        refresh(sv);
+        if (showFull) refresh(sv);
+        else refreshFpsOnly();
     }
+}
+
+// 轻量模式：右上角一行「FPS 60 · 16.7ms」，不显示实体数/状态
+function refreshFpsOnly() {
+    if (!el) {
+        // 完整 HUD 元素样式复用；轻量模式缩小样式
+        ensureDom();
+        el.style.minWidth = '0';
+        el.style.padding = '2px 8px';
+        el.style.font = '11px/1.4 Consolas,Menlo,monospace';
+    }
+    const msColor = frameMs < 20 ? 'hud-ok' : frameMs < 33 ? 'hud-warn' : 'hud-bad';
+    body.innerHTML = `<span class="hud-ok">FPS ${fps}</span> · <span class="${msColor}">${frameMs.toFixed(1)}ms</span>`;
 }
 
 // 刷新 HUD 文本（500ms 一次）

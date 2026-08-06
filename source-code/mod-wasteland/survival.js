@@ -3555,6 +3555,9 @@ export function showCreateCharacter(onDone) {
 }
 
 function startRun(opts) {
+    // 普通玩家设置（workshop 荒原面板，无需开发者模式）：帧率显示 + 画质档
+    if (opts.gfx != null) sv._devGfx = opts.gfx;
+    sv._showFps = !!opts.showFps;
     sv.diffKey = B.DIFF_TABLE[opts.difficulty] ? opts.difficulty : 'normal';
     WG.initWpn(sv, sv._savedMag);
 

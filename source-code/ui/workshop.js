@@ -109,6 +109,7 @@ function renderDetail() {
     let enterBtnsHtml = '';
     if (mod.id === 'wasteland') {
         const diff = st.opts.difficulty || 'normal';
+        const curOpts = st.opts || {};   // 显示设置（帧率/画质）读取
         const DIFFS = [
             { key: 'easy', name: '简单', desc: '敌人强度 ×0.8，死亡仅丢失部分背包' },
             { key: 'normal', name: '普通', desc: '敌人强度 ×1.0，死亡仅丢失部分背包' },
@@ -143,6 +144,15 @@ function renderDetail() {
             <div class="wsl-mp-row">
                 <button class="menu-btn ws-enter-btn" id="ws-mp-host">创建联机房 ▶</button>
                 <button class="menu-btn ws-enter-btn" id="ws-mp-join">加入联机房</button>
+            </div>
+            <div class="ws-section-title">显示设置（无需开发者模式）</div>
+            <div class="wsl-mp-row" style="flex-wrap:wrap;gap:8px;">
+                <button class="menu-btn ws-enter-btn${curOpts.showFps ? ' on' : ''}" id="ws-opt-fps" style="flex:1;min-width:120px;">帧率显示：${curOpts.showFps ? '开 ✓' : '关'}</button>
+                <select id="ws-opt-gfx" class="wsl-seed-input" style="flex:1;min-width:120px;" title="画质档：低=分辨率0.75x+省特效，适合低配">
+                    <option value="2"${curOpts.gfx === 2 || curOpts.gfx == null ? ' selected' : ''}>画质：高（完整效果）</option>
+                    <option value="1"${curOpts.gfx === 1 ? ' selected' : ''}>画质：中（省特效）</option>
+                    <option value="0"${curOpts.gfx === 0 ? ' selected' : ''}>画质：低（最流畅）</option>
+                </select>
             </div>
             <div class="ws-section-title">存档备份（防 localStorage 满/清缓存丢档）</div>
             <div class="wsl-mp-row">
@@ -377,6 +387,18 @@ function renderDetail() {
             }
         };
         reader.readAsText(file);
+    });
+
+    // 显示设置：帧率开关 / 画质档（普通玩家可用，无需开发者模式；存 mod state）
+    document.getElementById('ws-opt-fps')?.addEventListener('click', () => {
+        if (mod.id !== 'wasteland') return;
+        const cur = getModState(mod.id);
+        setModState(mod.id, { opts: { showFps: !cur.opts.showFps } });
+        renderDetail();
+    });
+    document.getElementById('ws-opt-gfx')?.addEventListener('change', (e) => {
+        if (mod.id !== 'wasteland') return;
+        setModState(mod.id, { opts: { gfx: Number(e.target.value) } });
     });
 
     // 难度选择（荒原模组）
