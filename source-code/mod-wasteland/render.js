@@ -681,6 +681,7 @@ function dayNightAlpha(sv) {
     return 1;
 }
 function drawDayNight(ctx, sv, W, H, interior) {
+    if (sv._devGfx === 0) return;   // 低画质：跳过夜晚暗色覆盖层（氛围降级，省一次全屏 fillRect）
     const a = dayNightAlpha(sv);
     if (a <= 0) return;
     const alpha = 0.58 * a * (interior ? 0.5 : 1);
@@ -2338,13 +2339,15 @@ function drawDrops(ctx, sv, camX, camY) {
         const it = getItemInfo(d.id);
         const bob = Math.sin(sv.now * 3 + d.x) * 3;
         if (d.id.startsWith('loot:')) {
-            ctx.save();
+            // 热路径微优化（D）：无 transform 的 save/restore → 手动存/恢复 shadow（fillStyle/font 循环内本就每次设置）
+            const _pc = ctx.shadowColor, _pb = ctx.shadowBlur;
             ctx.shadowColor = it.color;
             ctx.shadowBlur = 8 + Math.sin(sv.now * 3) * 3;
             ctx.fillStyle = it.color;
             ctx.font = `${TS - 12}px "Microsoft YaHei", monospace`;
             ctx.fillText(it.char, sx, sy + bob);
-            ctx.restore();
+            ctx.shadowColor = _pc;
+            ctx.shadowBlur = _pb;
             drawNameplate(ctx, sx, sy - TS / 2 - 6, it.name, it.color, 11);
         } else {
             ctx.fillStyle = it.color;
@@ -2737,7 +2740,8 @@ function drawSickPlayerFX(ctx, sv, px, py) {
     const col = sickColor(sv._sick.type);
     const t = sv.now;
     const x0 = px - 12, y0 = py - 17;
-    ctx.save();
+    // 热路径微优化（D）：无 transform 的 save/restore → 仅手动恢复 imageSmoothingEnabled
+    const _prevSmooth = ctx.imageSmoothingEnabled;
     ctx.imageSmoothingEnabled = false;
 
     // 身体晕染（含病种抖动/摇摆的位移）
@@ -2821,7 +2825,7 @@ function drawSickPlayerFX(ctx, sv, px, py) {
         ctx.fillRect(px - 6 + Math.sin(t * 4) * 2, py - 6 + sw * 8, 2, 2);
         ctx.globalAlpha = 1;
     }
-    ctx.restore();
+    ctx.imageSmoothingEnabled = _prevSmooth;
 }
 
 // 患病屏幕暗角（疾病色边缘渐暗，室内外通用）

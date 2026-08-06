@@ -34,9 +34,17 @@ export function observeCanvasFit(canvas) {
     ro.observe(canvas);
 }
 
-export function fitCanvasBacking(ctx) {
+// 画质档渲染缩放因子：低画质 0.75 内部分辨率（画质档 B，纯本地显示降级，
+// 不参与联机同步；默认 1 = 现状）。dpr 变化时缓存失效需重新测量。
+let _factor = -1;
+
+export function fitCanvasBacking(ctx, factor = 1) {
     const canvas = ctx && ctx.canvas;
     if (!canvas) return 1;
+    if (factor !== _factor) {
+        _factor = factor;
+        _cssW = -1;   // 画质切换 → 内部分辨率变化 → 强制重测
+    }
     const dpr = window.devicePixelRatio || 1;
     if (dpr !== _dpr) {
         _dpr = dpr;
@@ -46,7 +54,7 @@ export function fitCanvasBacking(ctx) {
         _cssW = canvas.clientWidth || LOGICAL_W;
     }
     const cssW = _cssW;
-    const scale = Math.max(0.5, Math.min(4, (cssW / LOGICAL_W) * dpr));
+    const scale = Math.max(0.25, Math.min(4, (cssW / LOGICAL_W) * dpr * factor));
     const bw = Math.round(LOGICAL_W * scale);
     const bh = Math.round(LOGICAL_H * scale);
     if (canvas.width !== bw) canvas.width = bw;

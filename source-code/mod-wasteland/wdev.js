@@ -171,6 +171,7 @@ export function init(sv) {
         sv._devHud = true;
         HUD.update(sv, performance.now());
     }
+    if (p && p._devGfx != null) sv._devGfx = p._devGfx;
     const screen = document.getElementById('game-container');
     if (!screen || devEl) return;
     devEl = document.createElement('div');
@@ -219,6 +220,14 @@ function buildHtml() {
             <span class="wsl-dev-dmg-label">武器伤害倍率</span>
             <div class="wsl-dev-dmg-presets">
                 ${DMG_PRESETS.map(v => `<button data-mul="${v}">×${v}</button>`).join('')}
+            </div>
+        </div>
+        <div class="wsl-dev-dmg">
+            <span class="wsl-dev-dmg-label">画质（纯本地显示，不参与联机同步）</span>
+            <div class="wsl-dev-dmg-presets" id="wdev-gfx">
+                <button data-gfx="2">高</button>
+                <button data-gfx="1">中</button>
+                <button data-gfx="0">低</button>
             </div>
         </div>
         <div class="wsl-dev-quick">
@@ -317,6 +326,9 @@ function syncState() {
     devEl.querySelectorAll('.wsl-dev-dmg-presets button').forEach(b => {
         b.classList.toggle('on', Number(b.dataset.mul) === (sv._devDmgMul || 1));
     });
+    devEl.querySelectorAll('#wdev-gfx button').forEach(b => {
+        b.classList.toggle('on', Number(b.dataset.gfx) === (sv._devGfx == null ? 2 : sv._devGfx));
+    });
 }
 
 function persistDev() {
@@ -333,6 +345,7 @@ function persistDev() {
     p._devDmgMul = sv._devDmgMul || 1;
     p._devTimeScale = sv._devTimeScale || 1;
     p._devHud = !!sv._devHud;
+    p._devGfx = sv._devGfx == null ? 2 : sv._devGfx;
     p.characterName = sv.characterName || p.characterName || '幸存者';
     p.worldSeed = sv.world ? sv.world.seed : (p.worldSeed != null ? p.worldSeed : null);
     if (p.worldSeed != null) setStorage(PROFILE_KEY, p);
@@ -497,6 +510,22 @@ function bindEvents() {
             syncState();
             persistDev();
             reportDevFlags(sv);
+            AudioSystem.playClick();
+        });
+    });
+
+    // 画质档（B：低/中/高；纯本地显示降级——渲染分辨率/昼夜氛围/特效上限，
+    // 不参与联机同步、不影响任何玩法数值）
+    devEl.querySelectorAll('#wdev-gfx button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const sv = curSv;
+            if (!sv) return;
+            sv._devGfx = Number(btn.dataset.gfx);
+            const label = sv._devGfx === 0 ? '低（内部分辨率0.75x·关昼夜暗色·特效上限20）'
+                : sv._devGfx === 1 ? '中（特效上限35）' : '高（完整效果）';
+            MSG.pushMsg(sv, `[DEV] 画质已切换：${label}`, '#FFB347');
+            syncState();
+            persistDev();
             AudioSystem.playClick();
         });
     });

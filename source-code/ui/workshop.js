@@ -3,7 +3,7 @@
 // 模组状态独立存储（saveData 之外），符合模组沙盒隔离原则
 // ============================================================
 
-import { getStorage, setStorage } from '../persistence/storage.js';
+import { getStorage, setStorage, getSession } from '../persistence/storage.js';
 
 const WS_KEY = 'workshop';
 
@@ -143,6 +143,12 @@ function renderDetail() {
             <div class="wsl-mp-row">
                 <button class="menu-btn ws-enter-btn" id="ws-mp-host">创建联机房 ▶</button>
                 <button class="menu-btn ws-enter-btn" id="ws-mp-join">加入联机房</button>
+            </div>
+            <div class="ws-section-title">存档备份（防 localStorage 满/清缓存丢档）</div>
+            <div class="wsl-mp-row">
+                <button class="menu-btn ws-enter-btn" id="ws-save-export">导出存档 ↓</button>
+                <button class="menu-btn ws-enter-btn" id="ws-save-import">导入存档 ↑</button>
+                <input type="file" id="ws-save-file" accept=".json,application/json" style="display:none">
             </div>`;
         const saved = getStorage('wasteland_world_' + (worldSeed != null ? worldSeed : 'none'), null);
         const hasSave = !!saved;
@@ -289,6 +295,88 @@ function renderDetail() {
         const cur = getModState(mod.id);
         if (!cur.enabled) return;
         launchMP('guest');
+    });
+
+    // —— 存档备份：导出 / 导入（A：防 localStorage 满/清缓存丢档，可跨浏览器迁移）——
+    // 导出：收集当前账户所有 wasteland_* 键（角色档/世界档/profile/角色列表/旧混合档），
+    //       打包为 JSON 文件下载。复用原序列化数据（wstate 白名单产物），不触碰联机协议。
+    document.getElementById('ws-save-export')?.addEventListener('click', () => {
+        if (mod.id !== 'wasteland') return;
+        const user = (getSession() && getSession().username) || '__guest__';
+        const prefix = `u:${user}:wasteland_`;
+        const entries = {};
+        let n = 0;
+        for (let i = 0; i < localStorage.length; i++) {
+            const full = localStorage.key(i);
+            if (!full || !full.startsWith(prefix)) continue;
+            const base = full.slice(prefix.length);
+            try {
+                const raw = localStorage.getItem(full);
+                if (raw == null) continue;
+                entries[base] = JSON.parse(raw);
+                n++;
+            } catch (e) { /* 单键损坏跳过，不阻塞导出 */ }
+        }
+        if (n === 0) {
+            const hint = document.getElementById('ws-hint');
+            if (hint) { hint.textContent = '没有可导出的荒原存档（先玩一会儿或创建角色）'; hint.classList.add('show'); }
+            return;
+        }
+        const data = { __wslBackup: 1, exportedAt: Date.now(), username: user, entries };
+        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const d = new Date();
+        const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+        a.download = `wasteland-backup-${stamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
+        const hint = document.getElementById('ws-hint');
+        if (hint) { hint.textContent = `已导出 ${n} 个存档键（含角色/世界/profile），请妥善保管该文件`; hint.classList.add('show'); }
+    });
+
+    // 导入：选择备份文件 → 校验版本标记 → 写回 localStorage → 重渲染面板
+    document.getElementById('ws-save-import')?.addEventListener('click', () => {
+        if (mod.id !== 'wasteland') return;
+        document.getElementById('ws-save-file')?.click();
+    });
+    document.getElementById('ws-save-file')?.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = '';   // 允许重复选同一文件
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const data = JSON.parse(String(reader.result));
+                if (!data || data.__wslBackup !== 1 || !data.entries || typeof data.entries !== 'object') {
+                    throw new Error('不是有效的荒原备份文件');
+                }
+                const srcUser = data.username || '__guest__';
+                const keys = Object.keys(data.entries);
+                let ok = 0;
+                for (const k of keys) {
+                    // 导出时剥离了 'wasteland_' 前缀（base=full.slice(prefix.length)），
+                    // 导入必须加回；setStorage 再加账户命名空间 → 还原完整键
+                    const baseKey = k.startsWith('wasteland_') ? k : 'wasteland_' + k;
+                    // 写回原账户命名空间（跨账户/跨浏览器迁移友好）
+                    if (setStorage(baseKey, data.entries[k], true) !== false && data.entries[k] != null) ok++;
+                    else if (data.entries[k] == null) ok++;
+                }
+                // 备份里的用户若与当前不同，把 profile 指到备份用户对应的存档组合
+                const hint = document.getElementById('ws-hint');
+                if (hint) {
+                    hint.textContent = `已导入 ${keys.length} 个存档键（${srcUser}），正在刷新面板…`;
+                    hint.classList.add('show');
+                }
+                setTimeout(() => renderDetail(), 600);
+            } catch (err) {
+                const hint = document.getElementById('ws-hint');
+                if (hint) { hint.textContent = '导入失败：' + (err && err.message ? err.message : err); hint.classList.add('show'); }
+            }
+        };
+        reader.readAsText(file);
     });
 
     // 难度选择（荒原模组）

@@ -189,7 +189,7 @@ function flushSave() {
             _devInf: sv._devInf !== false, _devInfAmmo: !!sv._devInfAmmo,
             _devOneShot: !!sv._devOneShot, _devInfBag: !!sv._devInfBag,
             _devDmgMul: sv._devDmgMul || 1, _devTimeScale: sv._devTimeScale || 1,
-            _devHud: !!sv._devHud,
+            _devHud: !!sv._devHud, _devGfx: sv._devGfx == null ? 2 : sv._devGfx,
         });
     }
 }
@@ -395,7 +395,7 @@ function loop(now) {
         if (WW.isOpen()) WW.update(dt);
     }
     if (WSearch.isOpen() && !sv.dead) WSearch.updateSearch(sv, dt);
-    if (sv.ctx) fitCanvasBacking(sv.ctx);
+    if (sv.ctx) fitCanvasBacking(sv.ctx, sv._devGfx === 0 ? 0.75 : 1);   // 低画质：内部分辨率 0.75x
     draw(sv.ctx, sv);
     HUD.update(sv, now);   // 调试 HUD（默认关闭；每帧轻量计数，DOM 500ms 节流）
     sv.raf = requestAnimationFrame(loop);
@@ -441,8 +441,9 @@ function update(dt) {
         sv.effects[i].life -= dt;
         if (sv.effects[i].life <= 0) sv.effects.splice(i, 1);
     }
-    // 特效数量上限（战斗特效堆积 → 序列化/渲染卡顿；防堆积）
-    while (sv.effects.length > 50) sv.effects.shift();
+    // 特效数量上限（战斗特效堆积 → 序列化/渲染卡顿；防堆积；画质档 B：低20/中35/高50）
+    const maxEff = sv._devGfx === 0 ? 20 : sv._devGfx === 1 ? 35 : 50;
+    while (sv.effects.length > maxEff) sv.effects.shift();
     // 地面掉落物上限（长时间战斗掉落堆积 → 快照/渲染卡顿）
     if (sv.drops.length > 150) sv.drops.splice(0, sv.drops.length - 150);
     if (sv.swingT > 0) sv.swingT -= dt;
@@ -686,8 +687,9 @@ function updateGuest(dt) {
         sv.effects[i].life -= dt;
         if (sv.effects[i].life <= 0) sv.effects.splice(i, 1);
     }
-    // 特效数量上限（host 快照合并 + 本地特效防堆积）
-    while (sv.effects.length > 50) sv.effects.shift();
+    // 特效数量上限（host 快照合并 + 本地特效防堆积；画质档 B：低20/中35/高50）
+    const maxEffG = sv._devGfx === 0 ? 20 : sv._devGfx === 1 ? 35 : 50;
+    while (sv.effects.length > maxEffG) sv.effects.shift();
     if (sv.swingT > 0) sv.swingT -= dt;
     if (sv.hurtT > 0) sv.hurtT -= dt;
     // guest 定期存档（角色档；saveNow 已按 role 分流只写角色档）——防崩溃/断电丢整局进度

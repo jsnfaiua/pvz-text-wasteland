@@ -108,6 +108,10 @@ function buildUI(roleArg) {
     root.id = 'wmp-overlay';
     root.style.cssText = 'position:fixed;inset:0;z-index:1100;background:rgba(5,8,12,0.85);display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei",monospace;';
     const isHost = roleArg === 'host';   // 注意：形参名不可叫 role，会遮蔽模块级 role
+    const RECENT_KEY = 'wasteland_recent_room';
+    const recentRoom = (() => {
+        try { const v = localStorage.getItem(RECENT_KEY); return v && /^[A-Za-z0-9]{6}$/.test(v) ? v : null; } catch { return null; }
+    })();
     const title = isHost ? '◈ 荒原联机 · 房 主' : '◈ 荒原联机 · 加入者';
     const sub = isHost
         ? '创建房间 · 把房间码或邀请链接发给好友 · 好友加入后双方各自捏脸'
@@ -134,6 +138,7 @@ function buildUI(roleArg) {
             <div style="margin-bottom:12px;">
                 <div style="color:#9fb3ab;font-size:13px;margin-bottom:6px;">输入房主的 6 位房间码：</div>
                 <input id="wmp-code-input" maxlength="6" placeholder="例如 A3F7Q9" style="width:100%;box-sizing:border-box;background:#0e1318;border:1px solid #2a3a33;border-radius:6px;padding:8px;color:#dce6e2;font-size:16px;letter-spacing:3px;text-transform:uppercase;">
+                ${recentRoom ? `<button id="wmp-recent" style="margin-top:6px;width:100%;background:#1d2a24;border:1px dashed #e8c46a;color:#e8c46a;border-radius:6px;padding:7px;cursor:pointer;font-size:12px;">最近房间：${recentRoom} · 快速加入 ⚡</button>` : ''}
             </div>`}
             <div style="text-align:center;color:#7fb39a;font-size:12px;margin-bottom:4px;" id="wmp-online">在线 --/4</div>
             <div style="text-align:center;color:#e8c46a;font-size:13px;min-height:20px;margin-bottom:12px;" id="wmp-status">未连接</div>
@@ -599,11 +604,23 @@ export async function startWastelandMP(roleArg, opts, autoCode) {
             if (r.ok) {
                 setStatus('连接成功！等待房主开始', '#39d98a');
                 input.disabled = true;
+                // 记录最近房间（下次打开加入面板可一键重进）
+                try { localStorage.setItem(RECENT_KEY, code); } catch {}
             } else {
                 setStatus('连接失败: ' + r.error + connErrHint(), '#e0a0a0');
             }
         };
         root.querySelector('#wmp-action').addEventListener('click', doJoin);
+        const recentBtn = root.querySelector('#wmp-recent');
+        if (recentBtn) {
+            recentBtn.addEventListener('click', () => {
+                // handler 与 buildUI 不同作用域：直接读 localStorage（键与 buildUI 内 RECENT_KEY 同值）
+                let code = '';
+                try { code = localStorage.getItem('wasteland_recent_room') || ''; } catch {}
+                if (/^[A-Za-z0-9]{6}$/.test(code)) { input.value = code; doJoin(); }
+                else setStatus('最近房间已失效，请手动输入', '#e0a0a0');
+            });
+        }
         if (autoCode) {
             input.value = autoCode;
             input.disabled = true;
