@@ -18,7 +18,11 @@ export { TS };
 
 // 建造件定义（survival.js 建造逻辑与建造栏渲染共用）
 export const BUILD_ITEMS = [
-    { t: T.WALL,    name: '木墙',   cost: 2 },
+    // 墙升级链（B1）：选「木墙」对准已有墙再放 → 升级 石墙(lv2)→金属墙(lv3)
+    { t: T.WALL,    name: '木墙',   cost: 2, upg: [
+        { lv: 2, name: '石墙',   cost: { stone: 3 },    hpMul: 1.8 },
+        { lv: 3, name: '金属墙', cost: { part: 2, stone: 3 }, hpMul: 3.0 },
+    ] },
     { t: T.DOOR,    name: '木门',   cost: 3 },
     { t: T.CABINET, name: '储物柜', cost: 4 },
     { t: T.BED,     name: '木床',   cost: 6 },
@@ -1110,6 +1114,19 @@ const GROUND_COLORS = {
 };
 const GROUND_EDGE_BLEND = 4;
 
+// 平滑值噪声（双线性 + smoothstep）：草地颜色按 8/3 格双层贴片空间连续变化，
+// 相邻格颜色相关，替代逐格独立白噪声（白噪声是草地盐粒感/突兀的主因）。
+function grassNoise(seedSalt, tx, ty, cell) {
+    const cx = Math.floor(tx / cell), cy = Math.floor(ty / cell);
+    const fx = tx / cell - cx, fy = ty / cell - cy;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const v00 = hash2(seedSalt, cx, cy), v10 = hash2(seedSalt, cx + 1, cy);
+    const v01 = hash2(seedSalt, cx, cy + 1), v11 = hash2(seedSalt, cx + 1, cy + 1);
+    return (v00 * (1 - sx) + v10 * sx) * (1 - sy) + (v01 * (1 - sx) + v11 * sx) * sy;
+}
+// 草地底色按 biome 分色：与各区背景色/建筑色调统一，避免同一块草在不同生态区里显得突兀。
+const BIOME_GRASS = [[38, 52, 38], [40, 55, 36], [34, 58, 34], [46, 50, 34]];   // 城区 / 郊区 / 荒野 / 废墟（枯草）
+
 function isGroundTile(t) {
     return t === T.GROUND || t === T.FLOOR || t === T.ROAD || t === T.SIDEWALK || t === T.WEED || t === T.CROP;
 }
@@ -1214,8 +1231,20 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
         else ctx.fillRect(x0 + TS - 3, y0, 3, TS + 1);
         return;
     }
-    const vary = Math.floor(n * 6) - 3;
-    const r = base[0] + vary, g = base[1] + vary, b = base[2] + vary;
+    let r, g, b;
+    if (t === T.GROUND || t === T.WEED) {
+        // 草地：biome 底色 + 双层低频值噪声贴片（大补丁 ±5 / 小补丁 ±2.5）+ 极小逐格细节（±1）。
+        // 噪声空间连续 → 相邻格颜色相关，过渡自然；逐格白噪声只留 ±1 细节避免大色块平板感。
+        const bc = BIOME_GRASS[biome] || GROUND_COLORS[T.GROUND];
+        const lo = grassNoise(sv.world.seed ^ 0x1A5C, tx, ty, 8);
+        const hi = grassNoise(sv.world.seed ^ 0x77E1, tx, ty, 3);
+        const vary = Math.round((lo - 0.5) * 10 + (hi - 0.5) * 5 + (n - 0.5) * 2);
+        r = bc[0] + vary; g = bc[1] + vary; b = bc[2] + vary;
+        if (t === T.WEED) { r += 3; g += 8; b += 2; }   // 杂草：同噪声场上微提亮，不再用独立亮绿底色硬跳
+    } else {
+        const vary = Math.floor(n * 6) - 3;
+        r = base[0] + vary; g = base[1] + vary; b = base[2] + vary;
+    }
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(x0, y0, TS + 1, TS + 1);
     ctx.imageSmoothingEnabled = false;
@@ -1235,8 +1264,9 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
                     ctx.fillStyle = `rgb(${34 + gv},${62 + gv},${30 + gv})`;
                     ctx.fillRect(x0 + dx, y0 + dy, 1, 2 + (v & 3));
                 }
-                if (n2 > 0.7) {
-                    ctx.fillStyle = n2 > 0.85 ? '#c8a832' : '#7a9a4a';
+                if (n2 > 0.8) {
+                    // 花点降频降饱和：旧版亮金黄 #c8a832 在暗草地上过刺眼，改为低饱和枯黄/草绿
+                    ctx.fillStyle = n2 > 0.9 ? '#a89244' : '#6d8a44';
                     ctx.fillRect(x0 + ((s >> 4) % 20) + 6, y0 + ((s >> 12) % 20) + 6, 2, 2);
                 }
             } else {
@@ -2245,7 +2275,13 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         if (t !== T.RUBBLE && !isEmptyChest) dyn.pulses.push({ kind: 'box', tx, ty, t, color: col });
                     }
                 } else {
-                    ctx.fillStyle = TILE_COLOR[t] || '#FFFFFF';
+                    let col = TILE_COLOR[t] || '#FFFFFF';
+                    if (t === T.WALL) {
+                        // 墙升级链（B1）：lv1 木 / lv2 石 / lv3 金属 —— 按等级上色
+                        const m = sv.mods.tiles[tx + ',' + ty];
+                        col = m && m.lv === 3 ? '#4A6A8A' : m && m.lv === 2 ? '#9AA0A8' : TILE_COLOR[t];
+                    }
+                    ctx.fillStyle = col;
                     ctx.fillText(t, sx, sy);
                 }
             }
@@ -3214,10 +3250,20 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
         ctx.restore();
         return;
     }
-    // 插值：向目标位置（wpos 同步的最新坐标）平滑移动，避免跳变
-    const k = 0.25;
-    p.x += (p.tx - p.x) * k;
-    p.y += (p.ty - p.y) * k;
+    // 匀速插值：基于最近两拍 wpos 快照，渲染 250ms 前的位置（200ms 包间隔 + 50ms 抖动缓冲），
+    // 两快照间按恒定速度移动，彻底消除旧版逐帧指数衰减的"冲刺-停顿"跳变感。
+    // 丢包时允许同速外推最多 0.4 段（短暂平滑续走），再多则停住，防止失控漂移。
+    const a = p._snapPrev, bsnap = p._snapCur;
+    if (a && bsnap && bsnap.t > a.t) {
+        const f = (performance.now() - 250 - a.t) / (bsnap.t - a.t);
+        if (f >= 0) {
+            const fc = Math.min(f, 1.4);
+            p.x = a.x + (bsnap.x - a.x) * fc;
+            p.y = a.y + (bsnap.y - a.y) * fc;
+        }
+    } else {
+        p.x = p.tx; p.y = p.ty;
+    }
     // 跳跃高度用队友自己的 jumpOffset（避免"一方跳对方跟着跳"的错误视觉）
     const sx = p.x - camX, sy = p.y - camY - (p.jumpOffset || 0);
     // 开车状态：画车（队友在驾驶中）

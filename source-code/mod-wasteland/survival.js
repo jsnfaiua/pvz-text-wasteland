@@ -3682,9 +3682,18 @@ export function setRemotePlayerState(data, guestId) {
     slot.tx = data.x; slot.ty = data.y;
     // 空间切换（进出室内/楼层）：坐标体系突变，立即对齐禁止插值（否则会"飞越"整个地图）
     const newIn = !!data.inInterior;
+    const nowMs = performance.now();
     if (slot._inInt !== newIn) {
         slot._inInt = newIn;
         slot.x = data.x; slot.y = data.y;
+        // 插值快照缓冲也重置到当前点（否则会在两个坐标系间拉出大位移）
+        slot._snapPrev = { x: data.x, y: data.y, t: nowMs };
+        slot._snapCur = { x: data.x, y: data.y, t: nowMs };
+    } else {
+        // wpos 位置快照缓冲（保留最近两拍）：渲染层据此按固定延迟做匀速线性插值，
+        // 消除旧版指数衰减"冲刺-停顿"卡顿（200ms 包间隔内约 150ms 就收敛静止）
+        slot._snapPrev = slot._snapCur || { x: data.x, y: data.y, t: nowMs };
+        slot._snapCur = { x: data.x, y: data.y, t: nowMs };
     }
     slot.faceX = data.faceX || 0; slot.faceY = data.faceY || 0;
     slot.moving = !!data.moving; slot.frame = data.frame || 0; slot.run = !!data.run;
@@ -3935,6 +3944,28 @@ function syncPauseVolumes() {
     }
 }
 
+// 传送回营地（E2）：暂停面板入口；营地旗帜位置附近找可行走格落脚，
+// 下车/取消代驾；联机由 wpos 200ms 上报新位置（host 权威，guest 瞬移插值平滑）
+function tpToCamp() {
+    if (!sv || !sv.camp) { log('还没有营地：背包中点击「领地旗帜」在脚下插旗建立', '#FFB347'); return; }
+    const gx = Math.floor(sv.camp.x / TS), gy = Math.floor(sv.camp.y / TS);
+    let px = sv.camp.x, py = sv.camp.y;
+    outer: for (let r = 0; r <= 3; r++) {
+        for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            if (isWalk(getTile(sv, gx + dx, gy + dy))) {
+                px = (gx + dx + 0.5) * TS; py = (gy + dy + 0.5) * TS;
+                break outer;
+            }
+        }
+    }
+    sv.px = px; sv.py = py;
+    sv.driving = null; sv.driveOrder = null; sv._chauffeured = false;
+    if (sv.aiming) { sv.aiming = false; sv.mouseDown = false; }
+    sv.effects.push({ kind: 'hit', x: px, y: py, life: 0.5, maxLife: 0.5, label: '◈' });
+    log('已传送回营地', '#7DFF7D');
+}
+
 function togglePause(silent) {
     pauseOpen = !pauseOpen;
     // 联机：暂停状态广播（对方同步暂停/继续；silent=远端应用不广播，防回环）
@@ -3957,11 +3988,14 @@ function togglePause(silent) {
                 '</div>' +
                 '<button class="menu-btn" id="wsl-p-resume" style="min-width:200px;">继续游戏 (P)</button>' +
                 '<button class="menu-btn" id="wsl-p-full" style="min-width:200px;">切换全屏 (F11)</button>' +
+                (sv && sv.camp ? '<button class="menu-btn" id="wsl-p-tpcamp" style="min-width:200px;border-color:#39d98a;color:#7ee08a;">传送回营地 ◈</button>' : '') +
                 '<button class="menu-btn" id="wsl-p-exit" style="min-width:200px;border-color:#FF5555;color:#FF8888;">退出荒原（进度已保存）</button>' +
                 '</div>';
             document.getElementById('game-container').appendChild(pauseEl);
             pauseEl.querySelector('#wsl-p-resume').addEventListener('click', () => togglePause());
             pauseEl.querySelector('#wsl-p-full').addEventListener('click', () => toggleFullscreen());
+            const tpBtn = pauseEl.querySelector('#wsl-p-tpcamp');
+            if (tpBtn) tpBtn.addEventListener('click', () => { togglePause(); tpToCamp(); });
             pauseEl.querySelector('#wsl-p-exit').addEventListener('click', () => { togglePause(); exitWasteland(); });
             const bEl = pauseEl.querySelector('#wsl-vol-bgm'), bV = pauseEl.querySelector('#wsl-vol-bgm-v');
             const sEl = pauseEl.querySelector('#wsl-vol-sfx'), sV = pauseEl.querySelector('#wsl-vol-sfx-v');

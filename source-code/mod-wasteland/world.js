@@ -298,14 +298,44 @@ function buildHouse(tiles, H, seed, cx, cy, idx) {
                     if (plannedArterialAt(seed, gx0 + xx, gy0 + yy) === 'sidewalk') return false;
             return true;
         };
-        let placed = null;
-        for (let a = 0; a < candX.length && !placed; a++) {
+        // 楼间距约束：新建筑与已有墙体的间距只能是 0（贴合合并成 L/连体）或 ≥2，
+        // 禁止恰好 1 格的楼缝——1 格缝渲染成幽闭暗巷，视觉上突兀且难以通行。
+        // 注：仅约束本区块内（跨区块 1 格缝为小概率残留，生成时看不到邻区块）。
+        const gapSafe = (x, y) => {
+            for (let yy = Math.max(0, y - 1); yy < Math.min(CHUNK, y + h + 1); yy++)
+                for (let xx = Math.max(0, x - 1); xx < Math.min(CHUNK, x + w + 1); xx++) {
+                    if (xx >= x && xx < x + w && yy >= y && yy < y + h) continue;   // 矩形内部（允许贴合/相交）
+                    const tv = tiles[yy * CHUNK + xx];
+                    if (tv === T.WALL || tv === T.DOOR) return false;
+                }
+            return true;
+        };
+        // 贴合判定：新矩形四邻存在既有墙体（降级时优先贴合，合并成连体建筑群而非造 1 格缝）
+        const touchesWall = (x, y) => {
+            for (let xx = x; xx < x + w; xx++) {
+                if (y > 0 && (tiles[(y - 1) * CHUNK + xx] === T.WALL)) return true;
+                if (y + h < CHUNK && (tiles[(y + h) * CHUNK + xx] === T.WALL)) return true;
+            }
+            for (let yy = y; yy < y + h; yy++) {
+                if (x > 0 && (tiles[yy * CHUNK + x - 1] === T.WALL)) return true;
+                if (x + w < CHUNK && (tiles[yy * CHUNK + x + w] === T.WALL)) return true;
+            }
+            return false;
+        };
+        // 落位得分：候选顺序按哈希旋转后逐个试，三级降级——
+        // ① 避主干道环 + 无 1 格缝；② 避环 + 贴合既有建筑；③ 仅避环（兜底，罕见）
+        const candList = [];
+        for (let a = 0; a < candX.length; a++) {
             const cx2 = candX[(Math.floor(H(50 + idx, cx, cy) * candX.length) + a) % candX.length];
             for (let b = 0; b < candY.length; b++) {
                 const cy2 = candY[(Math.floor(H(60 + idx, cx, cy) * candY.length) + b) % candY.length];
-                if (arterialSafe(cx2, cy2)) { placed = { x: cx2, y: cy2 }; break; }
+                if (arterialSafe(cx2, cy2)) candList.push([cx2, cy2]);
             }
         }
+        let placed = null;
+        for (const [px, py] of candList) if (gapSafe(px, py)) { placed = { x: px, y: py }; break; }
+        if (!placed) for (const [px, py] of candList) if (touchesWall(px, py)) { placed = { x: px, y: py }; break; }
+        if (!placed && candList.length) placed = { x: candList[0][0], y: candList[0][1] };
         if (!placed) return;   // 全部候选都压主干道环则跳过
         x0 = placed.x;
         y0 = placed.y;

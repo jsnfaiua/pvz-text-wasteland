@@ -49,6 +49,24 @@ export function buildOkAt(sv, gx, gy) {
 export function placeBuild(sv, gx, gy, countItem, takeItem) {
     const bitem = BUILD_ITEMS[sv.buildSel];
     if (!bitem) return;
+    const key = gx + ',' + gy;
+    const existing = sv.mods.tiles[key];
+    // 墙升级链（B1）：选中「木墙」对准已有 built 墙再放 → 石墙(lv2) → 金属墙(lv3)
+    if (bitem.t === T.WALL && existing && existing.built && existing.t === T.WALL && (existing.lv || 1) < 3) {
+        const lv = existing.lv || 1;
+        const upg = bitem.upg && bitem.upg.find(u => u.lv === lv + 1);
+        if (!upg) return;
+        for (const [mat, n] of Object.entries(upg.cost)) {
+            if (countItem(mat) < n) { log(sv, `材料不足：升级${upg.name}需要 ${Panel.getItemInfo(mat).name}×${n}`); return; }
+        }
+        for (const [mat, n] of Object.entries(upg.cost)) takeItem(mat, n);
+        existing.lv = lv + 1;
+        existing.hp = Math.round((BUILD_HP[T.WALL] || 300) * upg.hpMul);
+        existing.maxHp = existing.hp;
+        log(sv, `升级完成：${upg.name}（耐久 ${existing.hp}）`, '#7DFF7D');
+        Panel.refresh(sv);
+        return;
+    }
     if (!buildOkAt(sv, gx, gy)) { log(sv, '这里不能建造（需 3 格内空地，且不能压住自己或僵尸）'); return; }
     if (sv.woodCount < bitem.cost) { log(sv, `木材不足：${bitem.name} 需要 木材×${bitem.cost}`); return; }
     takeItem('wood', bitem.cost);
@@ -74,6 +92,12 @@ export function demolish(sv, gx, gy) {
     }
     const back = bitem ? Math.floor(bitem.cost * B.DEMOLISH_REFUND) : 0;
     if (back > 0) Panel.addItem(sv, 'wood', back);
+    // 墙升级链（B1）：按等级返还部分升级材料（lv2 石墙还 石×1；lv3 金属墙还 件×1+石×1）
+    if (m.t === T.WALL && m.lv && m.lv > 1) {
+        const extra = m.lv === 2 ? { stone: 1 } : { part: 1, stone: 1 };
+        for (const [mat, n] of Object.entries(extra)) Panel.addItem(sv, mat, n);
+        log(sv, `已拆除 等级${m.lv === 2 ? '石' : '金属'}墙，返还材料`, '#FFB347');
+    }
     setTile(sv, gx, gy, m.prev || T.GROUND);
     sv.mods.tiles[key] = { t: m.prev || T.GROUND };
     log(sv, `已拆除 ${bitem ? bitem.name : '建筑'}，返还 木材×${back}`);
