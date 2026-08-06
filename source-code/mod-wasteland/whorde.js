@@ -51,6 +51,21 @@ function startHordeWave(sv) {
         const gx = Math.floor(x / TS), gy = Math.floor(y / TS);
         if (isWalk(getTile(sv, gx, gy))) { spawnZombie(sv, 'flag', x, y, true); break; }
     }
+    // 尸潮首领（D）：第 3 天起每次尸潮 25% 概率额外刷一只巨字尸（高血高伤，掉传送宝石）
+    if (sv.day >= B.Z_GIANT_UNLOCK_DAY && Math.random() < B.Z_GIANT_HORDE_CHANCE) {
+        for (let tries = 0; tries < 12; tries++) {
+            const ang = Math.random() * Math.PI * 2;
+            const d = (B.HORDE_SPAWN_DIST_MIN + Math.random() * B.HORDE_SPAWN_DIST_RAND) * TS;
+            const x = sv.px + Math.cos(ang) * d, y = sv.py + Math.sin(ang) * d;
+            const gx = Math.floor(x / TS), gy = Math.floor(y / TS);
+            if (isWalk(getTile(sv, gx, gy))) {
+                spawnZombie(sv, 'giant', x, y, true);
+                sv.announce = { text: '⚠ 巨字尸出现了！', t: 3, color: '#FF33AA' };
+                AudioSystem.playWaveWarning();
+                break;
+            }
+        }
+    }
 }
 
 function spawnHordeZombie(sv, canStand) {

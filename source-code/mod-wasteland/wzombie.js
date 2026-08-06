@@ -188,6 +188,10 @@ function rollBaseLootContents(quality) {
         for (const [k, w] of pool) { if (r < w) { kind = k; break; } r -= w; }
         items.push(resolveLootItem(kind, quality));
     }
+    // 稀有/史诗容器：低概率额外掉落传送宝石（D/E2 联动）
+    if ((quality === 'rare' || quality === 'epic') && Math.random() < 0.25) {
+        items.push({ id: 'tpgem', n: 1 });
+    }
     return items;
 }
 
@@ -201,7 +205,13 @@ export function rollLootContents(quality, type = 'normal') {
         pollutionTable: WW.ZOMBIE_POLLUTION_TABLES[quality] || WW.ZOMBIE_POLLUTION_TABLES.common,
         completeSource: 'zombie',
     });
-    return result.type === 'base' ? rollBaseLootContents(quality) : result.items;
+    const items = result.type === 'base' ? rollBaseLootContents(quality) : result.items;
+    // 巨字尸（尸潮首领）：必掉传送宝石 + 额外宝石（E2 传送消耗品来源之一）
+    if (type === 'giant') {
+        items.push({ id: 'tpgem', n: 1 });
+        if (Math.random() < 0.5) items.push({ id: 'gem', n: 1 });
+    }
+    return items;
 }
 
 export function updateSpawns(sv, dt, canStand) {

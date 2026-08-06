@@ -34,7 +34,7 @@ export const DIFF_TABLE = {
 };
 
 // ---------- 僵尸 ----------
-export const Z_CHAR = { normal: '僵', cone: '障', bucket: '桶', pole: '杆', flag: '旗', door: '门', remnant: '残', deleter: '删', swapper: '换' };
+export const Z_CHAR = { normal: '僵', cone: '障', bucket: '桶', pole: '杆', flag: '旗', door: '门', remnant: '残', deleter: '删', swapper: '换', giant: '巨' };
 export const Z_SPEED_MUL = 2.6;
 export const Z_DAY_SCALE = 0.05;
 export const Z_CHASE_RANGE = 8;       // 格：玩家周围总宽/高为 8 格的方形警戒区
@@ -51,7 +51,7 @@ export const Z_SPAWN_CAP_MAX = 9;
 // 生存模式专用HP（覆盖本体塔防数值，以豌豆射手30dmg为基准平衡）
 export const Z_SURVIVAL_HP = {
     normal: 70, cone: 130, bucket: 280, pole: 80, flag: 50, door: 320,
-    remnant: 160, deleter: 180, swapper: 120,
+    remnant: 160, deleter: 180, swapper: 120, giant: 1500,
 };
 // 僵尸袋生成率由类型映射到等级，不再全体共用单一概率。
 export const ZOMBIE_LOOT_TIER = {
@@ -136,8 +136,11 @@ export const TEXT_ZOMBIE_TYPES = {
     remnant: { name: '残名尸', char: '残', hp: 280, speed: 0.22, damage: 18, color: '#7a6b8a', ability: 'scatter', desc: '保留部分旧名，命中时震散玩家背包中的字块' },
     deleter: { name: '删字尸', char: '删', hp: 320, speed: 0.18, damage: 22, color: '#5a3030', ability: 'delete', desc: '命中时删除玩家正在追踪的一个字块' },
     swapper: { name: '换字尸', char: '换', hp: 260, speed: 0.25, damage: 15, color: '#3a5040', ability: 'corrupt', desc: '命中时将玩家一个字块污染为不稳状态' },
+    giant: { name: '巨字尸', char: '巨', hp: 1500, speed: 0.08, damage: 45, color: '#8A3A5A', ability: 'stomp', desc: '尸潮首领：高血高伤，击杀必掉传送宝石与稀有字块' },
 };
 export const Z_TEXT_ABILITY_CHANCE = 0.35;
+export const Z_GIANT_UNLOCK_DAY = 3;        // 巨字尸（尸潮首领）最早出现天数
+export const Z_GIANT_HORDE_CHANCE = 0.25;   // 每次尸潮刷首领概率
 
 // ---------- 僵尸碰撞属性（接触即伤害，各型差异化） ----------
 // dmg 接触伤害 / biteCd 咬击间隔秒 / speedMul 移速倍率 / armor 减伤比例(0~1)
@@ -168,6 +171,7 @@ export const Z_ATK_STYLES = {
     remnant: { windup: 0.80, dmg: 14, lunge: 0, strikeDist: 30, effect: 'scatter' },
     deleter: { windup: 0.90, dmg: 16, lunge: 0, strikeDist: 30, effect: 'delete' },
     swapper: { windup: 0.55, dmg: 12, lunge: 35, strikeDist: 30, effect: 'corrupt' },
+    giant:   { windup: 1.30, dmg: 30, lunge: 0, strikeDist: 40, effect: 'slam' },
 };
 
 // 招式辅助参数
@@ -316,7 +320,7 @@ export const FLOOR_DROP_BUMP  = cur => cur < 0 ? 1 : 0;                // 地下
 // ---------- 货币与物品价值（NPC 交易按价值定价） ----------
 export const COIN_ID = 'coin';
 export const ITEM_VALUE = {
-    food: 5, water: 5, herb: 8, wood: 3, stone: 4, part: 12, gem: 50,
+    food: 5, water: 5, herb: 8, wood: 3, stone: 4, part: 12, gem: 50, tpgem: 80,
     sun: 3, fert: 6, coin: 1, carrot: 6, corn: 6, potato: 6,
 };
 export function itemValue(id) {

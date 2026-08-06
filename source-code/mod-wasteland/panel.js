@@ -18,6 +18,7 @@ export const ITEMS = {
     part:  { name: '修车零件', char: '件', color: '#66CCFF', heal: 0,  desc: '载具修复材料（后续阶段用途）' },
     stone: { name: '石块',     char: '石', color: '#999999', heal: 0,  desc: '基础建材（后续阶段用途）' },
     gem:   { name: '宝石',     char: '钻', color: '#7DF9FF', heal: 0,  desc: '尸潮战利品：稀有的高价值物（后续阶段用途）' },
+    tpgem: { name: '传送宝石', char: '◇', color: '#C88AFF', heal: 0,  desc: '暂停面板「传送回营地」消耗 1 颗（有冷却）；尸潮首领与稀有容器掉落' },
 
     water: { name: '水',       char: '水', color: '#5599FF', heal: 0, drink: 35, desc: '使用恢复 35 水分（解渴）；培养植物必需品；在积水旁按 F 采集' },
     coin:  { name: '金币',     char: '金', color: '#FFD700', heal: 0, desc: '通用货币：与 NPC 交易按物品价值买卖' },

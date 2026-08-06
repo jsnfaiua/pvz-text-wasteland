@@ -304,6 +304,14 @@ function resolveTextAbility(sv, ability) {
         const char = slot.id.slice(6);
         sv.inv[idx] = { id: `glyph-unstable:${char}`, n: slot.n };
         sv.effects.push({ kind: 'text', x: sv.px, y: sv.py, life: 1.0, maxLife: 1.0, label: `污「${char}」` });
+    } else if (ability === 'stomp') {
+        // 巨字尸：踏地震晕减速 + 震散一枚字块
+        applyAtkSlow(sv, 1.6);
+        sv.effects.push({ kind: 'quake', x: sv.px, y: sv.py, life: 0.5, maxLife: 0.5 });
+        sv.effects.push({ kind: 'text', x: sv.px, y: sv.py - 20, life: 1.2, maxLife: 1.2, label: '震！' });
+        const char = slot.id.slice(6);
+        sv.inv[idx] = null;
+        sv.drops.push({ x: sv.px + (Math.random() - 0.5) * 60, y: sv.py + (Math.random() - 0.5) * 60, id: slot.id, n: 1 });
     }
 }
 

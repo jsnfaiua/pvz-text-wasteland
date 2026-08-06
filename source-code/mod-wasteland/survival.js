@@ -418,9 +418,68 @@ function stopBgKeepAlive() {
     if (bgTimer) { clearInterval(bgTimer); bgTimer = null; }
 }
 
+// ---------- 随机事件（D）：沙尘暴 / 停电夜 / 物资空投 ----------
+// 每天 8:00 判定一次（天≥3，30% 触发）；事件进行中不触发下一个。
+// sv._evt = { type, endT }（endT 按游戏时间 sv.now 秒）。运行时状态，不序列化（重进重新随机）。
+const EVT_UNLOCK_DAY = 3;
+const EVT_TRIGGER_CHANCE = 0.30;
+function updateEvents(sv, dt) {
+    if (sv._evt) {
+        if (sv.now >= sv._evt.endT) sv._evt = null;
+        return;
+    }
+    const hour = (sv.t / sv.dayLen) * 24;
+    if (sv._lastEvtHour != null && sv._lastEvtHour < 8 && hour >= 8 && sv.day >= EVT_UNLOCK_DAY && Math.random() < EVT_TRIGGER_CHANCE) {
+        const r = Math.random();
+        if (r < 0.34) startEvent(sv, 'sandstorm');
+        else if (r < 0.67) startEvent(sv, 'blackout');
+        else startEvent(sv, 'airdrop');
+    }
+    sv._lastEvtHour = hour;
+}
+function startEvent(sv, type) {
+    if (type === 'sandstorm') {
+        sv._evt = { type, endT: sv.now + 30 };
+        sv.announce = { text: '🌪 沙尘暴来袭！移动速度降低', t: 2.5, color: '#E8C46A' };
+        AudioSystem.playWaveWarning();
+    } else if (type === 'blackout') {
+        sv._evt = { type, endT: sv.now + 30 };
+        sv.announce = { text: '⚡ 停电夜！视野受限', t: 2.5, color: '#8899BB' };
+        AudioSystem.playWaveWarning();
+    } else if (type === 'airdrop') {
+        const boxes = ['WBOX', 'MEDBOX', 'MATBOX'];
+        let n = 0;
+        for (let i = 0; i < 3; i++) {
+            for (let tries = 0; tries < 10; tries++) {
+                const ang = Math.random() * Math.PI * 2;
+                const d = (10 + Math.random() * 4) * TS;
+                const gx = Math.floor((sv.px + Math.cos(ang) * d) / TS);
+                const gy = Math.floor((sv.py + Math.sin(ang) * d) / TS);
+                const t = getTile(sv, gx, gy);
+                if (isWalk(t) && t !== T.ROAD && t !== T.SIDEWALK) {
+                    const bt = T[boxes[Math.floor(Math.random() * boxes.length)]];
+                    setTile(sv, gx, gy, bt);
+                    const items = WZ.rollLootContents(Math.random() < 0.5 ? 'rare' : 'common');
+                    sv.mods.boxLoot[gx + ',' + gy] = items;
+                    n++;
+                    break;
+                }
+            }
+        }
+        if (n > 0) {
+            sv._evt = { type, endT: sv.now + 5 };
+            sv.announce = { text: `✈ 物资空投！附近 ${n} 个物资箱（发光处可搜索）`, t: 3, color: '#7DFF7D' };
+            AudioSystem.playCollect();
+        } else {
+            sv._evt = null;
+        }
+    }
+}
+
 function update(dt) {
     sv.now += dt;
     sv.playT += dt;
+    updateEvents(sv, dt);   // 随机事件（D：沙尘暴/停电夜/物资空投）
 
     // ---------- 联机客人端分流（Phase 2 主机权威）----------
     // guest 不模拟世界（昼夜/僵尸 AI/NPC/刷怪/尸潮/掉落生成都由 host 权威，
@@ -602,7 +661,7 @@ function update(dt) {
             mx /= len; my /= len;
             sv.faceX = mx; sv.faceY = my;
             const infEff = playerInfectionEffects(sv.infection || 0);
-            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1);
+            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * (sv._evt && sv._evt.type === 'sandstorm' ? 0.7 : 1);   // 沙尘暴减速（D）
             const nx = sv.px + mx * spd * dt;
             const ny = sv.py + my * spd * dt;
             if (canStand(nx, sv.py)) sv.px = nx;
@@ -790,7 +849,7 @@ function updateGuest(dt) {
             mx /= len; my /= len;
             sv.faceX = mx; sv.faceY = my;
             const infEff = playerInfectionEffects(sv.infection || 0);
-            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1);
+            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * (sv._evt && sv._evt.type === 'sandstorm' ? 0.7 : 1);   // 沙尘暴减速（D）
             const nx = sv.px + mx * spd * dt;
             const ny = sv.py + my * spd * dt;
             if (canStand(nx, sv.py)) sv.px = nx;
@@ -3944,10 +4003,20 @@ function syncPauseVolumes() {
     }
 }
 
-// 传送回营地（E2）：暂停面板入口；营地旗帜位置附近找可行走格落脚，
-// 下车/取消代驾；联机由 wpos 200ms 上报新位置（host 权威，guest 瞬移插值平滑）
+// 传送回营地（E2）：暂停面板入口；消耗 1 颗传送宝石 + 冷却（现实时间，防暂停刷冷却）；
+// 营地旗帜位置附近找可行走格落脚，下车/取消代驾；联机由 wpos 200ms 上报新位置
+const TP_COOLDOWN_MS = 120000;   // 传送冷却：120 秒现实时间
 function tpToCamp() {
     if (!sv || !sv.camp) { log('还没有营地：背包中点击「领地旗帜」在脚下插旗建立', '#FFB347'); return; }
+    // 冷却检查（现实时间，暂停不生效→无法刷冷却）
+    const cdLeft = Math.ceil(((sv._tpCdReal || 0) - performance.now()) / 1000);
+    if (cdLeft > 0) { log(`传送冷却中：${cdLeft} 秒后可用`, '#FFB347'); return; }
+    // 宝石消耗
+    const gem = sv.inv.find(s => s && s.id === 'tpgem');
+    if (!gem || gem.n < 1) { log('需要「传送宝石」才能传送（尸潮首领·巨字尸 / 稀有容器掉落）', '#FFB347'); return; }
+    gem.n--;
+    if (gem.n <= 0) sv.inv[sv.inv.indexOf(gem)] = null;
+    sv._tpCdReal = performance.now() + TP_COOLDOWN_MS;
     const gx = Math.floor(sv.camp.x / TS), gy = Math.floor(sv.camp.y / TS);
     let px = sv.camp.x, py = sv.camp.y;
     outer: for (let r = 0; r <= 3; r++) {
@@ -3963,7 +4032,19 @@ function tpToCamp() {
     sv.driving = null; sv.driveOrder = null; sv._chauffeured = false;
     if (sv.aiming) { sv.aiming = false; sv.mouseDown = false; }
     sv.effects.push({ kind: 'hit', x: px, y: py, life: 0.5, maxLife: 0.5, label: '◈' });
-    log('已传送回营地', '#7DFF7D');
+    log('已传送回营地（消耗传送宝石 ×1，冷却 120s）', '#7DFF7D');
+}
+
+// 暂停面板传送按钮状态刷新（无宝石/冷却中提示；togglePause 打开时调用）
+function updateTpBtn() {
+    if (!pauseEl || !sv) return;
+    const btn = pauseEl.querySelector('#wsl-p-tpcamp');
+    if (!btn) return;
+    const cdLeft = Math.ceil(((sv._tpCdReal || 0) - performance.now()) / 1000);
+    const hasGem = sv.inv && sv.inv.some(s => s && s.id === 'tpgem');
+    if (cdLeft > 0) btn.textContent = `传送回营地（冷却 ${cdLeft}s）`;
+    else if (!hasGem) btn.textContent = '传送回营地（需传送宝石）';
+    else btn.textContent = '传送回营地 ◈';
 }
 
 function togglePause(silent) {
@@ -4013,6 +4094,7 @@ function togglePause(silent) {
             });
         }
         syncPauseVolumes();
+        updateTpBtn();   // 刷新传送按钮状态（宝石/冷却）
         pauseEl.style.display = 'flex';
         AudioSystem.playPause();
     } else {

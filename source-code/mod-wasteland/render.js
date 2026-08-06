@@ -661,6 +661,7 @@ export function draw(ctx, sv) {
         drawEffects(ctx, sv, camX, camY);
         drawBuildTarget(ctx, sv, camX, camY);
         drawDayNight(ctx, sv, W, H, false);
+        drawEventOverlay(ctx, sv, W, H);   // 随机事件暗角（沙尘暴沙色/停电夜深蓝，D）
         drawSickVignette(ctx, sv, W, H);
         drawHUD(ctx, sv, W, H);
         drawDriveHUD(ctx, sv, W);
@@ -688,9 +689,32 @@ function drawDayNight(ctx, sv, W, H, interior) {
     if (sv._devGfx === 0) return;   // 低画质：跳过夜晚暗色覆盖层（氛围降级，省一次全屏 fillRect）
     const a = dayNightAlpha(sv);
     if (a <= 0) return;
-    const alpha = 0.58 * a * (interior ? 0.5 : 1);
+    // 停电夜事件（D）：暗色加强 1.5x（视野受限感）
+    const blackout = sv._evt && sv._evt.type === 'blackout' ? 1.5 : 1;
+    const alpha = 0.58 * a * (interior ? 0.5 : 1) * blackout;
     ctx.fillStyle = `rgba(8,12,30,${alpha.toFixed(3)})`;
     ctx.fillRect(0, 0, W, H);
+}
+
+// ---------- 随机事件氛围覆盖层（D）：沙尘暴沙色 / 停电夜暗角 ----------
+function drawEventOverlay(ctx, sv, W, H) {
+    if (!sv._evt) return;
+    if (sv._evt.type === 'sandstorm') {
+        // 沙色呼吸暗角
+        const breathe = 0.5 + 0.5 * Math.sin(sv.now * 2.2);
+        const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.85);
+        g.addColorStop(0, 'rgba(150,110,40,0)');
+        g.addColorStop(1, `rgba(150,110,40,${(0.18 + 0.10 * breathe).toFixed(3)})`);
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+    } else if (sv._evt.type === 'blackout') {
+        // 停电：四周更暗的窄视（加深边缘）
+        const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, H * 0.9);
+        g.addColorStop(0, 'rgba(0,0,20,0)');
+        g.addColorStop(1, 'rgba(0,0,20,0.35)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+    }
 }
 
 // ---------- 危急状态晕眩：镜头轻微摇摆（饥饿/缺水 or 低血量 ≤20%） ----------

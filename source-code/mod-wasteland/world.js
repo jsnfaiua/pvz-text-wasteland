@@ -274,18 +274,28 @@ function buildHouse(tiles, H, seed, cx, cy, idx) {
     const BLOCK = blockAt(seed, cx, cy);
     // 街区内部带：避开公路(r<4)与人行道(r==4 / r==BLOCK-1)，建筑不得压路、压人行道。
     const bandBuildable = v => { const r = ((v % BLOCK) + BLOCK) % BLOCK; return r >= 5 && r <= BLOCK - 2; };
+    // 跨区块楼缝防护：若某方向的相邻区块也会生成建筑，本区块该侧边缘 1 行/列不落脚——
+    // 否则"本区建筑贴边 + 邻区建筑隔一格"会拼出跨区块 1 格楼缝（区内 gapSafe 看不到邻区）。
+    // 荒野侧邻区无建筑（buildDensity=0），边缘照常可用，不浪费用地。
+    let mW = 0, mE = 0, mN = 0, mS = 0;
+    if (isGrid) {
+        if (DISTRICTS[districtAt(seed, cx - 1, cy)].buildDensity > 0) mW = 1;
+        if (DISTRICTS[districtAt(seed, cx + 1, cy)].buildDensity > 0) mE = 1;
+        if (DISTRICTS[districtAt(seed, cx, cy - 1)].buildDensity > 0) mN = 1;
+        if (DISTRICTS[districtAt(seed, cx, cy + 1)].buildDensity > 0) mS = 1;
+    }
     let w, h, x0, y0;
     if (isGrid) {
         const big = dKey === 'ruins';
         w = big ? 9 + Math.floor(H(30 + idx, cx, cy) * 3) : 5 + Math.floor(H(30 + idx, cx, cy) * 4);   // 废墟9~11 / 城区5~8
         h = big ? 7 + Math.floor(H(40 + idx, cx, cy) * 2) : 5 + Math.floor(H(40 + idx, cx, cy) * 3);   // 废墟7~8 / 城区5~7
         const candX = [], candY = [];
-        for (let x = 0; x + w <= CHUNK; x++) {
+        for (let x = mW; x + w <= CHUNK - mE; x++) {
             let ok = true;
             for (let xx = x; xx < x + w; xx++) if (!bandBuildable(gx0 + xx)) { ok = false; break; }
             if (ok) candX.push(x);
         }
-        for (let y = 0; y + h <= CHUNK; y++) {
+        for (let y = mN; y + h <= CHUNK - mS; y++) {
             let ok = true;
             for (let yy = y; yy < y + h; yy++) if (!bandBuildable(gy0 + yy)) { ok = false; break; }
             if (ok) candY.push(y);
