@@ -8,6 +8,7 @@ import { WEAPONS } from '../core/constants.js';
 import { getItemInfo } from './panel.js';
 import { carCondition, carDirAt } from './wvehicle.js';
 import { speciesInfo, speciesAt, plantDisplay } from './wplants.js';
+import * as WGRASS from './wgrass.js';   // 草地独立模块（地面/草束/季节/风摆）
 import { drawMsg } from './wmsg.js';
 import { TS } from './wconst.js';
 import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H } from './windoor.js';
@@ -634,6 +635,7 @@ export function draw(ctx, sv) {
         const camX = sv.camX, camY = sv.camY;
 
         drawWorld(ctx, sv, camX, camY, W, H);
+        WGRASS.grassRenderLayer(ctx, sv, camX, camY, W, H);   // 动态草层（风摆 + 玩家踩动）
         drawCampFlag(ctx, sv, camX, camY);
         drawDrops(ctx, sv, camX, camY);
         drawZombies(ctx, sv, camX, camY);
@@ -666,7 +668,7 @@ export function draw(ctx, sv) {
         drawHUD(ctx, sv, W, H);
         drawDriveHUD(ctx, sv, W);
         drawTeamPanel(ctx, sv, W, H);
-        if (sv.p2) drawP2Guide(ctx, sv, W, H);                  // 联机：队友方向距离指引
+        if (sv.p2 || (sv.p2s && Object.keys(sv.p2s).length)) drawP2Guide(ctx, sv, W, H);   // 联机：队友方向距离指引（多队友每人一个）
         if (sv.build) drawBuildBar(ctx, sv, W, H);
         else drawHotbar(ctx, sv, W, H);
     }
@@ -1285,15 +1287,9 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
     }
     let r, g, b;
     if (t === T.GROUND || t === T.WEED) {
-        // 草地：biome 平滑色 + 双层低频值噪声贴片（大补丁 ±4 / 小补丁 ±2）+ 极小逐格细节（±1）。
-        // 噪声空间连续 → 相邻格颜色相关，过渡自然；biome 色双线性插值 → chunk 边界无缝。
-        // 幅度刻意收窄（旧版 ±8.5 会让同一片草深浅割裂、过渡生硬）。
-        const bc = grassBiomeColor(sv.world.seed, tx, ty);
-        const lo = grassNoise(sv.world.seed ^ 0x1A5C, tx, ty, 8);
-        const hi = grassNoise(sv.world.seed ^ 0x77E1, tx, ty, 3);
-        const vary = Math.round((lo - 0.5) * 8 + (hi - 0.5) * 4 + (n - 0.5) * 2);
-        r = bc[0] + vary; g = bc[1] + vary; b = bc[2] + vary;
-        if (t === T.WEED) { r += 2; g += 6; b += 1; }   // 杂草：同噪声场上微提亮，不再用独立亮绿底色硬跳
+        // 草地（独立模块 wgrass.js）：biome 平滑 + 季节背景 + 颗粒 + 低对比噪声
+        WGRASS.grassRenderGround(ctx, sv, tx, ty, x0, y0);
+        return;
     } else {
         const vary = Math.floor(n * 6) - 3;
         r = base[0] + vary; g = base[1] + vary; b = base[2] + vary;
@@ -3436,32 +3432,50 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
     ctx.restore();
 }
 
-// ---------- 联机队友方向距离指引：屏幕外边缘箭头 + 距离；同屏时不显示（直接看到人） ----------
+// ---------- 联机队友方向距离指引：每个队友独立一个箭头 + 距离格数（固定槽序不闪） ----------
+// 旧版只画 sv.p2（"最近活动队友"别名，随 wpos 到达顺序在玩家间切换）→ 多人时指示器乱闪；
+// 现遍历 sv.p2s 全队友槽，每人固定配色 + 边缘重叠自动错位。
+const P2_GUIDE_COLORS = ['#7fd6ff', '#ffd166', '#8dff9e', '#ff9ecb'];
 function drawP2Guide(ctx, sv, W, H) {
-    const p = sv.p2;
-    if (!p || p.tx == null) return;
+    const list = [];
+    if (sv.p2s) { for (const pid in sv.p2s) { const g = sv.p2s[pid]; if (g && g.tx != null) list.push(g); } }
+    if (!list.length && sv.p2 && sv.p2.tx != null) list.push(sv.p2);
+    if (!list.length) return;
+    const drawn = [];   // 已画指示器位置（同边缘重叠时逐个下移错位）
+    for (let i = 0; i < list.length; i++) {
+        drawOneP2Guide(ctx, sv, W, H, list[i], P2_GUIDE_COLORS[i % P2_GUIDE_COLORS.length], drawn);
+    }
+}
+function drawOneP2Guide(ctx, sv, W, H, p, color, drawn) {
     const dx = p.tx - sv.px, dy = p.ty - sv.py;
     const dist = Math.hypot(dx, dy);
     const sx = p.tx - sv.camX, sy = p.ty - sv.camY;
     const margin = 52;
     // 同屏：双方都能看到对方小人，不再显示距离（用户要求）
     if (sx >= margin && sx <= W - margin && sy >= margin && sy <= H - margin) return;
-    // 屏幕外：屏幕边缘画箭头（指向队友方向）+ 距离
+    // 屏幕外：屏幕边缘画箭头（指向队友方向）+ 距离格数
     const ang = Math.atan2(dy, dx);
     const px2 = clamp(W / 2 + Math.cos(ang) * (W / 2 - 40), margin, W - margin);
-    const py2 = clamp(H / 2 + Math.sin(ang) * (H / 2 - 40), margin, H - margin);
+    let py2 = clamp(H / 2 + Math.sin(ang) * (H / 2 - 40), margin, H - margin);
+    // 多个队友落在同一边缘位置：逐个下移 48px 防重叠（超出下边界改向上叠）
+    for (const d of drawn) {
+        if (Math.abs(d.x - px2) < 40 && Math.abs(d.y - py2) < 44) {
+            py2 = d.y + 48 > H - margin ? d.y - 48 : d.y + 48;
+        }
+    }
+    drawn.push({ x: px2, y: py2 });
     ctx.save();
     ctx.translate(px2, py2);
-    // 圆底 + 蓝描边
+    // 圆底 + 该队友专属色描边
     ctx.fillStyle = 'rgba(10,30,52,0.85)';
-    ctx.strokeStyle = '#4da3ff';
+    ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(0, 0, 15, 0, Math.PI * 2);
     ctx.fill(); ctx.stroke();
     // 指向队友的箭头
     ctx.rotate(ang);
-    ctx.fillStyle = '#7fd6ff';
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(8, 0); ctx.lineTo(-4, -6); ctx.lineTo(-1, 0); ctx.lineTo(-4, 6);
     ctx.closePath(); ctx.fill();
@@ -3476,7 +3490,7 @@ function drawP2Guide(ctx, sv, W, H) {
     const lw = ctx.measureText(label).width + 10;
     roundRectPath(ctx, px2 - lw / 2, py2 + 22, lw, 18, 4);
     ctx.fill();
-    ctx.fillStyle = '#7fd6ff';
+    ctx.fillStyle = color;
     ctx.fillText(label, px2, py2 + 31);
     ctx.restore();
 }

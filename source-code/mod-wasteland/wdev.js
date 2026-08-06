@@ -693,28 +693,23 @@ function bindEvents() {
                     break;
                 }
                 case 'tp': {
-                    // 联机：传送到真人队友身旁（sv.p2 由 wpos 同步维护）
-                    const p = sv.p2;
-                    if (!p || p.tx == null) {
+                    // 联机：传送到真人队友身旁（sv.p2s 由 wpos 同步维护）
+                    // 多队友：弹选择器指定某个玩家（旧版只能随机/唯一队友）
+                    const slots = [];
+                    if (sv.p2s) {
+                        for (const pid in sv.p2s) {
+                            const g = sv.p2s[pid];
+                            if (g && g.tx != null) slots.push(g);
+                        }
+                    } else if (sv.p2 && sv.p2.tx != null) {
+                        slots.push(sv.p2);
+                    }
+                    if (!slots.length) {
                         MSG.pushMsg(sv, '[DEV] 队友不在线（需先进入联机游戏）', '#FF8866');
                         break;
                     }
-                    if (sv.driving) { MSG.pushMsg(sv, '[DEV] 请先下车再传送', '#FF8866'); break; }
-                    let placed = false;
-                    for (let tries = 0; tries < 24 && !placed; tries++) {
-                        const ang = Math.random() * Math.PI * 2;
-                        const d = (1 + Math.random()) * TS;
-                        const gx = Math.floor((p.tx + Math.cos(ang) * d) / TS);
-                        const gy = Math.floor((p.ty + Math.sin(ang) * d) / TS);
-                        if (!isWalk(getTile(sv, gx, gy))) continue;
-                        sv.px = (gx + 0.5) * TS; sv.py = (gy + 0.5) * TS;
-                        sv.faceX = 1; sv.faceY = 0;
-                        placed = true;
-                        const dist = Math.round(Math.hypot(sv.px - p.tx, sv.py - p.ty) / TS);
-                        MSG.pushMsg(sv, `[DEV] 已传送到队友身旁（${dist} 格）`, '#7DFF7D');
-                        break;
-                    }
-                    if (!placed) MSG.pushMsg(sv, '[DEV] 队友附近没有可站立格', '#FF8866');
+                    if (slots.length === 1) { devTpTo(sv, slots[0]); break; }
+                    devTpPicker(sv, slots);   // 多个队友：弹出选择器指定玩家
                     break;
                 }
                 case 'horde':
@@ -862,4 +857,47 @@ function devSpawnZombies(sv, n) {
     }
     MSG.pushMsg(sv, `[DEV] 生成僵尸 ×${made}`, '#FF8866');
     return made;
+}
+
+// ---------- 开发者 TP：传送到指定队友身旁（多队友时由 devTpPicker 选择目标） ----------
+function devTpTo(sv, p) {
+    if (!p || p.tx == null) { MSG.pushMsg(sv, '[DEV] 目标队友不在线', '#FF8866'); return; }
+    if (sv.driving) { MSG.pushMsg(sv, '[DEV] 请先下车再传送', '#FF8866'); return; }
+    for (let tries = 0; tries < 24; tries++) {
+        const ang = Math.random() * Math.PI * 2;
+        const d = (1 + Math.random()) * TS;
+        const gx = Math.floor((p.tx + Math.cos(ang) * d) / TS);
+        const gy = Math.floor((p.ty + Math.sin(ang) * d) / TS);
+        if (!isWalk(getTile(sv, gx, gy))) continue;
+        sv.px = (gx + 0.5) * TS; sv.py = (gy + 0.5) * TS;
+        sv.faceX = 1; sv.faceY = 0;
+        const dist = Math.round(Math.hypot(sv.px - p.tx, sv.py - p.ty) / TS);
+        MSG.pushMsg(sv, `[DEV] 已传送到 ${p.name || '队友'} 身旁（${dist} 格）`, '#7DFF7D');
+        return;
+    }
+    MSG.pushMsg(sv, '[DEV] 目标队友附近没有可站立格', '#FF8866');
+}
+// 多队友选择器：列出每个队友（名字 + 当前距离格数），点击即传送；6s 无操作自动关闭
+let devTpPickerEl = null;
+function devTpPicker(sv, slots) {
+    if (devTpPickerEl && devTpPickerEl.parentNode) devTpPickerEl.parentNode.removeChild(devTpPickerEl);
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:1250;background:#141a22;border:2px solid #39d98a;border-radius:8px;padding:12px 16px;font-family:"Microsoft YaHei",monospace;color:#dce6e2;box-shadow:0 0 30px rgba(57,217,138,0.25);';
+    const rows = slots.map((g, i) => {
+        const dist = Math.round(Math.hypot((g.tx || 0) - sv.px, (g.ty || 0) - sv.py) / TS);
+        return `<button data-tpi="${i}" style="display:block;width:100%;margin:4px 0;background:#123d2c;border:1px solid #39d98a;color:#39d98a;border-radius:6px;padding:7px 14px;cursor:pointer;font-size:13px;text-align:left;">→ ${g.name || '队友'}（约 ${dist} 格）</button>`;
+    }).join('');
+    el.innerHTML = `<div style="font-size:13px;color:#e8c46a;margin-bottom:6px;text-align:center;">[DEV] 传送到哪个玩家？</div>${rows}
+        <button data-tpi="cancel" style="display:block;width:100%;margin-top:6px;background:#241c1c;border:1px solid #8a5a5a;color:#e0a0a0;border-radius:6px;padding:5px;cursor:pointer;font-size:12px;">取消</button>`;
+    document.body.appendChild(el);
+    devTpPickerEl = el;
+    const close = () => { if (el.parentNode) el.parentNode.removeChild(el); if (devTpPickerEl === el) devTpPickerEl = null; };
+    el.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest('[data-tpi]') : null;
+        if (!btn) return;
+        const v = btn.getAttribute('data-tpi');
+        if (v !== 'cancel') devTpTo(sv, slots[+v]);
+        close();
+    });
+    setTimeout(close, 6000);
 }

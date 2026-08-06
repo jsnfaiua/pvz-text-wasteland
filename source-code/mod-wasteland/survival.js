@@ -3780,6 +3780,14 @@ export function setRemotePlayerState(data, guestId) {
 export function clearRemotePlayer() {
     if (sv) sv.p2 = null;
 }
+// 3+ 人：按 guestId 移除指定队友槽（队友退出/超时清理；联机层 leave 事件调用）
+export function clearRemotePlayerById(pid) {
+    if (!sv || !pid || !sv.p2s) return;
+    const slot = sv.p2s[pid];
+    if (!slot) return;
+    delete sv.p2s[pid];
+    if (sv.p2 === slot) sv.p2 = null;   // 单队友别名若指向该槽一并清掉
+}
 export function getRemotePlayerState() {
     if (!sv || !sv.p2) return null;
     const p = sv.p2;
@@ -3884,26 +3892,9 @@ export function getMpSnapshot(withNpcs) {
             hurtT: n.hurtT || 0, state: n.state || 'wander', act: n.act || null,
         }));
     }
-    // 3+ 人：全队友位置随快照广播（guest 端据此渲染其他 guest；自己的槽由 guestId 跳过）
-    snap.teammates = [];
-    if (sv.p2s) {
-        for (const pid in sv.p2s) {
-            const g = sv.p2s[pid];
-            if (!g || typeof g.tx !== 'number') continue;
-            snap.teammates.push({
-                guestId: pid,
-                x: g.x != null ? g.x : g.tx, y: g.y != null ? g.y : g.ty, tx: g.tx, ty: g.ty,
-                name: g.name || '队友', hp: g.hp, maxHp: g.maxHp,
-                faceX: g.faceX || 0, faceY: g.faceY || 0, moving: !!g.moving, run: !!g.run,
-                character: g.character || null, inInterior: !!g.inInterior,
-                hurtT: g.hurtT || 0, swingT: g.swingT || 0, swingDir: g.swingDir || 0, swingWeapon: g.swingWeapon || null,
-                jump: !!g.jump, jumpOffset: g.jumpOffset || 0, dash: !!g.dash, driving: g.driving || null,
-                guarding: !!g.guarding, guardTimer: g.guardTimer || 0, guardFacing: g.guardFacing || 0,
-                perfectFlash: g.perfectFlash || 0, infection: g.infection || 0,
-                food: g.food, water: g.water,
-            });
-        }
-    }
+    // 3+ 人互见位置已改由 wpos 经 host 转发（200ms 二进制压缩包）：
+    // 旧版随 wsync 全量广播 teammates（每人 ~30 字段 × 每 100ms）冗余且包体大，不再下发。
+    // guest 端 applyMpSnapshot 对 snap.teammates 缺失已容错（Array.isArray 守卫）。
     return snap;
 }
 

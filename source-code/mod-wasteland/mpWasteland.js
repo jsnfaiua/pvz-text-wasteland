@@ -17,7 +17,7 @@
 //   wrejoin guest→host ×1  {}                                        客人断线重连后请求状态重同步
 // ============================================================
 
-import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName } from './survival.js';
+import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName } from './survival.js';
 import AudioSystem from '../systems/audio.js';
 import * as WDEV from './wdev.js';
 import { newSeed } from './world.js';
@@ -180,6 +180,7 @@ export function cleanupWastelandMP() {
         net.off('wevt', onWevt);
         net.off('winit', onWinit);
         net.off('wrejoin', onWrejoin);
+        net.off('peer-left', onPeerLeft);
         net.close(true);            // 静默关闭：主动退出不广播
     }
     closeUI();
@@ -188,6 +189,7 @@ export function cleanupWastelandMP() {
     role = null; hostSeed = null; hostLook = null; guestLook = null; wstartData = null;
     hostName = null; guestName = null;
     readyCount = 0;   // 3+ 人就绪计数重置
+    resetWposCache();   // 稀字段缓存复位（下次会话强制重发外观/名字）
     setMpCleanupHook(null);
     destroying = false;
 }
@@ -206,7 +208,114 @@ function beginGame(opts) {
     }
 }
 
-// ---------- 位置同步（wpos 双向 200ms 一拍） ----------
+// ---------- wpos 二进制压缩协议（定点紧凑编码，降包体防掉帧） ----------
+// 旧版 JSON 每拍约 600-800 字节（含 character 外观/字段名/引号）；新版定点二进制约 35-50 字节：
+//   位置/朝向/血量/动画状态全数值定点压进 34 字节定长头；
+//   稀字段（guestId/外观/名字/武器）仅在变化时随包附带（UTF-8 变长段）。
+// 帧格式（小端 DataView）：
+//   [0]=0xA1 版本标记  [1]=稀字段存在位(bit0 guestId/bit1 character/bit2 name/bit3 weapon)
+//   [2..9]=x*4,y*4(i32)  [10..11]=faceX*100,faceY*100(i8)  [12..15]=hp,maxHp(u16)
+//   [16]=frame  [17]=stateA(moving/run/jump/dash/driving/guarding/charging/reloading)
+//   [18]=stateB(bit0 inInterior)  [19]=swingT*20  [20]=swingDir*40(i8)  [21]=hurtT*20
+//   [22]=jumpOffset+128  [23]=guardTimer*2  [24..25]=guardFacing*100(i16)
+//   [26]=perfectFlash*200  [27]=infection*250  [28..29]=chargeT*20  [30..31]=reloading*20
+//   [32]=food  [33]=water  → 变长字符串段 → driving 段（如有，15 字节）
+const _wposEnc = new TextEncoder(), _wposDec = new TextDecoder();
+let _lpChar = null, _lpName = null, _lpWpn = null;   // 上次发送的稀字段（变化检测）
+function resetWposCache() { _lpChar = _lpName = _lpWpn = null; }
+function packWpos(st) {
+    if (!st || typeof st.x !== 'number') return null;
+    const charJson = st.character ? JSON.stringify(st.character) : null;
+    let present = 0;
+    const strs = [];
+    if (st.guestId) { present |= 1; strs.push(String(st.guestId)); }   // guestId 每包必带（host 零开销转发时其他客人靠它路由）
+    if (charJson && charJson !== _lpChar) { present |= 2; strs.push(charJson); }
+    if (st.name && st.name !== _lpName) { present |= 4; strs.push(String(st.name)); }
+    const wpn = st.swingWeapon ? String(st.swingWeapon) : '';
+    if (wpn !== _lpWpn && (wpn || _lpWpn)) { present |= 8; strs.push(wpn); }
+    const encStrs = strs.map(s => _wposEnc.encode(s));
+    const drv = st.driving || null;
+    const len = 34 + encStrs.reduce((a, b) => a + 2 + b.length, 0) + (drv ? 13 : 0);
+    const bytes = new Uint8Array(len);
+    const dv = new DataView(bytes.buffer);
+    bytes[0] = 0xA1; bytes[1] = present;
+    dv.setInt32(2, Math.round(st.x * 4), true);
+    dv.setInt32(6, Math.round(st.y * 4), true);
+    dv.setInt8(10, Math.max(-100, Math.min(100, Math.round((st.faceX || 0) * 100))));
+    dv.setInt8(11, Math.max(-100, Math.min(100, Math.round((st.faceY || 0) * 100))));
+    dv.setUint16(12, Math.max(0, Math.min(65535, Math.round(st.hp || 0))), true);
+    dv.setUint16(14, Math.max(0, Math.min(65535, Math.round(st.maxHp || 100))), true);
+    bytes[16] = Math.max(0, Math.min(255, st.frame | 0));
+    let sa = 0;
+    if (st.moving) sa |= 1; if (st.run) sa |= 2; if (st.jump) sa |= 4; if (st.dash) sa |= 8;
+    if (drv) sa |= 16; if (st.guarding) sa |= 32; if (st.charging) sa |= 64; if (st.reloading > 0) sa |= 128;
+    bytes[17] = sa;
+    bytes[18] = st.inInterior ? 1 : 0;
+    bytes[19] = Math.max(0, Math.min(255, Math.round((st.swingT || 0) * 20)));
+    dv.setInt8(20, Math.max(-127, Math.min(127, Math.round((st.swingDir || 0) * 40))));
+    bytes[21] = Math.max(0, Math.min(255, Math.round((st.hurtT || 0) * 20)));
+    bytes[22] = Math.max(0, Math.min(255, Math.round(st.jumpOffset || 0) + 128));
+    bytes[23] = Math.max(0, Math.min(255, Math.round((st.guardTimer || 0) * 2)));
+    dv.setInt16(24, Math.max(-32000, Math.min(32000, Math.round((st.guardFacing || 0) * 100))), true);
+    bytes[26] = Math.max(0, Math.min(255, Math.round((st.perfectFlash || 0) * 200)));
+    bytes[27] = Math.max(0, Math.min(255, Math.round((st.infection || 0) * 250)));
+    dv.setUint16(28, Math.max(0, Math.min(65535, Math.round((st.chargeT || 0) * 20))), true);
+    dv.setUint16(30, Math.max(0, Math.min(65535, Math.round((st.reloading || 0) * 20))), true);
+    bytes[32] = Math.max(0, Math.min(255, Math.round(st.food || 0)));
+    bytes[33] = Math.max(0, Math.min(255, Math.round(st.water || 0)));
+    let o = 34;
+    for (const b of encStrs) { dv.setUint16(o, b.length, true); o += 2; bytes.set(b, o); o += b.length; }
+    if (drv) {
+        dv.setInt32(o, Math.round((drv.x || 0) * 4), true);
+        dv.setInt32(o + 4, Math.round((drv.y || 0) * 4), true);
+        dv.setInt8(o + 8, Math.max(-127, Math.min(127, Math.round((drv.dir || 0) * 100))));
+        dv.setUint16(o + 9, Math.max(0, Math.min(65535, Math.round(drv.hp || 0))), true);
+        dv.setUint16(o + 11, Math.max(0, Math.min(65535, Math.round(drv.maxHp || 100))), true);
+    }
+    // 发送成功才更新稀字段缓存（下一拍不重发）
+    if (present & 2) _lpChar = charJson;
+    if (present & 4) _lpName = String(st.name);
+    if (present & 8) _lpWpn = wpn;
+    return bytes;
+}
+function unpackWpos(bytes) {
+    try {
+        if (!bytes || bytes.byteLength < 34 || bytes[0] !== 0xA1) return null;
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const present = bytes[1];
+        const d = {
+            x: dv.getInt32(2, true) / 4, y: dv.getInt32(6, true) / 4,
+            faceX: dv.getInt8(10) / 100, faceY: dv.getInt8(11) / 100,
+            hp: dv.getUint16(12, true), maxHp: dv.getUint16(14, true),
+            frame: bytes[16],
+            swingT: bytes[19] / 20, swingDir: dv.getInt8(20) / 40,
+            hurtT: bytes[21] / 20, jumpOffset: bytes[22] - 128,
+            guardTimer: bytes[23] / 2, guardFacing: dv.getInt16(24, true) / 100,
+            perfectFlash: bytes[26] / 200, infection: bytes[27] / 250,
+            chargeT: dv.getUint16(28, true) / 20, reloading: dv.getUint16(30, true) / 20,
+            food: bytes[32], water: bytes[33],
+        };
+        const sa = bytes[17];
+        d.moving = !!(sa & 1); d.run = !!(sa & 2); d.jump = !!(sa & 4); d.dash = !!(sa & 8);
+        d.guarding = !!(sa & 32); d.charging = !!(sa & 64);
+        d.inInterior = !!(bytes[18] & 1);
+        let o = 34;
+        const readStr = () => { const l = dv.getUint16(o, true); o += 2; const s = _wposDec.decode(bytes.subarray(o, o + l)); o += l; return s; };
+        if (present & 1) d.guestId = readStr();
+        if (present & 2) { try { d.character = JSON.parse(readStr()); } catch { /* 保持上次外观 */ } }
+        if (present & 4) d.name = readStr();
+        if (present & 8) d.swingWeapon = readStr() || null;
+        if (sa & 16) {
+            d.driving = {
+                x: dv.getInt32(o, true) / 4, y: dv.getInt32(o + 4, true) / 4,
+                dir: dv.getInt8(o + 8) / 100, hp: dv.getUint16(o + 9, true), maxHp: dv.getUint16(o + 11, true),
+            };
+        }
+        return d;
+    } catch { return null; }
+}
+
+// ---------- 位置同步（wpos 双向 200ms 一拍；二进制压缩包） ----------
 function startPosSync() {
     stopPosSync();
     posTimer = setInterval(() => {
@@ -215,7 +324,8 @@ function startPosSync() {
         const st = getLocalPlayerState();
         if (net && st) {
             if (myGuestId) st.guestId = myGuestId;   // 3+ 人：host 按此写独立队友槽
-            net.send('wpos', st);
+            const packed = packWpos(st);             // 定点二进制压缩（~40B vs 旧 JSON ~700B）
+            net.send('wpos', packed || st);
             // guest 正操控 NPC（切换视角）：同步上报位置，host 让渡该 NPC 的 AI
             if (role === 'guest') {
                 const ctl = getMpControlledNpc();
@@ -227,11 +337,32 @@ function startPosSync() {
 function stopPosSync() {
     if (posTimer) { clearInterval(posTimer); posTimer = null; }
 }
-function onWpos(data) {
-    if (!started || !data || typeof data.x !== 'number') return;
+function onWpos(data, meta) {
+    if (!started || !data) return;
+    let raw = null;
+    // 二进制帧（新版）→ 解码；对象帧（兼容旧版/未压缩回退）直接用
+    // 注意：PeerJS binarypack 会把 Uint8Array 解包成 ArrayBuffer（接收端非 typed array），需统一转视图
+    if (data instanceof ArrayBuffer) {
+        raw = new Uint8Array(data);
+    } else if (typeof data.byteLength === 'number' && data.buffer) {
+        raw = new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength);
+    }
+    if (raw) {
+        data = unpackWpos(raw);
+        if (!data || typeof data.x !== 'number') return;
+    } else if (typeof data.x !== 'number') return;
+    // host 侧路由兜底：包内无 guestId（旧版客户端）→ 按连接映射补
+    if (role === 'host' && !data.guestId && meta && meta.conn) data.guestId = guestPeers[meta.conn.peer] || null;
     // 3+ 人：按 guestId 写入独立队友槽（无 guestId 回退单队友，1v1 兼容）
     setRemotePlayerState(data, data.guestId);
-    if (role === 'host') guestPos = { x: data.x, y: data.y, guestId: data.guestId };   // host 记住 guest 位置（咬伤/攻击判定用）
+    if (role === 'host') {
+        guestPos = { x: data.x, y: data.y, guestId: data.guestId };   // host 记住 guest 位置（咬伤/攻击判定用）
+        // 3+ 人同步缺口修复：把该 guest 的位置转发给其他客人（原始二进制零开销转发，排除发送者）
+        if (raw && meta && meta.conn) {
+            const net = mp();
+            if (net) net.send('wpos', raw, { exclude: meta.conn.peer });
+        }
+    }
 }
 let guestPos = null;   // host 侧记住 guest 最近位置（wpos 更新）
 
@@ -289,10 +420,26 @@ function onWevt(evt, meta) {
         console.warn('[wasteland-mp] wevt 处理失败（已跳过单条）:', (e && e.message) || e, '| type=', evt && evt.type);
     }
 }
+// host 转发事件给其他客人（3+ 人：排除发送者；from 改 host 防旁听端再转发回环）
+function forwardToOtherGuests(evt, meta) {
+    if (role !== 'host') return;
+    const net = mp();
+    if (net) net.send('wevt', { ...evt, from: 'host' }, meta && meta.conn ? { exclude: meta.conn.peer } : null);
+}
 function dispatchWevt(evt, meta) {
-    // 双方都需处理的全局事件（camp 营地 / pause 暂停 / plant 植物变更——直接本地应用，不广播防回环）
+    // 双方都需处理的全局事件（camp 营地——直接本地应用，不广播防回环）
     // 注：interior 室内进出已改为各自独立（不再广播），故此处不处理 interior 事件
-    if (evt.type === 'camp' || evt.type === 'pause') { playMpEvent(evt); return; }
+    if (evt.type === 'camp') { playMpEvent(evt); return; }
+    if (evt.type === 'pause') {
+        playMpEvent(evt);   // 本端应用暂停/恢复
+        // 4 人暂停只两端显示修复：guest 的暂停事件 → host 转发给其他客人（此前只本地应用）
+        if (role === 'host' && evt.from === 'guest') forwardToOtherGuests(evt, meta);
+        return;
+    }
+    if (evt.type === 'leave') {   // 队友离开（host 权威广播）→ 清掉对应队友槽
+        if (evt.guestId) clearRemotePlayerById(evt.guestId);
+        return;
+    }
     if (evt.type === 'plant') { applyPlantSync(evt.key, evt.p); return; }
     if (evt.type === 'sfx') {
         playRemoteSfx(evt);   // 动作音效：双端互听
@@ -336,11 +483,13 @@ function dispatchWevt(evt, meta) {
             // guest 丢出的掉落：host 权威入库（wsync 下发双端一致）
             addDrop(evt.x, evt.y, evt.id, evt.n);
         } else if (evt.type === 'chest') {
-            // guest 箱子内容变更 → host 应用
+            // guest 箱子内容变更 → host 应用 + 转发其他客人（3+ 人同步缺口修复）
             applyChestSync(evt.key, evt.items);
+            forwardToOtherGuests(evt, meta);
         } else if (evt.type === 'boxloot') {
-            // guest 搜索容器内容变更 → host 应用
+            // guest 搜索容器内容变更 → host 应用 + 转发其他客人（3+ 人同步缺口修复）
             applyBoxLootSync(evt.key, evt.items, evt.searched);
+            forwardToOtherGuests(evt, meta);
         } else if (evt.type === 'fx') {
             // guest 弹幕特效上报（muzzle 枪口火光等）→ host 应用（wsync 回传双端可见）
             applyFxEvent(evt);
@@ -379,12 +528,20 @@ function onWinit(data) {
 }
 
 // ---------- wrejoin 断线重连重同步（guest 重连成功 → host 重发世界基线 + 立即补快照） ----------
-function onWrejoin() {
+function onWrejoin(data, meta) {
     if (role !== 'host' || !started) return;
-    sendWorldInit();
     const net = mp();
-    const snap = getMpSnapshot();
-    if (net && snap) net.send('wsync', snap);
+    if (!net) return;
+    // 只单发给请求重连的客人（全量广播会干扰其他正常游玩的客人）
+    if (meta && meta.conn) {
+        net.send('winit', { mods: getWorldMods() }, { to: meta.conn.peer });
+        const snap = getMpSnapshot(true);
+        if (snap) net.send('wsync', snap, { to: meta.conn.peer });
+    } else {
+        sendWorldInit();
+        const snap = getMpSnapshot();
+        if (snap) net.send('wsync', snap);
+    }
 }
 
 // ---------- 事件出站中继（双方 50ms 取 outbox 发送；atk 节流防刷屏） ----------
@@ -426,8 +583,20 @@ function onStatus(data) {
         setStatus('已连接！', '#39d98a');
         updateOnline();   // guest 加入成功：在线人数更新
         if (role === 'host') {
-            const btn = document.getElementById('wmp-action');
-            if (btn) { btn.textContent = '开始荒原联机 ▶'; btn.disabled = false; }
+            // 中途退出后重新进来修复：游戏已开局且来者是陌生 peer（新客人/换了 peer 节点的重连者）
+            // → 只单发给它发 wstart（不影响其他客人）；已登记的 peer（断线重连）走 wrejoin 流程不重发
+            if (started && data.conn && !guestPeers[data.conn.peer]) {
+                mp().send('wstart', {
+                    seed: hostSeed,
+                    difficulty: sessionOpts.difficulty || 'normal',
+                    character: hostLook,
+                    hostName,
+                }, { to: data.conn.peer });
+                setStatus('有新好友中途加入，正在同步...', '#e8c46a');
+            } else if (!started) {
+                const btn = document.getElementById('wmp-action');
+                if (btn) { btn.textContent = '开始荒原联机 ▶'; btn.disabled = false; }
+            }
         }
     } else if (data.status === 'reconnecting') {
         // 重连中：游戏保持运行（本地世界继续），不退出；超过重试上限才散场
@@ -450,6 +619,23 @@ function onStatus(data) {
     } else if (data.status === 'error') {
         setStatus('连接错误: ' + (data.error || '未知') + connErrHint(), '#e0a0a0');
     }
+}
+
+// 客人连接关闭（host 侧，net 层 peer-left）：给足重连窗口（45s），超时未回来才清队友槽并广播 leave
+function onPeerLeft(data) {
+    if (role !== 'host' || !data || !data.peer) return;
+    const pid = data.peer;
+    setTimeout(() => {
+        if (!started || role !== 'host') return;
+        const net = mp();
+        if (net && net.conns && net.conns.has(pid)) return;   // 已重连回来，不清理
+        const gid = guestPeers[pid];
+        delete guestPeers[pid];
+        if (gid) {
+            clearRemotePlayerById(gid);   // host 本地移除该队友槽
+            if (net) net.send('wevt', { type: 'leave', guestId: gid, from: 'host' });   // 其他客人同步移除
+        }
+    }, 45000);
 }
 
 // 确保角色就绪：有角色档（sessionOpts.characterName / profile）直接用；无则创建（命名+捏脸）
@@ -496,6 +682,14 @@ function hostStart() {
 // guest 收到 wstart：确保自己的角色（有档直接用/无档创建）→ 发 wready
 function onWstart(data) {
     if (role !== 'guest' || !data || typeof data.seed !== 'number') return;
+    if (started) {
+        // 已在局内（断线重连时 peer 节点重建换了 peerId，host 当新客发了 wstart）：
+        // 不重进游戏，重新登记身份 + 请求状态重同步
+        const net = mp();
+        if (net && myGuestId && guestLook) net.send('wready', { character: guestLook, guestName, guestId: myGuestId, rejoin: true });
+        if (net) net.send('wrejoin', {});
+        return;
+    }
     wstartData = { seed: data.seed, difficulty: data.difficulty || 'normal', hostName: data.hostName };
     setStatus(`房主（${data.hostName || '房主'}）已就绪，准备你的角色...`, '#e8c46a');
     // 3+ 人：guest 生成唯一身份（host 端按此写入独立队友槽 p2s[guestId]）
@@ -516,8 +710,20 @@ function onWready(data, meta) {
     // 3+ 人：登记 connPeer → guestId（wpos/wevt 按 meta.conn 定位队友槽）
     if (meta && meta.conn && data && data.guestId) guestPeers[meta.conn.peer] = data.guestId;
     updateOnline();   // 在线人数 +1
-    readyCount++;
     const net = mp();
+    // 中途加入/断线重连修复：游戏已开局 → 不再重复 beginGame（旧逻辑会二次开局重置世界），
+    // 只单发给该客人：wgo（进入）+ winit（世界基线）+ wsync（当前快照）
+    if (started) {
+        const to = meta && meta.conn ? meta.conn.peer : null;
+        if (!to || !net) return;
+        net.send('wgo', {}, { to });
+        net.send('winit', { mods: getWorldMods() }, { to });
+        const snap = getMpSnapshot(true);
+        if (snap) net.send('wsync', snap, { to });
+        setStatus(`${(data && data.guestName) || '好友'}已加入！`, '#39d98a');
+        return;
+    }
+    readyCount++;
     const total = net && net.conns ? net.conns.size : 1;
     if (readyCount < total) {
         setStatus(`好友已就绪（${readyCount}/${total}），等待其他好友准备角色...`, '#39d98a');
@@ -537,6 +743,7 @@ function onWready(data, meta) {
 // guest 收到 wgo：host 确认 → 进入（加载自己角色档；世界状态由 wsync 覆写，不落本地世界档）
 function onWgo() {
     if (role !== 'guest' || !wstartData || !guestLook) return;
+    if (started) return;   // 重连/中途重新握手：已在局内，忽略防二次进入（状态由 wrejoin/wsync 重同步）
     beginGame({
         seed: wstartData.seed,
         difficulty: wstartData.difficulty,
@@ -571,6 +778,7 @@ export async function startWastelandMP(roleArg, opts, autoCode) {
     net.on('wevt', onWevt);
     net.on('winit', onWinit);
     net.on('wrejoin', onWrejoin);
+    net.on('peer-left', onPeerLeft);
     setMpCleanupHook(cleanupWastelandMP);
 
     root.querySelector('#wmp-cancel').addEventListener('click', () => {

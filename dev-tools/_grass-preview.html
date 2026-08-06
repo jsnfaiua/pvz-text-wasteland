@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>草地像素级重设计 · 视觉预览</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0b0f0d; color:#d8e2da; font:14px/1.6 'Microsoft YaHei',system-ui,sans-serif; margin:0; padding:24px 20px 60px; }
+  h1 { font-size:20px; margin:0 0 4px; color:#7ee08a; }
+  .sub { color:#7a8a92; font-size:12px; margin-bottom:16px; }
+  .controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
+  .controls label { font-size:13px; color:#9fb3ab; }
+  select, button, input {
+    background:#14201a; color:#dce6e2; border:1px solid #2a3a33; border-radius:6px;
+    padding:6px 12px; font-size:13px; cursor:pointer;
+  }
+  button:hover { border-color:#39d98a; }
+  .panel { display:flex; gap:24px; flex-wrap:wrap; }
+  .col { flex:1; min-width:340px; }
+  .col h2 { font-size:15px; color:#9fb3ab; margin:0 0 8px; font-weight:normal; }
+  .col h2 b { color:#7ee08a; }
+  canvas { display:block; background:#000; border:1px solid #2a3a33; border-radius:8px; image-rendering:pixelated; }
+  .legend { display:flex; gap:16px; font-size:12px; color:#7a8a92; margin-top:8px; flex-wrap:wrap; }
+  .legend span b { color:#b8c8be; }
+  .spec { margin-top:22px; background:#101612; border:1px solid #22302a; border-radius:8px; padding:16px 18px; }
+  .spec h3 { margin:0 0 8px; font-size:14px; color:#7ee08a; }
+  .spec table { border-collapse:collapse; width:100%; font-size:12.5px; }
+  .spec td, .spec th { border:1px solid #22302a; padding:6px 10px; text-align:left; vertical-align:top; }
+  .spec th { color:#9fb3ab; background:#141c18; white-space:nowrap; }
+  .tag { display:inline-block; background:#123d2c; color:#7ee08a; border:1px solid #2a5a3a; border-radius:4px; padding:0 8px; font-size:11px; margin-right:6px; }
+</style>
+</head>
+<body>
+<h1>◈ 草地像素级重设计 — 视觉预览</h1>
+<div class="sub">左侧 = 当前实现（纯色 + 2 散点） · 右侧 = 新方案（三层像素合成：基底 + 颗粒肌理 + 草叶簇）。同一种子、同一 biome、并排逐格对比。点随机种子可换草地样式。</div>
+
+<div class="controls">
+  <label>缩放 <select id="zoom">
+    <option value="1" selected>1×（游戏真实）</option><option value="2">2×</option>
+    <option value="3">3×</option><option value="4">4×</option>
+  </select></label>
+  <label>种子 <input id="seed" value="20260802" style="width:110px"></label>
+  <button id="rand">🎲 随机</button>
+  <button id="refresh">刷新</button>
+  <label>动画 <button id="animToggle" style="border-color:#39d98a;">🌬 动态（风吹+踩动）</button></label>
+  <span id="fps" style="font-size:12px;color:#39d98a;"></span>
+  <label style="font-size:12px;color:#7a8a92;">鼠标在右侧新方案上移动 = 走过草地，草会被踩动</label>
+</div>
+
+<div class="panel" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;min-width:920px;">
+  <div class="col">
+    <h2><span style="color:#39d98a;">①</span> 🌸 <b>春</b></h2>
+    <div style="font-size:11px;color:#7a8a92;margin-bottom:6px;">背景：嫩绿偏亮 · 草：嫩绿+亮黄绿 · 花最多<br>新芽光感</div>
+    <canvas id="gspring" width="216" height="144"></canvas>
+  </div>
+  <div class="col">
+    <h2><span style="color:#39d98a;">②</span> ☀️ <b>夏</b></h2>
+    <div style="font-size:11px;color:#7a8a92;margin-bottom:6px;">背景：定稿原样 · 草：深绿+亮黄绿<br>茂盛基准</div>
+    <canvas id="gsummer" width="216" height="144"></canvas>
+  </div>
+  <div class="col">
+    <h2><span style="color:#39d98a;">③</span> 🍂 <b>秋</b></h2>
+    <div style="font-size:11px;color:#7a8a92;margin-bottom:6px;">背景：暖棕落叶色 · 草：棕绿+金黄<br>秋日暖阳</div>
+    <canvas id="gautumn" width="216" height="144"></canvas>
+  </div>
+  <div class="col">
+    <h2><span style="color:#39d98a;">④</span> ❄️ <b>冬</b></h2>
+    <div style="font-size:11px;color:#7a8a92;margin-bottom:6px;">背景：提亮灰白（霜感） · 草：枯灰+灰白<br>稀疏散草</div>
+    <canvas id="gwinter" width="216" height="144"></canvas>
+  </div>
+</div>
+<div class="legend">
+  <span>四季完整草地 = <b style="color:#39d98a;">季节背景（地面色调偏移） + 混合草（A1 主体 + A3 点缀）</b></span>
+  <span>四列共用同一地面（已定稿不动）· 只有草层不同</span>
+  <span>点 <b>🌬 动态</b> 看风吹摆动；鼠标移到某列画布上 = 走过该样式草地</span>
+  <span>每列 6×4 格 · 1× 游戏真实</span>
+</div>
+
+
+
+<div class="spec">
+<h3>🌿 草束形态图鉴（8 种束形态，所有季节共用 —— 哪个不好看告诉我编号，我重做它的草叶形状）</h3>
+<div style="display:flex;gap:18px;align-items:flex-end;margin-top:6px;flex-wrap:wrap;"><div style="text-align:center;"><canvas id="shape0" width="72" height="48" style="image-rendering:pixelated;"></canvas><div style="font-size:13px;color:#39d98a;margin-top:4px;">① 稀疏错落</div></div><div style="text-align:center;"><canvas id="shape1" width="72" height="48" style="image-rendering:pixelated;"></canvas><div style="font-size:13px;color:#39d98a;margin-top:4px;">② 紧凑一束</div></div><div style="text-align:center;"><canvas id="shape2" width="72" height="48" style="image-rendering:pixelated;"></canvas><div style="font-size:13px;color:#39d98a;margin-top:4px;">③ 三两错落</div></div><div style="text-align:center;"><canvas id="shape3" width="72" height="48" style="image-rendering:pixelated;"></canvas><div style="font-size:13px;color:#39d98a;margin-top:4px;">④ 散开长草</div></div><div style="text-align:center;"><canvas id="shape4" width="72" height="48" style="image-rendering:pixelated;"></canvas><div style="font-size:13px;color:#39d98a;margin-top:4px;">⑤ 双簇</div></div><div style="text-align:center;"><canvas id="shape5" width="72" height="48" style="image-rendering:pixelated;"></canvas><div style="font-size:13px;color:#39d98a;margin-top:4px;">⑥ 高矮参差</div></div><div style="text-align:center;"><canvas id="shape6" width="72" height="48" style="image-rendering:pixelated;"></canvas><div style="font-size:13px;color:#39d98a;margin-top:4px;">⑦ 扇面展开</div></div><div style="text-align:center;"><canvas id="shape7" width="72" height="48" style="image-rendering:pixelated;"></canvas><div style="font-size:13px;color:#39d98a;margin-top:4px;">⑧ 偏风草</div></div><div style="font-size:12px;color:#7a8a92;max-width:220px;">8 种草束形态（放大 3×，夏季混合色）。草地由 8 种束混合分布——哪个形态不好看报编号即可。</div></div>
+</div>
+
+<div class="spec">
+<h3>📐 三层像素合成设计</h3>
+<table>
+  <tr><th>层</th><th>实现</th><th>解决</th><th>成本</th></tr>
+  <tr><td><span class="tag">L0</span>基底</td><td>biome 平滑色（双线性插值，保留）+ 双层值噪声 vary ±7</td><td>格间连续过渡、不跳色</td><td>1× fillRect</td></tr>
+  <tr><td><span class="tag">L1</span>像素肌理</td><td>3px 块颗粒噪点（±5 亮度），预渲染 36×36 遮罩瓦片 ×6 变体，按格 hash 选变体 drawImage 叠加</td><td>消除"油漆绿板"平板感，获得像素材质颗粒</td><td>1× drawImage</td></tr>
+  <tr><td><span class="tag">L2</span>草叶簇</td><td>预渲染 3 种草叶图案瓦片（簇状短草 / 散草 / 带花点）：50% 格 1 簇、20% 2 簇、30% 空；草叶深/亮 12% 交替形成光影；花点 &lt;10% 低频低饱和</td><td>从"随机噪点"变"有图案的草"，立体感</td><td>0~2× drawImage（按概率）</td></tr>
+  <tr><td><span class="tag">±</span>光斑</td><td>每格 1-2 个 2×2 暖色亮点（低 alpha），hash 低频出现</td><td>阳光透射感，打破死板</td><td>并入 L1 瓦片</td></tr>
+  <tr><td><span class="tag">🎨</span>色板</td><td>每 biome 3 档色（深/中/浅），肌理与草叶在三档间采样</td><td>色彩层次从 1 级 → 多级</td><td>—</td></tr>
+</table>
+<div style="font-size:12.5px;color:#7a8a92;margin-top:10px">
+性能：瓦片启动时一次性预渲染（9 个 36×36 离屏 canvas），每格每帧 = 1 fillRect + 1~2 drawImage，与现状（fillRect + 2 像素点）几乎等价 → 零帧率风险。纯渲染改动：联机 / 存档 / 碰撞 零影响。
+</div>
+</div>
+
+<script>
+const TS = 36;
+// —— 与游戏一致的 hash2（world.js）——
+function hash2(seed, x, y) {
+  let h = (seed | 0) ^ Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+// 草地 biome 色（新方案色板：深/中/浅 3 档）
+const BIOME_OLD = [[42,56,42],[46,62,42],[38,64,40],[50,54,40]];
+const BIOME_NEW = [
+  // [深, 中, 浅] —— Stardew 式暖调：偏金色阳光绿（R/G 都暖），避免冷绿
+  [[40,52,38],[50,64,46],[62,78,56]],
+  [[44,56,40],[54,70,46],[68,84,58]],
+  [[36,58,36],[46,72,44],[60,88,56]],
+  [[50,52,40],[58,60,44],[70,70,50]],
+];
+const BIOME_NAMES = ['城区','郊区','荒野','废墟'];
+
+// grassNoise（值噪声，双线性 + smoothstep）
+function grassNoise(seed, tx, ty, cell) {
+  const cx = Math.floor(tx / cell), cy = Math.floor(ty / cell);
+  const fx = tx / cell - cx, fy = ty / cell - cy;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const v00 = hash2(seed, cx, cy), v10 = hash2(seed, cx + 1, cy);
+  const v01 = hash2(seed, cx, cy + 1), v11 = hash2(seed, cx + 1, cy + 1);
+  return (v00 * (1 - sx) + v10 * sx) * (1 - sy) + (v01 * (1 - sx) + v11 * sx) * sy;
+}
+// biome 色平滑（复刻 grassBiomeColor 双线性插值；fixedBiome 用于预览行对齐）
+function biomeColor(seed, tx, ty, fixedBiome) {
+  const CH = 16;
+  const cx = Math.floor(tx / CH), cy = Math.floor(ty / CH);
+  const fx = (tx - cx * CH) / CH, fy = (ty - cy * CH) / CH;
+  const s = x => x * x * (3 - 2 * x);
+  const sx = s(fx), sy = s(fy);
+  const g = BIOME_NEW;
+  const pick = (cx2, cy2) => fixedBiome != null ? fixedBiome : hash2(seed, cx2, cy2) * 4 | 0;
+  const a = g[pick(cx, cy)], b = g[pick(cx + 1, cy)];
+  const c = g[pick(cx, cy + 1)], d = g[pick(cx + 1, cy + 1)];
+  const m = (p, q, t) => p + (q - p) * t;
+  return [
+    m(m(a[1][0], b[1][0], sx), m(c[1][0], d[1][0], sx), sy),
+    m(m(a[1][1], b[1][1], sx), m(c[1][1], d[1][1], sx), sy),
+    m(m(a[1][2], b[1][2], sx), m(c[1][2], d[1][2], sx), sy),
+  ];
+}
+
+// ===== v3：无缝值噪声瓦片 + 跨格滚动采样（消除格间线条） =====
+// 无缝关键：值噪声角点用 模运算（cx % gx）→ 瓦片左右/上下边缘连续；
+// 渲染时按全局坐标滚动取子区域（drawWrap 处理跨边），相邻格纹理自然接上 → 无格缝。
+function makeNoiseTile(size, cell, salt, amp) {
+  const gx = size / cell, gy = size / cell;
+  // 角点值（wrap：cx%gx 使 cx=gx 与 cx=0 同值 → 边缘连续）
+  const grid = [];
+  for (let cy = 0; cy <= gy; cy++) for (let cx = 0; cx <= gx; cx++) {
+    grid[cy * (gx + 1) + cx] = hash2(salt, cx % gx, cy % gy);
+  }
+  const cv = document.createElement('canvas'); cv.width = cv.height = size;
+  const c = cv.getContext('2d');
+  const img = c.createImageData(size, size);
+  for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+    const fxc = px / cell, fyc = py / cell;
+    const cx = Math.floor(fxc), cy = Math.floor(fyc);
+    const fx = fxc - cx, fy = fyc - cy;
+    const s = x => x * x * (3 - 2 * x);
+    const sx = s(fx), sy = s(fy);
+    const v00 = grid[cy * (gx + 1) + cx], v10 = grid[cy * (gx + 1) + cx + 1];
+    const v01 = grid[(cy + 1) * (gx + 1) + cx], v11 = grid[(cy + 1) * (gx + 1) + cx + 1];
+    const v = (v00 * (1 - sx) + v10 * sx) * (1 - sy) + (v01 * (1 - sx) + v11 * sx) * sy;
+    const d = Math.round((v - 0.5) * amp);
+    const i = (py * size + px) * 4;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = 128 + d;
+    img.data[i + 3] = 255;
+  }
+  c.putImageData(img, 0, 0);
+  return cv;
+}
+// 肌理（细颗粒，cell=2，±10）+ 色斑（草丛团块，cell=10，±12）+ 大尺度明暗（cell=32，±16）
+// 三张无缝值噪声瓦片（drawWrap 滚动采样）
+const texTile = makeNoiseTile(256, 2, 0x1A5C, 20);
+const patchTile = makeNoiseTile(256, 10, 0x77E1, 32);   // 色斑加强 → 基底明暗团块感（星露谷 patch）
+const toneTile = makeNoiseTile(256, 32, 0x3F7A, 32);
+
+// ===== 四季草样式（以 A1 基础草甸为底，为季节系统铺路；地面共用不动） =====
+const SEASONS = {
+  spring: { name: '春', w: 24, h: 16, blades: [6, 8], len: [7, 10],  swing: 3, dry: 0.2, flower: 0.30, dens: 0.30, tint: 1.02, out: '#2a6a2a', core: '#a8d878', dry: '#8aa84a' },
+  summer: { name: '夏', w: 24, h: 16, blades: [5, 7], len: [8, 12],  swing: 3, dry: 0.4, flower: 0.15, dens: 0.30, tint: 1, out: '#2c5428', core: '#cfdf8e', dry: '#b8a84a' },
+  autumn: { name: '秋', w: 24, h: 16, blades: [5, 7], len: [7, 11],  swing: 3, dry: 0.7, flower: 0.08, dens: 0.30, tint: 1, out: '#5a5230', core: '#c8b45a', dry: '#d8a848' },
+  winter: { name: '冬', w: 24, h: 16, blades: [3, 5], len: [6, 9],   swing: 2, dry: 0.9, flower: 0.04, dens: 0.24, tint: 0.95, out: '#5a5a52', core: '#b8b8a8', dry: '#c8c8b8' },
+};
+// 草叶颜色（按季节）
+function bladeColors(s) {
+  return { out: s.out, core: s.core, dry: s.dry };
+}
+// A1+A3 混合四季（主选）：束级混合——65% A1 原味束 + 35% A3 双色束（A1 主体不改，A3 点缀层次）
+const SEASONS2 = {
+  spring: { ...SEASONS.spring, name: '春·混合', twin: true, flower: 0.20, twinCols: { deep: ['#2a6a2a', '#a8d878'], bright: ['#3a7a2a', '#c0e090'] } },
+  summer: { ...SEASONS.summer, name: '夏·混合', twin: true, flower: 0.18, twinCols: { deep: ['#2c5428', '#cfdf8e'], bright: ['#3a6a30', '#e0f0a8'] } },
+  autumn: { ...SEASONS.autumn, name: '秋·混合', twin: true, flower: 0.10, twinCols: { deep: ['#5a5230', '#c8b45a'], bright: ['#6a6a38', '#e0c868'] } },
+  winter: { ...SEASONS.winter, name: '冬·混合', twin: true, flower: 0.04, twinCols: { deep: ['#5a5a52', '#b8b8a8'], bright: ['#6a6a60', '#d0d0c0'] } },
+};
+function mkStyleCluster(style, seed, frame, shape) {
+  shape = shape || 0;
+  const SWING = [-3, -1.5, 0, 1.5, 3][frame] || 0;
+  const w = style.w, h = style.h;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const c = cv.getContext('2d');
+  const n = style.blades[0] + (hash2(seed, 1, 1) * (style.blades[1] - style.blades[0] + 1) | 0);
+  const bunchTint = (0.85 + hash2(seed, 9, 9) * 0.3) * (style.tint || 1);
+  const cols = bladeColors(style);
+  const shade = v => Math.max(0, Math.min(255, Math.round(v * bunchTint)));
+  const hex = hx => [parseInt(hx.slice(1, 3), 16), parseInt(hx.slice(3, 5), 16), parseInt(hx.slice(5, 7), 16)];
+  const dc = hex(cols.dry);
+  // 束级双色（A1+A3 混合）：整束 65% 用 A1 原色 / 35% 用 A3 亮色（A1 主体不改）
+  let outHex = cols.out, coreHex = cols.core;
+  if (style.twin && style.twinCols && hash2(seed, 11, 99) > 0.35) {
+    const t = style.twinCols.bright;
+    outHex = t[0]; coreHex = t[1];
+  }
+  const oc = hex(outHex), cc = hex(coreHex);
+  const rnd = (i) => style.len[0] + (hash2(seed, i, 3) * (style.len[1] - style.len[0] + 1) | 0);
+  for (let i = 0; i < n; i++) {
+    // —— 8 种束形态：bx/bh/bend 按 shape 差异化 ——
+    let bx, bh, bend;
+    if (shape === 4) {        // ⑤ 双簇：左右两组草叶
+      const left = i % 2 === 0;
+      bx = 1 + (left ? hash2(seed, i, 20) * 7 : 14 + hash2(seed, i, 21) * 7);
+      bh = rnd(i);
+      bend = (hash2(seed, i, 4) - 0.5) * 4;
+    } else if (shape === 5) { // ⑥ 高矮参差：第 1 根高草 + 其余矮草
+      bx = 1 + (hash2(seed, i, 2) * (w - 5) | 0);
+      bh = Math.round((i === 0 ? 1.4 : 0.72) * rnd(i));
+      bend = (hash2(seed, i, 4) - 0.5) * 4;
+    } else if (shape === 6) { // ⑦ 扇面展开：根部集中、尖部均匀散开
+      bx = 2 + (hash2(seed, i, 2) * 5 | 0);
+      bh = rnd(i);
+      bend = (i - (n - 1) / 2) * 2.4;
+    } else if (shape === 7) { // ⑧ 偏风草：全部同向倾斜（风吹偏）
+      bx = 1 + (hash2(seed, i, 2) * (w - 5) | 0);
+      bh = rnd(i);
+      bend = 1.5 + hash2(seed, i, 4) * 3;
+    } else {                  // ①-④ 随机错落/紧凑/散开（靠 seed 区分）
+      bx = 1 + (hash2(seed, i, 2) * (w - 5) | 0);
+      bh = rnd(i);
+      bend = (hash2(seed, i, 4) - 0.5) * 5;
+    }
+    const phase = hash2(seed, i, 5) * Math.PI * 2;
+    const dryTip = hash2(seed, i, 6) > (1 - style.dry);
+    c.fillStyle = `rgb(${shade(oc[0])},${shade(oc[1])},${shade(oc[2])})`;
+    for (let hh = 0; hh < bh; hh++) {
+      const t = hh / bh;
+      const y = h - 1 - hh;
+      const wave = Math.sin(t * Math.PI * 0.5) * SWING * (style.swing / 3);
+      const xoff = Math.round(bend * t + wave + Math.sin(phase + t * 2) * 0.6);
+      c.fillRect(bx + xoff, y, 2, 1);
+      if (hh === 0) c.fillRect(bx + xoff - 1, y + 1, 4, 1);
+      if (dryTip && hh >= bh - 2) {
+        c.fillStyle = `rgb(${shade(dc[0])},${shade(dc[1])},${shade(dc[2])})`;
+        c.fillRect(bx + xoff, y, 2, 1);
+        c.fillStyle = `rgb(${shade(oc[0])},${shade(oc[1])},${shade(oc[2])})`;
+      }
+    }
+    c.fillStyle = `rgb(${shade(cc[0])},${shade(cc[1])},${shade(cc[2])})`;
+    for (let hh = 1; hh < bh - 1; hh++) {
+      const t = hh / bh;
+      const y = h - 1 - hh;
+      const wave = Math.sin(t * Math.PI * 0.5) * SWING * (style.swing / 3);
+      const xoff = Math.round(bend * t + wave + Math.sin(phase + t * 2) * 0.6);
+      c.fillRect(bx + xoff + 1, y, 1, 1);
+    }
+  }
+  // 冬雪：草叶间白色积雪点（分散在草叶中上部，不贴底成团）
+  if (style.snow) {
+    for (let f = 0; f < 2 + (hash2(seed, 6, 6) * 2 | 0); f++) {
+      const fx = 2 + (hash2(seed, f, 31) * 20 | 0), fy = 1 + (hash2(seed, f, 32) * 9 | 0);
+      c.fillStyle = 'rgba(235,240,250,0.9)';
+      c.fillRect(fx, fy, 2, 1);
+    }
+  }
+  // 花点（星星点点：低饱和白/淡黄/淡粉，少而精）
+  if (hash2(seed, 3, 3) > (1 - style.flower)) {
+    const petals = ['rgba(245,245,235,0.9)', 'rgba(235,228,205,0.9)', 'rgba(236,228,222,0.9)'];   // 白 / 淡黄 / 淡粉
+    for (let f = 0; f < (hash2(seed, 4, 4) > 0.6 ? 2 : 1); f++) {
+      const fx = 4 + (hash2(seed, f, 7) * (w - 8) | 0), fy = (h * 0.55) + (hash2(seed, f, 8) * 5 | 0);
+      c.fillStyle = petals[(hash2(seed, f, 9) * 3) | 0];
+      c.fillRect(fx, fy, 2, 2);
+      c.fillStyle = 'rgba(230,220,180,0.9)';   // 淡黄花心
+      c.fillRect(fx + 1, fy + 1, 1, 1);
+    }
+  }
+  return cv;
+}
+// 每风格 4 束种 × 5 帧
+const seasonClusters = {};
+for (const k of Object.keys(SEASONS)) {
+  seasonClusters[k] = [];
+  for (let f = 0; f < 5; f++) seasonClusters[k].push([
+    mkStyleCluster(SEASONS[k], 11 + k.charCodeAt(0), f),
+    mkStyleCluster(SEASONS[k], 23 + k.charCodeAt(0), f),
+    mkStyleCluster(SEASONS[k], 37 + k.charCodeAt(0), f),
+    mkStyleCluster(SEASONS[k], 59 + k.charCodeAt(0), f),
+  ]);
+}
+// A3 双色四季（备用）瓦片组
+const seasonClusters2 = {};
+for (const k of Object.keys(SEASONS2)) {
+  seasonClusters2[k] = [];
+  for (let f = 0; f < 5; f++) {
+    const frames = [];
+    for (let sh = 0; sh < 8; sh++) {
+      frames.push(mkStyleCluster(SEASONS2[k], 91 + k.charCodeAt(0) + sh * 7, f, sh));
+    }
+    seasonClusters2[k].push(frames);
+  }
+}
+
+// 束分布（按风格密度，跨格连续）
+function styleClusterList(seed, style, tx, ty) {
+  const W = 1, SZ = style.w, SY = style.h;
+  const out = [];
+  for (let cy = Math.floor(ty / W) - 1; cy <= Math.floor(ty / W) + 1; cy++) {
+    for (let cx = Math.floor(tx / W) - 1; cx <= Math.floor(tx / W) + 1; cx++) {
+      const v = grassNoise(seed ^ 0xDD, cx, cy, 1);
+      if (v <= style.dens) continue;
+      const cx2 = cx * W * TS + hash2(seed, cx, cy) * (W * TS - SZ);
+      const cy2 = cy * W * TS + hash2(seed, cx + 7, cy + 11) * (W * TS - SY);
+      if (cx2 + SZ > tx * TS && cx2 < tx * TS + TS && cy2 + SY > ty * TS && cy2 < ty * TS + TS) {
+        out.push({ cx2, cy2, kind: (hash2(seed, cx, cy) * 8) | 0 });
+      }
+    }
+  }
+  return out;
+}
+
+// drawImage 跨边 wrap（源矩形超出瓦片边缘 → 拆 2×2 补全对侧，保持连续）
+function drawWrap(c, tile, ox, oy, gx, gy) {
+  const size = tile.width;
+  const x1 = ((gx * TS) % size + size) % size, y1 = ((gy * TS) % size + size) % size;
+  const w1 = Math.min(TS, size - x1), h1 = Math.min(TS, size - y1);
+  c.drawImage(tile, x1, y1, w1, h1, ox, oy, w1, h1);
+  if (w1 < TS) c.drawImage(tile, 0, y1, TS - w1, h1, ox + w1, oy, TS - w1, h1);
+  if (h1 < TS) {
+    c.drawImage(tile, x1, 0, w1, TS - h1, ox, oy + h1, w1, TS - h1);
+    if (w1 < TS) c.drawImage(tile, 0, 0, TS - w1, TS - h1, ox + w1, oy + h1, TS - w1, TS - h1);
+  }
+}
+// L2 草叶束瓦片（3 种，小图案边缘截断几乎无感，保持格内）
+function mkGrassTile(kind, seed) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = TS;
+  const c = cv.getContext('2d');
+  const beam = (bx, by, tall) => {
+    const roots = 3 + (hash2(seed, bx, by) * 2 | 0);
+    for (let i = 0; i < roots; i++) {
+      const x = bx + i * 3, h = (tall ? 6 : 4) + (hash2(seed, bx + i, by) * 3 | 0);
+      const light = hash2(seed, bx + i, by + 7) > 0.5;
+      c.fillStyle = light ? 'rgba(210,235,160,0.5)' : 'rgba(20,60,30,0.45)';
+      c.fillRect(x, by - h, 2, h);
+    }
+  };
+  if (kind === 0) beam(6 + (hash2(seed, 1, 2) * 14 | 0), 20 + (hash2(seed, 2, 1) * 10 | 0), true);
+  else if (kind === 1) {
+    beam(4 + (hash2(seed, 3, 3) * 12 | 0), 16 + (hash2(seed, 4, 4) * 12 | 0), false);
+    beam(18 + (hash2(seed, 5, 5) * 12 | 0), 22 + (hash2(seed, 6, 6) * 8 | 0), true);
+  } else {
+    beam(8 + (hash2(seed, 7, 7) * 16 | 0), 18 + (hash2(seed, 8, 8) * 10 | 0), false);
+    for (let i = 0; i < 2; i++) {
+      const dx = 5 + (hash2(seed, i, 4) * 24 | 0), dy = 5 + (hash2(seed, i, 6) * 24 | 0);
+      c.fillStyle = hash2(seed, i, 8) > 0.5 ? 'rgba(210,180,100,0.65)' : 'rgba(140,200,130,0.55)';
+      c.fillRect(dx, dy, 2, 2);
+    }
+  }
+  return cv;
+}
+const grassTiles = [mkGrassTile(0, 31), mkGrassTile(1, 47), mkGrassTile(2, 83)];
+
+// ===== 当前版渲染（复刻游戏现有逻辑） =====
+function renderOld(ctx, seed, biome, tx, ty) {
+  const bc = BIOME_OLD[biome];
+  const lo = grassNoise(seed ^ 0x1A5C, tx, ty, 8);
+  const hi = grassNoise(seed ^ 0x77E1, tx, ty, 3);
+  const n = hash2(seed ^ 0x6B2D, tx, ty);
+  const vary = Math.round((lo - 0.5) * 8 + (hi - 0.5) * 4 + (n - 0.5) * 2);
+  const r = bc[0] + vary, g = bc[1] + vary, b = bc[2] + vary;
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+  ctx.fillRect(tx * TS, ty * TS, TS + 1, TS + 1);
+  const s = (n * 4294967296) | 0;
+  for (let i = 0; i < 2; i++) {
+    const v = ((s >> (i * 9)) & 0xFF);
+    const dx = (v % (TS - 4)) + 2, dy = ((v >> 4) % (TS - 4)) + 2;
+    const pv = (v & 0x0F) - 8;
+    ctx.fillStyle = `rgb(${r + pv + 5},${g + pv + 3},${b + pv + 1})`;
+    ctx.fillRect(tx * TS + dx, ty * TS + dy, 1, 1);
+  }
+}
+
+// ===== 新方案渲染（v8 动态草：基底静态 + 草叶随风吹摆/踩动） =====
+// renderBase：基底 + 纹理（静态，一次性）
+// ===== 四季草地背景（地面在定稿基底上按季节色调偏移，与草叶呼应） =====
+const SEASON_BG = {
+  spring: { off: [8, 12, 5],   name: '春' },   // 提亮偏嫩绿（新芽光感）
+  summer: { off: [0, 0, 0],    name: '夏' },   // 定稿原样
+  autumn: { off: [9, -1, -12], name: '秋' },   // 偏暖棕（落叶色）
+  winter: { off: [11, 9, 12],  name: '冬' },   // 提亮偏灰白（霜感）
+};
+// biome 颗粒幅度（城区平整 / 郊区适中 / 荒野斑驳 / 废墟最碎）——基底纹理按地形差异化
+const BIOME_GRIT = [3, 5, 7, 8];
+function renderBaseSeason(ctx, seed, biome, tx, ty, seasonKey, density) {
+  // biome 参数仅供 BIOME_GRIT；基底色用 biomeColor 平滑（hash 选 biome + 双线性插值 → 无硬切色带）
+  const bc = biomeColor(seed, tx, ty);
+  const off = (SEASON_BG[seasonKey] || SEASON_BG.summer).off;
+  const dens = density || 0;   // 草密度关联明暗：正=亮（草疏）、负=暗（草密），±5 柔和
+  const ox = tx * TS, oy = ty * TS;
+  const grit = BIOME_GRIT[biome] || 5;
+  // 6px 细腻颗粒（幅度收紧避免条纹感）
+  for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 6; sx++) {
+    const vx = tx * 6 + sx, vy = ty * 6 + sy;
+    const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
+    const hi = hash2(seed ^ 0x77E1, vx, vy);
+    const vary = Math.round((lo - 0.5) * grit * 1.1 + (hi - 0.5) * 2);
+    const r = Math.max(0, Math.min(255, bc[0] + off[0] + vary + dens));
+    const g = Math.max(0, Math.min(255, bc[1] + off[1] + vary + dens));
+    const b = Math.max(0, Math.min(255, bc[2] + off[2] + vary + dens));
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(ox + sx * 6, oy + sy * 6, 6, 6);
+  }
+  // 3 层无缝噪声 overlay（降条纹：patch 0.5→0.28 / tone 0.28→0.16——条带感主源）
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.globalAlpha = 0.4;
+  drawWrap(ctx, texTile, ox, oy, tx, ty);
+  ctx.globalAlpha = 0.2;
+  drawWrap(ctx, patchTile, ox, oy, tx, ty);
+  ctx.globalAlpha = 0.12;
+  drawWrap(ctx, toneTile, ox, oy, tx, ty);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+}
+function renderBase(ctx, seed, biome, tx, ty) {
+  renderBaseSeason(ctx, seed, biome, tx, ty, 'summer');
+}
+// renderGrass：动态草（风摆 + 鼠标扰动）
+function renderGrass(ctx, seed, biome, tx, ty, time, mx, my) {
+  const ox = tx * TS, oy = ty * TS;
+  const list = clusterList(seed, tx, ty);
+  for (const c of list) {
+    // 风：全局慢速波 + 每束相位差；相位按全局坐标
+    const wind = Math.sin(time * 1.2 + (c.cx2 + c.cy2) * 0.02) * 2;
+    // 鼠标扰动：离指针近 → 额外摆动（走过草被踩动）
+    let perturb = 0;
+    if (mx != null) {
+      const dist = Math.hypot(mx - c.cx2, my - c.cy2);
+      if (dist < 90) perturb = (1 - dist / 90) * 5;
+    }
+    const sway = wind + perturb;
+    const frame = Math.max(0, Math.min(4, Math.round((sway / 6) * 2 + 2)));
+    ctx.drawImage(clusters[frame][c.kind], c.cx2 - ox - 12, c.cy2 - oy - 8);
+  }
+}
+
+let animOn = false, rafId = null;
+const fpsStat = { n: 0, t0: 0, fps: 0 };
+const mouse = {};   // {A:{x,y},B:{...},...}
+// 4 列画布 + 每列离屏基底缓存 + 束缓存
+const cols = ['spring', 'summer', 'autumn', 'winter'].map(k => {
+  const cv = document.getElementById('g' + k);
+  cv.addEventListener('pointermove', e => {
+    const r = cv.getBoundingClientRect();
+    mouse[k] = { x: (e.clientX - r.left) / (r.width / cv.width), y: (e.clientY - r.top) / (r.height / cv.height) };
+  });
+  cv.addEventListener('pointerleave', () => { mouse[k] = null; });
+  return { k, season: k, cv, ctx: cv.getContext('2d'), base: null, list: new Map() };
+});
+
+function buildCol(c, seed, zoom) {
+  c.base = document.createElement('canvas');
+  c.base.width = 36 * 6 * zoom; c.base.height = 36 * 4 * zoom;
+  const bc = c.base.getContext('2d');
+  for (let tx = 0; tx < 6; tx++) for (let ty = 0; ty < 4; ty++) {
+    bc.save(); bc.scale(zoom, zoom);
+    renderBaseSeason(bc, seed, 0, tx, ty, c.season);   // 季节地面背景（biome 色内部平滑）
+    bc.restore();
+  }
+  c.list = new Map();
+  for (let tx = 0; tx < 6; tx++) for (let ty = 0; ty < 4; ty++) {
+    c.list.set(tx + ',' + ty, styleClusterList(seed, SEASONS2[c.season], tx, ty));
+  }
+  // 基底明暗：草密处暗/草疏处亮——用连续值噪声场（cell=1 相邻格差 ≤1 级），避免整格跳变的线条
+  for (let tx = 0; tx < 6; tx++) for (let ty = 0; ty < 4; ty++) {
+    // 密度场 cell=4：大块平滑明暗（4 格一周期），避免 cell=1 的'一格亮一格暗'格纹条纹
+    const densField = grassNoise(seed ^ 0xABCD, tx, ty, 4);
+    const density = Math.round((0.5 - densField) * 8);   // ±4 大块柔和
+    bc.save(); bc.scale(zoom, zoom);
+    renderBaseSeason(bc, seed, 0, tx, ty, c.season, density);
+    bc.restore();
+  }
+}
+
+function draw() {
+  const seed = parseInt(document.getElementById('seed').value || '20260802', 10) | 0;
+  const zoom = parseInt(document.getElementById('zoom').value, 10);
+  for (const c of cols) buildCol(c, seed, zoom);
+  drawFrame(performance.now() / 1000);
+  // 草束形态图鉴（夏季 A1 中帧，3× 放大）
+  const sum = seasonClusters2['summer'][2];
+  for (let k = 0; k < 8; k++) {
+    const cv = document.getElementById('shape' + k);
+    if (!cv) continue;
+    const c = cv.getContext('2d');
+    c.imageSmoothingEnabled = false;
+    c.clearRect(0, 0, 72, 48);
+    c.drawImage(sum[k], 0, 0, 72, 48);
+  }
+}
+
+// 画一行草（style 表 + 瓦片组 + 列数组）
+function drawGrassRow(time, seed, zoom, rowCols, styleTable, clusterSet, rowKey) {
+  for (const c of rowCols) {
+    const { ctx } = c;
+    ctx.clearRect(0, 0, c.cv.width, c.cv.height);
+    ctx.drawImage(c.base, 0, 0);
+    const m = mouse[rowKey + c.k] || null;
+    const sc = clusterSet[c.k];
+    const st = styleTable[c.k];
+    for (let tx = 0; tx < 6; tx++) for (let ty = 0; ty < 4; ty++) {
+      const list = c.list.get(tx + ',' + ty) || [];
+      for (const b of list) {
+        const wind = Math.sin(time * 1.2 + (b.cx2 + b.cy2) * 0.02) * 2;
+        let perturb = 0;
+        if (m) {
+          const dist = Math.hypot(m.x / zoom - b.cx2, m.y / zoom - b.cy2);
+          if (dist < 90) perturb = (1 - dist / 90) * 5;
+        }
+        const sway = wind + perturb;
+        const frame = Math.max(0, Math.min(4, Math.round((sway / 6) * 2 + 2)));
+        ctx.drawImage(sc[frame][b.kind], b.cx2 * zoom - (st.w / 2) * zoom, b.cy2 * zoom - (st.h / 2) * zoom);
+      }
+    }
+  }
+}
+
+function drawFrame(time) {
+  const seed = parseInt(document.getElementById('seed').value || '20260802', 10) | 0;
+  const zoom = parseInt(document.getElementById('zoom').value, 10);
+  drawGrassRow(time, seed, zoom, cols, SEASONS2, seasonClusters2, '');
+  fpsStat.n++;
+  if (fpsStat.t0 === 0) fpsStat.t0 = time;
+  else if (time - fpsStat.t0 > 1) {
+    fpsStat.fps = Math.round(fpsStat.n / (time - fpsStat.t0));
+    fpsStat.t0 = time; fpsStat.n = 0;
+    const el = document.getElementById('fps');
+    if (el) el.textContent = '草层 ' + fpsStat.fps + ' fps';
+  }
+}
+document.getElementById('refresh').onclick = () => { draw(); if (animOn) startAnim(); };
+document.getElementById('rand').onclick = () => {
+  document.getElementById('seed').value = (Math.random() * 0x7fffffff) | 0;
+  draw(); if (animOn) startAnim();
+};
+document.getElementById('zoom').onchange = () => { draw(); if (animOn) startAnim(); };
+function startAnim() {
+  if (rafId) cancelAnimationFrame(rafId);
+  const loop = (t) => { drawFrame(t / 1000); rafId = requestAnimationFrame(loop); };
+  rafId = requestAnimationFrame(loop);
+}
+document.getElementById('animToggle').onclick = function () {
+  animOn = !animOn;
+  this.textContent = animOn ? '⏸ 静态' : '🌬 动态（风吹+踩动）';
+  if (animOn) startAnim(); else { if (rafId) cancelAnimationFrame(rafId); draw(); }
+};
+draw();
+</script>
+</body>
+</html>

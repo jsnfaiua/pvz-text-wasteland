@@ -459,8 +459,9 @@
         _bindConn(conn) {
             conn.on('open', () => {
                 // 房主侧：客人连入（含重连）→ 房间就绪；客人侧：自己的连接打开
+                // meta.conn：房主据此定位新连入的客人（中途加入单发握手用）
                 this.status = 'connected';
-                this._emit('status', { status: 'connected' });
+                this._emit('status', { status: 'connected', conn });
             });
             conn.on('data', (msg) => {
                 if (msg && typeof msg === 'object' && msg.t) {
@@ -478,12 +479,19 @@
                     // meta.conn：房主端据此区分消息来自哪个客人（3+ 人协议层用）
                     this._emit(msg.t, msg.d, { conn });
                     this._emit('*', msg, { conn });
+                } else if (msg instanceof ArrayBuffer || (msg && typeof msg.byteLength === 'number' && !msg.t)) {
+                    // 裸二进制帧兜底：协议中仅 wpos 为二进制话题（旧客户端/直发二进制不丢失）
+                    this._emit('wpos', msg, { conn });
                 }
             });
             conn.on('close', () => {
                 // 房主多连接：按 conn 从 conns 移除（只删自己，防重连替换后旧 close 误删新连接）
                 if (this.role === 'host') {
-                    if (this.conns && this.conns.get(conn.peer) === conn) this.conns.delete(conn.peer);
+                    // 只删自己，防重连替换后旧 close 误删新连接；被替换的旧连接不报 peer-left
+                    if (this.conns && this.conns.get(conn.peer) === conn) {
+                        this.conns.delete(conn.peer);
+                        this._emit('peer-left', { peer: conn.peer });   // 客人离开（协议层延迟清理队友槽，给重连窗口）
+                    }
                     let anyOpen = false;
                     if (this.conns) for (const c of this.conns.values()) if (c.open) { anyOpen = true; break; }
                     // 还有其他客人在：静默；全部掉线：回 waiting 等重连（已在等待则不重复播报）
