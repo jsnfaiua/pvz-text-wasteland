@@ -264,10 +264,10 @@ export function updateNpcs(sv, dt, canStand) {
         for (const n of sv.npcs) {
             if (!n.alive || n.state !== 'camp') continue;
             const seen = n._logSeen || 0;
-            if (seen < n.workLog.length) {
-                for (let i = n.workLog.length - 1; i >= seen; i--) log(sv, `营地工作日志：${n.workLog[i].text}`, '#FFD700');
-                n._logSeen = n.workLog.length;
-            }
+            // 防御：异常 NPC 数据缺 workLog（合成/旧档/联机快照字段缺失）时跳过，防主循环崩溃冻结
+            if (!Array.isArray(n.workLog) || seen >= n.workLog.length) continue;
+            for (let i = n.workLog.length - 1; i >= seen; i--) log(sv, `营地工作日志：${n.workLog[i].text}`, '#FFD700');
+            n._logSeen = n.workLog.length;
         }
     }
 }
@@ -388,10 +388,13 @@ function updateNeeds(sv, n, dt, canStand) {
 }
 
 function eatFromInv(n) {
+    // 防御：NPC 数据缺 inv（旧档/联机快照/开发者召唤等畸形数据）时跳过，防主循环崩溃冻结
+    if (!Array.isArray(n.inv)) return;
     const i = n.inv.findIndex(s => s && (s.id === 'food' || s.id === 'herb' || s.id === 'carrot' || s.id === 'corn' || s.id === 'potato'));
     if (i >= 0) { n.food = Math.min(100, n.food + 30); n.inv[i].n--; if (n.inv[i].n <= 0) n.inv.splice(i, 1); }
 }
 function drinkFromInv(n) {
+    if (!Array.isArray(n.inv)) return;
     const i = n.inv.findIndex(s => s && s.id === 'water');
     if (i >= 0) { n.water = Math.min(100, n.water + 35); n.inv[i].n--; if (n.inv[i].n <= 0) n.inv.splice(i, 1); }
 }

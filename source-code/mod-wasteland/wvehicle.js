@@ -273,6 +273,12 @@ export function stopDrive(sv, canStand) {
     // 环上全部不可站（水/墙/建筑）时退回车门格（已验可站）——绝不落到未验证格卡死
     if (sv.npcs) {
         let k = 0;
+        // 乘客落点可站验证：canStand 为 null（finishDriveOrder 调 stopDrive(sv, null)）时
+        // 退化为逐格 isWalk 判定——修复：NPC 驾驶订单到达时乘客下车环会调用空 canStand →
+        // TypeError → RAF 主循环死亡 → 游戏冻结（"坐车卡顿"直接元凶之一）
+        const standOk = (x, y) => canStand
+            ? canStand(x, y)
+            : isWalk(getTile(sv, Math.floor(x / TS), Math.floor(y / TS)));
         for (const n of sv.npcs) {
             if (!n.alive || !n.riding) continue;
             n.riding = false;
@@ -282,7 +288,7 @@ export function stopDrive(sv, canStand) {
                     const ang = (k * 0.9 + s * 1.05) + ring * 0.5;
                     const cx = door.x + Math.cos(ang) * ring * TS * 0.8;
                     const cy = door.y + Math.sin(ang) * ring * TS * 0.8;
-                    if (canStand(cx, cy)) { px = cx; py = cy; break; }
+                    if (standOk(cx, cy)) { px = cx; py = cy; break; }
                 }
             }
             n.x = px; n.y = py;
@@ -681,6 +687,23 @@ export function updateChauffeurDrive(sv, dt, canStandCar) {
                 return;
             }
         }
+        // 蠕动式卡死保护（P0-2）：废墟窄道等场景，车每轮"倒车→前进"都能逼近目标
+        // ≥1.5 格，导致 _revN 归零 / _gstall 被改善重置 / _noWpT 被路点消耗绕过，
+        // 三种保护全部失效 → 无限蠕动到油尽（实测 900s 不停）。
+        // 维护"历史最低距离"：30s 内到目标距离无 ≥2 格实质改善即判定已到最接近处，
+        // 优雅停车（正常长途行驶 minDist 持续改善，绝不误伤）。
+        if (d._absMin == null || dNow < d._absMin - TS * 2) {
+            d._absMin = dNow;
+            d._absMinT = sv.now;
+        } else if (sv.now - (d._absMinT || 0) > 30) {
+            d._absMin = null;
+            d._absMinT = null;
+            d._gmin = null;
+            d._gstall = 0;
+            log(sv, '前方障碍无法继续靠近，车队停在最近可停处', '#FFB347');
+            finishDriveOrder(sv, false);
+            return;
+        }
     }
     // 没油抛锚：油尽立即结束订单（车自然滑行停稳，原地停车；搜刮汽油后回来加油；
     // 不会油尽还龟速爬向目的地，也不会被"绕不过去"保险抢先报错）
@@ -971,11 +994,82 @@ export function updateChauffeurDrive(sv, dt, canStandCar) {
     if (!sv.driving) { sv.driveOrder = null; sv._chauffeured = false; }   // 途中报废 → 订单作废
 }
 
+// 就近重停兜底（P0-2）：stopDrive 因 4 个车门方向全被障碍挡住而失败时，以车锚点格
+// 为中心螺旋搜索 1..8 格内「车体格可放（carCellOk，2×2 不穿墙/不压障碍）且至少一个
+// 车门可开」的格，自动移车过去停车放人——消除"NPC 代驾送到却下不了车、只能 WASD
+// 手动挪"的体验断层。候选格经 carCellOk 验证，瞬移仅 1~8 格且无副作用（stopDrive
+// 失败路径不改状态，位置还原后继续搜）；正常驾驶/停车逻辑零改动。
+function autoRepark(sv) {
+    const d = sv.driving;
+    if (!d) return false;
+    const ax = Math.floor((d.x - TS) / TS), ay = Math.floor(d.y / TS);
+    const dirIdx = carDirIdx(Math.round(Math.cos(d.dir)), Math.round(Math.sin(d.dir)));
+    const tileAt = (x, y) => getTile(sv, x, y);
+    const ox = d.x, oy = d.y;
+    for (let r = 1; r <= 8; r++) {
+        for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const gx = ax + dx, gy = ay + dy;
+            if (!carCellOk(sv, gx, gy, dirIdx, tileAt, null, null, null)) continue;
+            d.x = (gx + 1) * TS; d.y = (gy + 0.5) * TS;
+            if (stopDrive(sv, null)) {
+                log(sv, '车门被障碍挡住，已自动就近停靠', '#FFD700');
+                return true;
+            }
+            d.x = ox; d.y = oy;   // 该格停不了：还原位置继续搜
+        }
+    }
+    d.x = ox; d.y = oy;
+    return false;
+}
+
+// 最终兜底（P0-2）：autoRepark 8 格内仍无可停处（废墟死角"进得去出不来"）时，
+// 原地放回车、玩家/乘客弹出到 8 格内最近可走格——绝不把玩家永久卡死在驾驶态
+// （原行为：停车失败 → 车留驾驶态 → 玩家按 F 永远下不了车）。仅 NPC 代驾订单
+// 结束路径触发；玩家手动 F 停车失败保持原样（玩家自己 WASD 挪车，语义不变）。
+function forceEject(sv) {
+    const d = sv.driving;
+    if (!d) return false;
+    const gx = Math.floor((d.x - TS) / TS), gy = Math.floor(d.y / TS);
+    setTile(sv, gx, gy, T.CAR);
+    const m = sv.mods.tiles[gx + ',' + gy] = sv.mods.tiles[gx + ',' + gy] || { t: T.CAR };
+    m.t = T.CAR; m.repaired = true; m.hp = d.hp;
+    m.dir = d.dir; m.fuel = d.fuel; m.owner = d.owner || m.owner;
+    // 后备箱键迁移（与 stopDrive 一致）
+    if (d.key !== gx + ',' + gy && sv.mods.chests && sv.mods.chests['car:' + d.key]) {
+        sv.mods.chests['car:' + gx + ',' + gy] = sv.mods.chests['car:' + d.key];
+        delete sv.mods.chests['car:' + d.key];
+    }
+    // 玩家/乘客弹出到 8 格内最近可走格
+    let outX = null, outY = null;
+    for (let r = 1; r <= 8 && outX == null; r++) {
+        for (let dy = -r; dy <= r && outX == null; dy++) for (let dx = -r; dx <= r && outX == null; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            if (isWalk(getTile(sv, gx + dx, gy + dy))) { outX = (gx + dx + 0.5) * TS; outY = (gy + dy + 0.5) * TS; }
+        }
+    }
+    sv.px = outX != null ? outX : d.x;
+    sv.py = outY != null ? outY : d.y;
+    if (sv.npcs) for (const n of sv.npcs) {
+        if (!n.alive || !n.riding) continue;
+        n.riding = false;
+        n.x = sv.px; n.y = sv.py;
+    }
+    sv._chauffeured = false;
+    sv.driving = null;
+    log(sv, '车门被完全堵死，已紧急停车下车', '#FFB347');
+    return true;
+}
+
 // 完成驾驶订单：停车放人；到达 → 有营地则回营地待命，否则恢复跟随；取消 → 恢复跟随
 export function finishDriveOrder(sv, reached) {
     sv.driveOrder = null;
     if (sv.driving && !stopDrive(sv, null)) {
-        // 车门被障碍挡住下不了车：车留在原地，订单作废；玩家可 WASD 接管挪车后再 F 下车
+        // 车门全被挡住：先尝试就近自动重停（P0-2 兜底）——找到可停可开门格则正常下车
+        if (autoRepark(sv)) return;
+        // 8 格内仍无可停处：紧急停车 + 弹出人员（代驾兜底，绝不留玩家卡死车内）
+        if (forceEject(sv)) return;
+        // 极端兜底失败（理论上不可达）：车留在原地，订单作废；玩家可 WASD 接管挪车
         sv._chauffeured = false;
         log(sv, '到达位置车门打不开：车辆停在原地，按 WASD 挪动车辆后再按 F 下车', '#FFB347');
         return;

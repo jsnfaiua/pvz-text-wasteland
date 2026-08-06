@@ -48,9 +48,19 @@ function syncNightStrength(z, night) {
 // 以玩家为起点反向展开 A*（octile 启发式：一致且可采纳 → 路径与 Dijkstra 相同，但扩展节点更少、更快）。
 // 搜索只进行一次，得到的 parent 表可供所有僵尸反查下一格，避免每只僵尸单独寻路。
 // 硬约束与旧实现一致：8 方向、斜穿禁过两障碍角、PATH_MAX_NODES 上限（也是不可达的隐性边界）。
+// 性能（host 端周期性卡顿主因）：targets 只取「玩家警戒范围内 或 尸潮」的僵尸——
+// 远处野生僵尸走直线/游荡追击（原 fallback，line 474-488），不进流场。否则远处僵尸
+// 持续落在流场外 → 每 0.5s 标记 _zombiePathNeedsRebuild → 全量 A*（1.2 万节点）周期重建
+// → host 端每 ~0.5s 一次 30ms+ 帧尖峰（联机时 host 卡 → guest 体感跟着卡）。
 function buildPlayerPathField(sv, zCanStand) {
     const startX = Math.floor(sv.px / TS), startY = Math.floor(sv.py / TS);
-    const targets = new Set(sv.zombies.filter(z => z.hp > 0).map(z => gridKey(Math.floor(z.x / TS), Math.floor(z.y / TS))));
+    const targets = new Set();
+    for (const z of sv.zombies) {
+        if (z.hp <= 0) continue;
+        // 尸潮僵尸（战斗核心）与警戒范围内僵尸进流场；其余直线追击
+        if (!z.horde && !isInPlayerAlertRange(sv, z)) continue;
+        targets.add(gridKey(Math.floor(z.x / TS), Math.floor(z.y / TS)));
+    }
     // reachable 始终初始化（含全灭场景），避免 updateZombies 在 targets 为空时读到 undefined 崩溃
     const field = astarField(startX, startY, targets, {
         canStand: (x, y) => zCanStand(x, y),
@@ -503,12 +513,14 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         if (okX || okY) z.faceDir = Math.atan2(mvy, mvx);   // 持盾/朝向跟随移动方向
         if (okX) z.x = nx;
         if (okY) z.y = ny;
-        // 新建/摧毁障碍或僵尸落在路径场外时，标记重建（节流：最多每0.5s一次）
+        // 新建/摧毁障碍或僵尸落在路径场外时，标记重建（节流：最多每0.5s一次）。
+        // 性能：只有「玩家警戒范围内」的僵尸才标记——远处僵尸走直线追击（流场
+        // targets 已近距化），不再周期触发全量 A* 重建（host 端周期性帧尖峰主源）
         if (!seekingPlant && !pathStep && !pathField.reachable.has(gridKey(Math.floor(z.x / TS), Math.floor(z.y / TS)))) {
-            if (!sv._pathRebuildCd || sv._pathRebuildCd <= 0) sv._zombiePathNeedsRebuild = true;
+            if (playerAlerted && (!sv._pathRebuildCd || sv._pathRebuildCd <= 0)) sv._zombiePathNeedsRebuild = true;
         }
         if (!seekingPlant && !okX && !okY) {
-            if (!sv._pathRebuildCd || sv._pathRebuildCd <= 0) sv._zombiePathNeedsRebuild = true;
+            if (playerAlerted && (!sv._pathRebuildCd || sv._pathRebuildCd <= 0)) sv._zombiePathNeedsRebuild = true;
         }
         // 漫游撞墙：立即换个随机方向（避免贴墙抽搐）
         if (!okX && !okY && z.wDir != null && !playerAlerted && !z.horde) {

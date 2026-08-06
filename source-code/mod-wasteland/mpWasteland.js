@@ -276,6 +276,15 @@ function playRemoteSfx(evt) {
 // meta.conn：host 侧据此定位消息来源客人（3+ 人转发排除发送者，防回听）
 function onWevt(evt, meta) {
     if (!started || !evt) return;
+    // P1-3 健壮性：单条畸形/未知结构消息（协议演进期、旧版本客户端）不得中断
+    // 该批次其余消息处理；记录 warn 便于诊断
+    try {
+        dispatchWevt(evt, meta);
+    } catch (e) {
+        console.warn('[wasteland-mp] wevt 处理失败（已跳过单条）:', (e && e.message) || e, '| type=', evt && evt.type);
+    }
+}
+function dispatchWevt(evt, meta) {
     // 双方都需处理的全局事件（camp 营地 / pause 暂停 / plant 植物变更——直接本地应用，不广播防回环）
     // 注：interior 室内进出已改为各自独立（不再广播），故此处不处理 interior 事件
     if (evt.type === 'camp' || evt.type === 'pause') { playMpEvent(evt); return; }

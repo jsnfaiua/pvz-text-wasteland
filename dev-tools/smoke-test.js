@@ -59,7 +59,7 @@ import * as WW from '../source-code/mod-wasteland/wwordcraft-rules.js';
 import * as WI from '../source-code/mod-wasteland/winfection.js';
 import { genChunkTiles, T, CHUNK, gridRoadKept, SPAWN, getTile, isWalk, plannedSidewalkAt } from '../source-code/mod-wasteland/world.js';
 import { districtAt, arterialClassAt, blockAt } from '../source-code/mod-wasteland/wdistrict.js';
-import { serializeSV, createRunDefaults, applySnapshot, serializeCharacter, applyCharacter, serializeWorld, applyWorld } from '../source-code/mod-wasteland/wstate.js';
+import { serializeSV, createRunDefaults, applySnapshot, serializeCharacter, applyCharacter, serializeWorld, applyWorld, serializeMpSnapshot, mergeZombieList } from '../source-code/mod-wasteland/wstate.js';
 
 let pass = 0, fail = 0;
 
@@ -378,6 +378,52 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
     const noChar = createRunDefaults(opts, deps);
     applyCharacter(noChar, null, deps);
     assert(noChar.characterName === '幸存者' && noChar.inv.length === 24, 'wstate-char: null character keeps defaults');
+
+    // 7. 联机协议层（P0-3）：僵尸合并语义 + 快照白名单 + cull 裁剪
+    {
+        // 7a. mergeZombieList：同 id 原地保留（位置不动、_tx/_ty 指向快照）、新 id 追加、缺失 id 移除
+        const t0 = [
+            { id: 'z1', x: 100, y: 100, hp: 80, wt: 5, atkState: 'windup' },   // 本地表现字段
+            { id: 'z2', x: 200, y: 200, hp: 50 },
+        ];
+        const snap = [
+            { id: 'z1', x: 140, y: 160, hp: 70 },   // z1 位置变化
+            { id: 'z3', x: 300, y: 300, hp: 90 },   // 新 id
+        ];   // z2 缺失 → 应移除
+        const merged = mergeZombieList(t0, snap);
+        assert(merged.length === 2 && !merged.some(z => z.id === 'z2'), 'mp-merge: missing id removed, new id appended');
+        const m1 = merged.find(z => z.id === 'z1');
+        assert(m1.x === 100 && m1.y === 100, 'mp-merge: existing zombie keeps old position (lerp)');
+        assert(m1._tx === 140 && m1._ty === 160, 'mp-merge: interpolation target set from snapshot');
+        assert(m1.hp === 70 && m1.wt === 5, 'mp-merge: snapshot fields applied, local fields preserved');
+        const m3 = merged.find(z => z.id === 'z3');
+        assert(m3 && m3.wt === 0 && m3._tx === 300 && m3.hurt === 0, 'mp-merge: new zombie gets runtime fields');
+        assert(mergeZombieList(null, snap) === null && mergeZombieList(t0, null) === t0, 'mp-merge: non-array passthrough');
+    }
+    {
+        // 7b. serializeMpSnapshot：僵尸运行时字段白名单化 + dev 块 + cull 裁剪
+        const mpSv = {
+            t: 42, day: 2, horde: { phase: 'wave' },
+            zombies: [{ id: 'z1', type: 'normal', char: '僵', color: '#fff', name: 'x', x: 1, y: 2, hp: 3, maxHp: 3, speed: 1, damage: 1, horde: false, stunT: 0, hurt: 0, biteT: 0, wt: 999, atkState: 'windup' }],
+            effects: [], bullets: [], drops: [], mods: { plants: {} },
+            _devGod: true, _devInf: true,
+        };
+        const s1 = serializeMpSnapshot(mpSv, null);
+        assert(s1.zombies[0].wt === undefined && s1.zombies[0].atkState === undefined, 'mp-snap: zombie runtime fields whitelisted out');
+        assert(s1.dev.god === true && s1.dev.inf === true, 'mp-snap: dev flags block');
+        const cullSv = {
+            t: 1, day: 1, horde: null,
+            zombies: [{ id: 'za', type: 'n', char: 'c', color: 'x', name: 'n', x: 1, y: 1, hp: 1, maxHp: 1, speed: 1, damage: 1 }],
+            drops: [{ x: 1, y: 1, id: 'wood', n: 2 }, { x: 9, y: 9, id: 'stone', n: 1 }],
+            effects: [{ kind: 'hit', x: 1, y: 1, life: 0.5, maxLife: 0.5 }],
+            bullets: [{ id: 'b1', x: 1, y: 1, vx: 1, vy: 1, _mpSyncable: false }],
+            mods: { plants: {} },
+        };
+        const cullOpt = { drops: [cullSv.drops[0]], effects: [], bullets: [], plants: [] };
+        const s2 = serializeMpSnapshot(cullSv, null, null, cullOpt);
+        assert(s2.drops.length === 1 && s2.drops[0].id === 'wood', 'mp-snap: cull.drops filters payload');
+        assert(s2.effects.length === 0 && s2.bullets.length === 0 && s2.plants.length === 0, 'mp-snap: cull empties respected');
+    }
 }
 
 // world 生成回归：城市边缘死路收起为 T 形路口（无死路/无孤儿人行道），建筑无悬挂凸块且都有门。

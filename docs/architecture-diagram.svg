@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="860" viewBox="0 0 1200 860" font-family="'Microsoft YaHei', monospace">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8fd0b0"/></marker>
+    <marker id="arrR" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#d08f8f"/></marker>
+    <marker id="arrY" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#d8c070"/></marker>
+  </defs>
+  <style>
+    .title { fill:#e8e2d0; font-size:22px; font-weight:bold; }
+    .sub { fill:#8a96a2; font-size:12px; }
+    .layer-tag { font-size:12px; font-weight:bold; }
+    .mod { fill:#9fd8b8; font-size:11.5px; }
+    .mod-mini { fill:#7fa8c8; font-size:11px; }
+    .leaf { fill:#a8a8b8; font-size:10.5px; }
+    .edge { stroke:#3a4a44; stroke-width:1.2; fill:none; }
+    .edgeR { stroke:#5a3a3a; stroke-width:1.4; fill:none; }
+    .edgeY { stroke:#5a5238; stroke-width:1.4; fill:none; }
+    .note { fill:#c8c2a8; font-size:11px; }
+    .note-y { fill:#d8c070; font-size:11px; }
+    .note-r { fill:#d09a8a; font-size:11px; }
+  </style>
+
+  <!-- 背景 -->
+  <rect width="1200" height="860" fill="#0d1117"/>
+
+  <!-- 标题 -->
+  <text x="30" y="34" class="title">文字植物大战僵尸·优化版 — 系统架构图</text>
+  <text x="32" y="54" class="sub">入口: index.html → game-init.js · server.js(:8000 静态 + :9000 PeerServer) · net.js(Net.mp 房间层)</text>
+
+  <!-- ═══ 层 1：入口 / 传输 ═══ -->
+  <rect x="30" y="72" width="1140" height="86" rx="8" fill="#131a22" stroke="#2a3a33"/>
+  <text x="46" y="96" class="layer-tag" fill="#39d98a">入口 / 传输层</text>
+  <rect x="46" y="104" width="150" height="40" rx="6" fill="#1a2420" stroke="#39d98a"/>
+  <text x="121" y="129" text-anchor="middle" class="mod">index.html</text>
+  <rect x="210" y="104" width="160" height="40" rx="6" fill="#1a2420" stroke="#39d98a"/>
+  <text x="290" y="129" text-anchor="middle" class="mod">game-init.js 主入口</text>
+  <rect x="384" y="104" width="180" height="40" rx="6" fill="#1a2420" stroke="#39d98a"/>
+  <text x="474" y="129" text-anchor="middle" class="mod">net.js · Net.mp 房间层</text>
+  <rect x="578" y="104" width="200" height="40" rx="6" fill="#1a2420" stroke="#39d98a"/>
+  <text x="678" y="129" text-anchor="middle" class="mod">server.js (静态+PeerServer)</text>
+  <text x="800" y="146" class="note">PeerJS: 房间码/邀请链接/断线重连(8次)</text>
+
+  <!-- ═══ 层 2：本体 ═══ -->
+  <rect x="30" y="172" width="1140" height="120" rx="8" fill="#131a22" stroke="#2a4a3a"/>
+  <text x="46" y="196" class="layer-tag" fill="#7fd8b8">本体 source-code/（塔防对局）</text>
+  <rect x="46" y="204" width="200" height="76" rx="6" fill="#1a2420" stroke="#2a4a3a"/>
+  <text x="146" y="228" text-anchor="middle" class="mod">core/ 核心层</text>
+  <text x="146" y="248" text-anchor="middle" class="leaf">constants · state · render</text>
+  <text x="146" y="264" text-anchor="middle" class="leaf">utils · canvasFit</text>
+  <rect x="258" y="204" width="200" height="76" rx="6" fill="#1a2420" stroke="#2a4a3a"/>
+  <text x="358" y="228" text-anchor="middle" class="mod">systems/ 系统层</text>
+  <text x="358" y="248" text-anchor="middle" class="leaf">combat · spawner · audio</text>
+  <text x="358" y="264" text-anchor="middle" class="leaf">almanac · missions · waves</text>
+  <rect x="470" y="204" width="170" height="76" rx="6" fill="#1a2420" stroke="#2a4a3a"/>
+  <text x="555" y="228" text-anchor="middle" class="mod">entities/</text>
+  <text x="555" y="248" text-anchor="middle" class="leaf">player.js</text>
+  <rect x="652" y="204" width="200" height="76" rx="6" fill="#1a2420" stroke="#2a4a3a"/>
+  <text x="752" y="228" text-anchor="middle" class="mod">ui/ 界面层</text>
+  <text x="752" y="248" text-anchor="middle" class="leaf">hud · screens · shop · settings…</text>
+  <rect x="864" y="204" width="150" height="76" rx="6" fill="#1a2420" stroke="#2a4a3a"/>
+  <text x="939" y="228" text-anchor="middle" class="mod">persistence/</text>
+  <text x="939" y="248" text-anchor="middle" class="leaf">storage.js</text>
+  <text x="939" y="264" text-anchor="middle" class="leaf">u:&lt;用户&gt;:&lt;键&gt;</text>
+  <rect x="1026" y="204" width="132" height="76" rx="6" fill="#1a2420" stroke="#8a6a4a"/>
+  <text x="1092" y="228" text-anchor="middle" class="mod-mini">multiplayer/</text>
+  <text x="1092" y="248" text-anchor="middle" class="leaf">mpGame.js</text>
+  <text x="1092" y="264" text-anchor="middle" class="leaf">multiplayerUI.js</text>
+
+  <!-- ═══ 层 3：荒原模组 ═══ -->
+  <rect x="30" y="306" width="1140" height="330" rx="8" fill="#131a22" stroke="#4a3a2a"/>
+  <text x="46" y="330" class="layer-tag" fill="#e8c46a">荒原模组 source-code/mod-wasteland/（无尽生存沙盒 · RAF 主循环）</text>
+
+  <!-- 主控 -->
+  <rect x="46" y="342" width="250" height="96" rx="6" fill="#241c10" stroke="#e8c46a"/>
+  <text x="171" y="364" text-anchor="middle" class="mod" fill="#e8c46a">survival.js 主控/调度</text>
+  <text x="171" y="384" text-anchor="middle" class="leaf">sv 单例 · RAF loop · update/updateGuest 分流</text>
+  <text x="171" y="400" text-anchor="middle" class="leaf">泰拉瑞亚双档 · 碰撞 · 僵尸咬判定</text>
+  <text x="171" y="416" text-anchor="middle" class="leaf">saveNow(宏任务队列) · debugGetSv()</text>
+  <text x="171" y="430" text-anchor="middle" class="leaf" fill="#7fd8b8">└ STATE_DEPS 注入 wstate 环内依赖</text>
+
+  <!-- 渲染 -->
+  <rect x="314" y="342" width="150" height="70" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="389" y="364" text-anchor="middle" class="mod">render.js</text>
+  <text x="389" y="382" text-anchor="middle" class="leaf">静态层离屏缓存</text>
+  <text x="389" y="398" text-anchor="middle" class="leaf">动态层逐帧 · 昼夜 · HUD</text>
+
+  <!-- 世界 -->
+  <rect x="478" y="342" width="150" height="70" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="553" y="364" text-anchor="middle" class="mod">world.js</text>
+  <text x="553" y="382" text-anchor="middle" class="leaf">seed 确定性生成</text>
+  <text x="553" y="398" text-anchor="middle" class="leaf">getTile/setTile · chunk</text>
+
+  <!-- wstate -->
+  <rect x="642" y="342" width="210" height="70" rx="6" fill="#1a3018" stroke="#39d98a"/>
+  <text x="747" y="364" text-anchor="middle" class="mod" fill="#39d98a">wstate.js 序列化真相源 ★</text>
+  <text x="747" y="382" text-anchor="middle" class="leaf" fill="#9fd8b8">白名单纯函数 · 存档/快照共用</text>
+  <text x="747" y="398" text-anchor="middle" class="leaf" fill="#9fd8b8">禁止 JSON.stringify(sv)</text>
+
+  <!-- mpWasteland -->
+  <rect x="866" y="342" width="190" height="70" rx="6" fill="#241c10" stroke="#8a6a4a"/>
+  <text x="961" y="364" text-anchor="middle" class="mod" fill="#d8c070">mpWasteland.js 联机层</text>
+  <text x="961" y="382" text-anchor="middle" class="leaf">握手/快照/事件协议</text>
+  <text x="961" y="398" text-anchor="middle" class="leaf">wstart·wready·wgo·wpos·wsync·wevt</text>
+
+  <rect x="1068" y="342" width="92" height="70" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="1114" y="364" text-anchor="middle" class="mod">wconst</text>
+  <text x="1114" y="382" text-anchor="middle" class="leaf">TS=36</text>
+
+  <!-- 中排系统 -->
+  <rect x="46" y="452" width="150" height="64" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="121" y="474" text-anchor="middle" class="mod">wzombie.js</text>
+  <text x="121" y="492" text-anchor="middle" class="leaf">僵尸 AI(共享A*流场·targets近距化)</text>
+  <text x="121" y="506" text-anchor="middle" class="leaf">刷新/尸群/守卫/掉落</text>
+  <rect x="208" y="452" width="150" height="64" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="283" y="474" text-anchor="middle" class="mod">wnpc.js</text>
+  <text x="283" y="492" text-anchor="middle" class="leaf">NPC 生态/队伍/雇佣</text>
+  <text x="283" y="506" text-anchor="middle" class="leaf">驾驶订单 · 序列化</text>
+  <rect x="370" y="452" width="150" height="64" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="445" y="474" text-anchor="middle" class="mod">wvehicle.js</text>
+  <text x="445" y="492" text-anchor="middle" class="leaf">载具修理/驾驶</text>
+  <text x="445" y="506" text-anchor="middle" class="leaf">NPC 驾驶·分帧BFS★</text>
+  <rect x="532" y="452" width="140" height="64" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="602" y="474" text-anchor="middle" class="mod">whorde/winfection</text>
+  <text x="602" y="492" text-anchor="middle" class="leaf">尸潮/感染阶段</text>
+  <rect x="684" y="452" width="140" height="64" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="754" y="474" text-anchor="middle" class="mod">wbuild/wplants</text>
+  <text x="754" y="492" text-anchor="middle" class="leaf">建造/植物</text>
+  <rect x="836" y="452" width="140" height="64" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="906" y="474" text-anchor="middle" class="mod">wgear/waction</text>
+  <text x="906" y="492" text-anchor="middle" class="leaf">武器子弹/动作</text>
+  <rect x="988" y="452" width="172" height="64" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="1074" y="474" text-anchor="middle" class="mod">panel/wsearch/wmsg</text>
+  <text x="1074" y="492" text-anchor="middle" class="leaf">背包/搜索/消息</text>
+
+  <!-- 下排 -->
+  <rect x="46" y="530" width="180" height="52" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="136" y="552" text-anchor="middle" class="mod">windoor/wdistrict/wlook</text>
+  <text x="136" y="570" text-anchor="middle" class="leaf">室内/区域/捏脸</text>
+  <rect x="240" y="530" width="180" height="52" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="330" y="552" text-anchor="middle" class="mod">wdev.js 开发者工具</text>
+  <text x="330" y="570" text-anchor="middle" class="leaf">无敌/召唤/时间加速/devflags</text>
+  <rect x="434" y="530" width="150" height="52" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="509" y="552" text-anchor="middle" class="mod">wbalance.js 数值</text>
+  <text x="509" y="570" text-anchor="middle" class="leaf">速度/血量/消耗/上限</text>
+  <rect x="598" y="530" width="180" height="52" rx="6" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="688" y="552" text-anchor="middle" class="mod">wwordcraft*.js</text>
+  <text x="688" y="570" text-anchor="middle" class="leaf">拼字合成/掉落词缀</text>
+
+  <!-- 循环依赖区标注 -->
+  <rect x="46" y="596" width="420" height="34" rx="6" fill="#1c0e0e" stroke="#8a4a3a"/>
+  <text x="256" y="617" text-anchor="middle" class="note-r">⚠ 循环依赖区（勿拖新模块）：render↔windoor↔wzombie · wnpc↔wgear · wvehicle→wdev→wnpc→wvehicle</text>
+
+  <!-- ═══ 数据流区域 ═══ -->
+  <rect x="30" y="650" width="1140" height="196" rx="8" fill="#10141a" stroke="#3a4a44"/>
+
+  <!-- 单机流 -->
+  <text x="46" y="676" class="layer-tag" fill="#8fd0b0">单机主循环（host/单机同一路径）</text>
+  <rect x="46" y="686" width="112" height="34" rx="5" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="102" y="708" text-anchor="middle" class="leaf">RAF loop</text>
+  <line x1="158" y1="703" x2="180" y2="703" class="edge" marker-end="url(#arr)"/>
+  <rect x="182" y="686" width="120" height="34" rx="5" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="242" y="708" text-anchor="middle" class="leaf">update(dt)</text>
+  <line x1="302" y1="703" x2="324" y2="703" class="edge" marker-end="url(#arr)"/>
+  <rect x="326" y="686" width="150" height="34" rx="5" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="401" y="708" text-anchor="middle" class="leaf">实体系统(僵尸/NPC/车)</text>
+  <line x1="476" y1="703" x2="498" y2="703" class="edge" marker-end="url(#arr)"/>
+  <rect x="500" y="686" width="110" height="34" rx="5" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="555" y="708" text-anchor="middle" class="leaf">draw() 渲染</text>
+  <line x1="610" y1="703" x2="632" y2="703" class="edge" marker-end="url(#arr)"/>
+  <rect x="634" y="686" width="120" height="34" rx="5" fill="#241c10" stroke="#8a6a4a"/>
+  <text x="694" y="708" text-anchor="middle" class="leaf">saveNow→宏任务落盘</text>
+  <text x="640" y="708" class="note">僵尸A*流场(0.35s冷却+targets近距化) · 驾驶BFS分帧 · 存档宏任务落盘</text>
+  <text x="640" y="722" class="note">实体上限: 特效≤50 · 掉落≤150 · 子弹≤80 · 静态层离屏缓存</text>
+
+  <!-- 联机流 -->
+  <text x="46" y="752" class="layer-tag" fill="#d08f8f">联机（host 权威）</text>
+  <rect x="46" y="762" width="180" height="40" rx="5" fill="#241c10" stroke="#8a6a4a"/>
+  <text x="136" y="780" text-anchor="middle" class="mod" fill="#d8c070">HOST 模拟世界</text>
+  <text x="136" y="795" text-anchor="middle" class="leaf">wsync 100ms 快照(34格裁剪)</text>
+  <line x1="226" y1="782" x2="248" y2="782" class="edgeR" marker-end="url(#arrR)"/>
+  <rect x="250" y="762" width="180" height="40" rx="5" fill="#241c10" stroke="#8a6a4a"/>
+  <text x="340" y="780" text-anchor="middle" class="mod" fill="#d8c070">GUEST 只模拟自身</text>
+  <text x="340" y="795" text-anchor="middle" class="leaf">wpos 200ms 上报 · wevt 50ms</text>
+  <line x1="430" y1="782" x2="452" y2="782" class="edgeR" marker-end="url(#arrR)"/>
+  <rect x="454" y="762" width="200" height="40" rx="5" fill="#1a2420" stroke="#4a6a5a"/>
+  <text x="554" y="780" text-anchor="middle" class="mod-mini">wevt 双向事件</text>
+  <text x="554" y="795" text-anchor="middle" class="leaf">kill·atk·pickup·diff·chest·sfx·dev·hire…</text>
+  <line x1="654" y1="782" x2="676" y2="782" class="edgeR" marker-end="url(#arrR)"/>
+  <rect x="678" y="762" width="200" height="40" rx="5" fill="#1a3018" stroke="#39d98a"/>
+  <text x="778" y="780" text-anchor="middle" class="mod" fill="#39d98a">wstate 白名单序列化</text>
+  <text x="778" y="795" text-anchor="middle" class="leaf">存档=世界档(host)+角色档(双方)</text>
+  <text x="860" y="782" class="note">host=世界模拟+序列化+渲染汇聚端 → 性能瓶颈，优化 host 即优化双端</text>
+  <text x="860" y="798" class="note">战斗/掉落/召唤 host 权威 · guest 禁止本地扣血 · 僵尸按 id 合并</text>
+
+  <!-- 底部结论 -->
+  <text x="46" y="832" class="note-y">零差异硬性目标：联机仅多"多玩家共游"；规则/反馈/数值/特效/音效/UI/掉落/结算/存档必须与单机完全一致（见文档 §5）</text>
+</svg>

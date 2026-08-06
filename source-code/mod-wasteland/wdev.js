@@ -19,10 +19,14 @@ import * as MSG from './wmsg.js';
 import * as B from './wbalance.js';
 import { startHordePrep } from './whorde.js';
 import * as WNPC from './wnpc.js';
+import * as HUD from './whud.js';
 import { showLookCreator, normalizeLook } from './wlook.js';
 import AudioSystem from '../systems/audio.js';
 
 const SAVE_KEY = 'wasteland_save';
+// profile 键（与 survival.js 同值；wdev 独立定义——此前未定义导致 persistDev 一执行就
+// ReferenceError：dev 标志不持久化 + reportDevFlags 后续中断，本次修复）
+const PROFILE_KEY = 'wasteland_profile';
 
 let devEl = null;
 let devOpen = false;
@@ -161,6 +165,12 @@ export function init(sv) {
     // 开发者模式默认开启资源无限
     if (sv._devInf == null) sv._devInf = true;
     if (sv._devDmgMul == null) sv._devDmgMul = 1;
+    // 恢复上次的调试 HUD 开关（本地 profile，不进联机同步）
+    const p = getStorage(PROFILE_KEY, null);
+    if (p && p._devHud) {
+        sv._devHud = true;
+        HUD.update(sv, performance.now());
+    }
     const screen = document.getElementById('game-container');
     if (!screen || devEl) return;
     devEl = document.createElement('div');
@@ -203,6 +213,7 @@ function buildHtml() {
             <button data-t="ammo" id="wdev-ammo">无限弹药</button>
             <button data-t="bag" id="wdev-bag">无限背包</button>
             <button data-t="oneshot" id="wdev-oneshot">一击必杀</button>
+            <button data-t="hud" id="wdev-hud">调试HUD</button>
         </div>
         <div class="wsl-dev-dmg">
             <span class="wsl-dev-dmg-label">武器伤害倍率</span>
@@ -300,6 +311,7 @@ function syncState() {
     devEl.querySelector('#wdev-ammo').classList.toggle('on', !!sv._devInfAmmo);
     devEl.querySelector('#wdev-oneshot').classList.toggle('on', !!sv._devOneShot);
     devEl.querySelector('#wdev-bag').classList.toggle('on', !!sv._devInfBag);
+    devEl.querySelector('#wdev-hud').classList.toggle('on', !!sv._devHud);
     devEl.querySelector('#wdev-spd10').classList.toggle('on', sv._devTimeScale === 10);
     devEl.querySelector('#wdev-spd60').classList.toggle('on', sv._devTimeScale === 60);
     devEl.querySelectorAll('.wsl-dev-dmg-presets button').forEach(b => {
@@ -320,6 +332,7 @@ function persistDev() {
     p._devInfBag = !!sv._devInfBag;
     p._devDmgMul = sv._devDmgMul || 1;
     p._devTimeScale = sv._devTimeScale || 1;
+    p._devHud = !!sv._devHud;
     p.characterName = sv.characterName || p.characterName || '幸存者';
     p.worldSeed = sv.world ? sv.world.seed : (p.worldSeed != null ? p.worldSeed : null);
     if (p.worldSeed != null) setStorage(PROFILE_KEY, p);
@@ -460,6 +473,12 @@ function bindEvents() {
             } else if (t === 'bag') {
                 sv._devInfBag = !sv._devInfBag;
                 MSG.pushMsg(sv, sv._devInfBag ? '[DEV] 无限背包开启：同类无限堆叠，格位自动扩容' : '[DEV] 无限背包关闭', '#FFB347');
+            } else if (t === 'hud') {
+                // 调试 HUD：纯本地诊断覆盖层，不进联机同步（各端独立）
+                sv._devHud = !sv._devHud;
+                if (sv._devHud) HUD.update(sv, performance.now());
+                else HUD.destroy();
+                MSG.pushMsg(sv, sv._devHud ? '[DEV] 调试HUD开启（右上角 FPS/实体数/状态）' : '[DEV] 调试HUD关闭', '#FFB347');
             }
             syncState();
             persistDev();

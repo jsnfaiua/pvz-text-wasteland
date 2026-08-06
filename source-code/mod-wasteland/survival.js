@@ -29,6 +29,7 @@ import * as WV from './wvehicle.js';
 import * as WW from './wwordcraft.js';
 import { showLookCreator, normalizeLook } from './wlook.js';
 import * as WNPC from './wnpc.js';
+import * as HUD from './whud.js';
 import { districtAt, cityCenterAt, arterialClassAt, blockAt } from './wdistrict.js';
 
 // 废墟残路带判定：ruins 区 rx<4||ry<4（残路带相位）→ 该格的碎石是"破损路面"可压过；
@@ -41,7 +42,7 @@ function ruinsRoadBandAt(seed, gx, gy) {
     return rx < 4 || ry < 4;
 }
 import { playerInfectionEffects, addPlayerInfection, PLAYER_INFECTION } from './winfection.js';
-import { serializeSV, createRunDefaults, applySnapshot, serializeCharacter, applyCharacter, serializeWorld, applyWorld, serializeMpSnapshot } from './wstate.js';
+import { serializeSV, createRunDefaults, applySnapshot, serializeCharacter, applyCharacter, serializeWorld, applyWorld, serializeMpSnapshot, mergeZombieList } from './wstate.js';
 
 const SAVE_KEY = 'wasteland_save';           // 旧版混合档（v3 迁移源，迁移后仅作备份标记）
 const LEGACY_KEY = 'wasteland_save_legacy';
@@ -169,7 +170,18 @@ function flushSave() {
     // 世界档：host（单机=本机；联机=房主权威，含双方 wdiff 修改）保存；
     // guest 不落世界档（世界属房主，guest 只保留角色）
     if (!sv.mp || sv.mp.role === 'host') {
-        setStorage(worldKey(sv.world.seed), serializeWorld(sv, STATE_DEPS));
+        const worldData = serializeWorld(sv, STATE_DEPS);
+        // P1-1 配额监控：localStorage 上限 ~5MB，存档逼近阈值时提示一次（防"配额满 →
+        // setStorage catch 静默跳过 → 长局玩家悄然失去存档保护"）。只提示不干预写档。
+        if (!sv._saveWarned) {
+            let size = 0;
+            try { size = JSON.stringify(worldData).length; } catch { size = 0; }
+            if (size > 3 * 1024 * 1024) {
+                sv._saveWarned = true;
+                MSG.pushMsg(sv, `⚠ 存档体积已达 ${(size / 1048576).toFixed(1)}MB，接近浏览器存储上限（5MB）！建议清理旧角色档或导出备份，否则后续存档可能失败`, '#FF6644');
+            }
+        }
+        setStorage(worldKey(sv.world.seed), worldData);
         setStorage(PROFILE_KEY, {
             characterName: name,
             worldSeed: sv.world.seed,
@@ -177,6 +189,7 @@ function flushSave() {
             _devInf: sv._devInf !== false, _devInfAmmo: !!sv._devInfAmmo,
             _devOneShot: !!sv._devOneShot, _devInfBag: !!sv._devInfBag,
             _devDmgMul: sv._devDmgMul || 1, _devTimeScale: sv._devTimeScale || 1,
+            _devHud: !!sv._devHud,
         });
     }
 }
@@ -384,6 +397,7 @@ function loop(now) {
     if (WSearch.isOpen() && !sv.dead) WSearch.updateSearch(sv, dt);
     if (sv.ctx) fitCanvasBacking(sv.ctx);
     draw(sv.ctx, sv);
+    HUD.update(sv, now);   // 调试 HUD（默认关闭；每帧轻量计数，DOM 500ms 节流）
     sv.raf = requestAnimationFrame(loop);
 }
 
@@ -878,6 +892,9 @@ function updateGuest(dt) {
 
     if (sv.hp <= 0 && !sv.dead) onDeath();
 }
+
+// 测试/调试钩子：CDP 冒烟与性能实测经此取内部状态（不参与任何游戏逻辑，仅诊断用）
+export function debugGetSv() { return sv; }
 
 // 联机事件出站队列：mpWasteland 50ms 取空发送（kill/atk 上报）
 // 联机动作音效上报：本端已本地播放，outbox 带 snd 名让对端也播（双端体验一致）
@@ -1401,22 +1418,11 @@ export function applyMpSnapshot(snap, guestId) {
         applySnapDevFlags(snap.dev);
         return;
     }
-    // 僵尸：按 id 合并（保留本地表现字段 + 位置插值 _tx/_ty），新 id 追加，缺失 id 移除
+    // 僵尸：按 id 合并（保留本地表现字段 + 位置插值 _tx/_ty），新 id 追加，缺失 id 移除。
+    // 合并核心抽到 wstate.js mergeZombieList（纯函数），smoke-test 可单测（P0-3）
     if (Array.isArray(snap.zombies)) {
         const target = snap.inInterior && sv.interior ? sv.interior.zombies : sv.zombies;
-        const prev = new Map(target.map(z => [z.id, z]));
-        const merged = snap.zombies.map(nz => {
-            const old = prev.get(nz.id);
-            if (old) {
-                old._tx = nz.x; old._ty = nz.y;   // 插值目标（渲染帧 lerp）
-                const ox = old.x, oy = old.y;
-                Object.assign(old, nz);
-                old.x = ox; old.y = oy;           // 保持旧位置，由 updateGuest lerp 平滑
-                return old;
-            }
-            const z = { ...nz, wt: 0, tx: nz.x, ty: nz.y, atkState: null, atkT: 0, hurt: nz.hurt || 0, _tx: nz.x, _ty: nz.y };
-            return z;
-        });
+        const merged = mergeZombieList(target, snap.zombies);
         if (snap.inInterior && sv.interior) sv.interior.zombies = merged;
         else sv.zombies = merged;
     }

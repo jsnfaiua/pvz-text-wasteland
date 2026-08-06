@@ -20,6 +20,19 @@
 // ============================================================
 
 // ============================================================
+// 存档字段版本迁移表（P2-2 · 新增存档字段时在此登记默认值，勿散落）
+//   字段名                    默认值                      引入版本/说明
+//   horde.{phase,pending,...} null(无尸潮)                L7 尸潮进度恢复
+//   zombies[].id              'w'+seed+'_'+i(applyWorld补) 联机按 id 合并
+//   _devInfBag                false                       开发者无限背包扩容
+//   _savedMag                 null                        startRun 恢复弹匣
+//   interior/interiors        sv.mods.interiors 缺省 {}   室内楼层进度
+//   boxSearched / guarded     {}                          容器已搜/守卫标记
+//   新增字段规则：①白名单序列化函数同步补字段；②apply 端给默认值；
+//   ③旧档无该字段时必须安全缺省（不得抛错）；④联机快照字段双端同改。
+// ============================================================
+
+// ============================================================
 // 1. 白名单序列化（sv → 可 JSON 的数据对象）
 //    对应原 survival.js saveNow() 的 setStorage 载荷。
 // ============================================================
@@ -374,4 +387,27 @@ export function serializeMpSnapshot(sv, deps, zombieList, cull) {
         },
         // NPC 队伍各自本地管理（wsync 不同步 npcs，避免 host controllerId 覆盖 guest 主控）
     };
+}
+
+// ============================================================
+// 3.7 联机僵尸合并（纯函数，Node 可单测）
+//     applyMpSnapshot 的快照合并核心：同 id 保留本地对象（位置由 _tx/_ty 插值，
+//     字段以快照为准），新 id 追加（补齐运行时字段），缺失 id 移除（host 权威删除）。
+//     从 survival.js 抽出以便 smoke-test 直接断言合并语义（P0-3 联机协议层单测）。
+// ============================================================
+export function mergeZombieList(target, snapZombies) {
+    if (!Array.isArray(target) || !Array.isArray(snapZombies)) return target;
+    const prev = new Map(target.map(z => [z.id, z]));
+    const merged = snapZombies.map(nz => {
+        const old = prev.get(nz.id);
+        if (old) {
+            old._tx = nz.x; old._ty = nz.y;   // 插值目标（渲染帧 lerp）
+            const ox = old.x, oy = old.y;
+            Object.assign(old, nz);
+            old.x = ox; old.y = oy;           // 保持旧位置，由 updateGuest lerp 平滑
+            return old;
+        }
+        return { ...nz, wt: 0, tx: nz.x, ty: nz.y, atkState: null, atkT: 0, hurt: nz.hurt || 0, _tx: nz.x, _ty: nz.y };
+    });
+    return merged;
 }
