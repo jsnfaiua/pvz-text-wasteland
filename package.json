@@ -1,0 +1,9 @@
+{
+  "name": "pvz-text-wasteland",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PvZ Text Edition - Wasteland MP (server: static + local PeerServer)",
+  "dependencies": {
+    "peer": "^1.0.2"
+  }
+}

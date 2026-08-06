@@ -1,0 +1,3991 @@
+// ============================================================
+// 文字版植物大战僵尸 · 完整版
+// 黑屏 + 5 行战场 + 戴夫自由移动 + 跳跃 + 行切换
+// + 自由种植 + 豌豆射击 + 僵尸生成推进 + 阳光经济 + 波次系统
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;
+const H = canvas.height;
+
+// ---------- 战场配置 ----------
+const FIELD = {
+    left: 60,
+    right: W - 40,
+    top: 40,
+    bottom: H - 40,
+    rows: 5,
+};
+FIELD.rowHeight = (FIELD.bottom - FIELD.top) / FIELD.rows;
+
+// 启用行索引数组（0-based），默认全部 5 行；关卡启动时会覆盖
+// 例如 1-1 = [2]，1-2 = [1,2,3]，1-3+ = [0,1,2,3,4]
+FIELD.activeRows = [0, 1, 2, 3, 4];
+function isRowActive(r) { return FIELD.activeRows.includes(r); }
+function randomActiveRow() {
+    const arr = FIELD.activeRows;
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function rowY(i) {
+    return FIELD.top + FIELD.rowHeight * (i + 0.5);
+}
+// 由像素 y 反推当前所在行（用于种植归属、受击判定）
+function yToRow(y) {
+    const r = Math.floor((y - FIELD.top) / FIELD.rowHeight);
+    return Math.max(0, Math.min(FIELD.rows - 1, r));
+}
+
+// ---------- 戴夫 ----------
+const dave = {
+    x: FIELD.left + 40,
+    y: rowY(2),              // 像素级 Y 坐标（自由移动）
+    jumpOffset: 0,
+    vy: 0,
+    isJumping: false,
+    jumpCooldown: 0,
+    speed: 220,              // 水平速度
+    speedY: 180,             // 垂直速度（略慢于水平，手感更稳）
+    hp: 3,
+    hurtFlash: 0,
+    color: '#00FF88',
+    label: '戴夫',
+    facing: 1,               // 面朝：1右 -1左
+    facingAngle: 0,          // 精确朝向（弧度，用于挥砍方向）
+    ghost: null,
+    _damageAcc: 0,
+    // 武器与动作
+    currentWeapon: null,        // 当前装备武器 key，如 'shovel'
+    weaponCooldown: 0,          // 武器攻击冷却
+    swingTimer: 0,              // 挥砍动画剩余时间
+    swingDir: 0,                // 挥砍方向（弧度）
+    swingWeapon: null,          // 本次挥砍的武器 key
+    recoil: 0,                  // 受击后仰位移（x 方向）
+    victoryBounce: 0,           // 胜利弹跳计时
+    deathRot: 0,                // 阵亡旋转角度
+
+    // ---- 动作系统 ----
+    sprinting: false,           // 是否按住 Shift 奔跑
+    sprintMul: 1.65,            // 奔跑速度倍率
+    // 闪避（瞬移带无敌帧）
+    dashing: false,
+    dashTimer: 0,
+    dashDir: { x: 0, y: 0 },
+    dashCooldown: 0,
+    dashGhosts: [],             // 残影粒子 { x,y,alpha }
+    // 无敌帧（闪避/受击后短保护）
+    invuln: 0,
+    // 格挡
+    guarding: false,            // E 按住
+    guardTimer: 0,              // 从按下开始的时间（用于完美窗口判定）
+    guardCooldown: 0,           // 收盾后小 CD，避免瞬闪滥用
+    perfectFlash: 0,            // 完美格挡视觉反馈
+    guardFacing: 0,             // 开盾瞬间的朝向（弧度）
+
+    get row() { return yToRow(this.y); },
+};
+
+// ---------- 动作参数 ----------
+const ACTION = {
+    dashSpeed:         900,   // 瞬移平均速度：短距高速
+    dashDuration:      0.16,
+    dashInvuln:        0.22,
+    dashCooldown:      0.8,
+    guardPerfectMs:    0.30,  // 完美格挡窗口
+    guardCooldown:     0.25,  // 收盾冷却
+    perfectReflectMul: 1.5,   // 反射子弹伤害倍率
+    perfectStunTime:   1.0,   // 完美格挡对近战僵尸的硬直
+};
+
+// ---------- 物理与常量 ----------
+const GRAVITY = 1400;
+const JUMP_VELOCITY = 520;
+const JUMP_CD = 0.8;
+const MIN_PLANT_DIST = 40;
+
+// ---------- 植物图鉴 ----------
+const PLANTS = {
+    sunflower: {
+        name: '向日葵',
+        cost: 50,
+        cooldown: 7.5,           // 原版 7.5s 种植 CD
+        hp: 300,                 // 原版 300 血
+        color: '#FFD700',
+        produceInterval: 24,     // 原版 24s 产阳光
+    },
+    peashooter: {
+        name: '豌豆射手',
+        cost: 100,
+        cooldown: 7.5,           // 原版 7.5s
+        hp: 300,                 // 原版 300 血
+        color: '#00FF00',
+        fireInterval: 1.425,     // 原版 1.425s / 颗
+        range: FIELD.right,
+        bulletDamage: 20,        // 原版 20 每颗
+    },
+    wallnut: {
+        name: '坚果',
+        cost: 50,
+        cooldown: 30,            // 原版 30s（长 CD 换高血）
+        hp: 4000,                // 原版 4000 血
+        color: '#C89060',
+    },
+    cherry: {
+        name: '樱桃',
+        cost: 150,
+        cooldown: 50,            // 原版 50s（清场武器长 CD）
+        hp: 9999,                // 樱桃引爆前不可被咬破
+        color: '#DC143C',
+        fuse: 1.2,               // 1.2s 引爆延迟
+        blastRadius: 130,        // 原版 3×3 格 ≈ 130px
+        blastDamage: 1800,       // 原版 1800（秒杀铁桶）
+    },
+};
+const CARD_ORDER = ['sunflower', 'peashooter', 'wallnut', 'cherry'];
+
+// 僵尸类型 → 碎片权重表（所有僵尸都会掉，但侧重不同植物）
+const ZOMBIE_FRAG_WEIGHTS = {
+    normal:  { sunflower: 40, peashooter: 40, wallnut: 15, cherry: 5 },
+    cone:    { sunflower: 30, peashooter: 30, wallnut: 25, cherry: 15 },
+    bucket:  { sunflower: 20, peashooter: 25, wallnut: 25, cherry: 30 },
+    spitter: { sunflower: 25, peashooter: 35, wallnut: 20, cherry: 20 },
+};
+
+// 按权重随机抽一个植物 kind
+function pickWeightedFragment(zombieKind) {
+    const w = ZOMBIE_FRAG_WEIGHTS[zombieKind] || ZOMBIE_FRAG_WEIGHTS.normal;
+    let total = 0;
+    for (const k in w) total += w[k];
+    let r = Math.random() * total;
+    for (const k in w) {
+        r -= w[k];
+        if (r <= 0) return k;
+    }
+    return 'peashooter';
+}
+
+// ---------- 掉落配置 ----------
+// 强度越高的僵尸，掉率越大。每项为 { chance, amountMin, amountMax }
+const DROP_TABLE = {
+    normal: {
+        silver:   { chance: 0.40, min: 1, max: 3 },
+        gold:     { chance: 0.03, min: 1, max: 1 },
+        gem:      { chance: 0.00, min: 0, max: 0 },
+        heal:     { chance: 0.05 },                        // 血包
+        fragment: { chance: 0.03, min: 1, max: 1 },        // 局外植物碎片
+        card:     { chance: 0.02 },                        // 局内即用卡
+        wfrag:    { chance: 0.04, min: 1, max: 1 },        // 局外武器碎片
+    },
+    cone: {
+        silver:   { chance: 0.60, min: 2, max: 5 },
+        gold:     { chance: 0.15, min: 1, max: 2 },
+        gem:      { chance: 0.005, min: 1, max: 1 },
+        heal:     { chance: 0.10 },
+        fragment: { chance: 0.08, min: 1, max: 2 },
+        card:     { chance: 0.05 },
+        wfrag:    { chance: 0.10, min: 1, max: 2 },
+    },
+    bucket: {
+        silver:   { chance: 0.80, min: 3, max: 8 },
+        gold:     { chance: 0.35, min: 2, max: 5 },
+        gem:      { chance: 0.02, min: 1, max: 1 },
+        heal:     { chance: 0.20 },
+        fragment: { chance: 0.15, min: 1, max: 3 },
+        card:     { chance: 0.10 },
+        wfrag:    { chance: 0.20, min: 1, max: 3 },
+    },
+    spitter: {
+        silver:   { chance: 0.55, min: 2, max: 4 },
+        gold:     { chance: 0.10, min: 1, max: 2 },
+        gem:      { chance: 0.01, min: 1, max: 1 },
+        heal:     { chance: 0.08 },
+        fragment: { chance: 0.06, min: 1, max: 2 },
+        card:     { chance: 0.03 },
+        wfrag:    { chance: 0.12, min: 1, max: 2 },
+    },
+};
+
+// ---------- 局外碎片存储（PvZ2 风格升级）----------
+// 通过 Net.storeKey 让每个账户拥有独立命名空间；未登录时走 __guest__
+const _K = (base) => (window.Net ? Net.storeKey(base) : base);
+const FRAG_STORAGE_KEY   = _K('pvz_txt_fragments_v1');
+const LEVEL_STORAGE_KEY  = _K('pvz_txt_levels_v1');
+const CURRENCY_KEY       = _K('pvz_txt_currency_v1');
+const WEAPON_STORAGE_KEY = _K('pvz_txt_weapons_v1');
+const WFRAG_STORAGE_KEY  = _K('pvz_txt_wfrags_v1');
+const SAVE_KEY           = _K('pvz_txt_save_v1');
+
+function loadFragments() {
+    try { return JSON.parse(localStorage.getItem(FRAG_STORAGE_KEY)) || {}; }
+    catch { return {}; }
+}
+function saveFragments(obj) {
+    try { localStorage.setItem(FRAG_STORAGE_KEY, JSON.stringify(obj)); } catch {}
+}
+function loadLevels() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(LEVEL_STORAGE_KEY)) || {};
+        CARD_ORDER.forEach(k => { if (raw[k] == null) raw[k] = 1; });
+        return raw;
+    } catch {
+        return CARD_ORDER.reduce((o, k) => (o[k] = 1, o), {});
+    }
+}
+function saveLevels(obj) {
+    try { localStorage.setItem(LEVEL_STORAGE_KEY, JSON.stringify(obj)); } catch {}
+}
+
+// PvZ2 风格等级表：累计碎片阈值 + 属性倍率
+const LEVEL_TABLE = [
+    { lv: 1, cumulative: 0,   mul: 1.00, label: 'Lv1' },
+    { lv: 2, cumulative: 10,  mul: 1.15, label: 'Lv2' },
+    { lv: 3, cumulative: 30,  mul: 1.30, label: 'Lv3' },
+    { lv: 4, cumulative: 80,  mul: 1.50, label: 'Lv4' },
+    { lv: 5, cumulative: 200, mul: 2.00, label: 'Lv5 觉醒' },
+];
+function levelInfo(lv) {
+    return LEVEL_TABLE.find(x => x.lv === lv) || LEVEL_TABLE[0];
+}
+function nextLevelInfo(lv) {
+    return LEVEL_TABLE.find(x => x.lv === lv + 1);
+}
+
+// 全局：局外持久数据
+const META = {
+    fragments: loadFragments(),
+    levels: loadLevels(),
+    currency: loadCurrency(),   // { silver, gold, gem }
+    weapons: loadWeapons(),     // { unlocked, levels, equipped }
+    weaponFrags: loadWeaponFrags(), // { pistol: 5, ... }
+};
+
+// ---------- 货币系统 ----------
+function loadCurrency() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(CURRENCY_KEY)) || {};
+        return {
+            silver: raw.silver || 0,
+            gold:   raw.gold   || 0,
+            gem:    raw.gem    || 0,
+        };
+    } catch {
+        return { silver: 0, gold: 0, gem: 0 };
+    }
+}
+function saveCurrency() {
+    try { localStorage.setItem(CURRENCY_KEY, JSON.stringify(META.currency)); } catch {}
+}
+function addCurrency(type, amount) {
+    if (!META.currency[type]) META.currency[type] = 0;
+    META.currency[type] += amount;
+    saveCurrency();
+    refreshCurrencyUI();
+}
+function refreshCurrencyUI() {
+    ['cur-silver-lv', 'cur-silver-shop', 'cur-silver-game', 'cur-silver-armory'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = META.currency.silver || 0;
+    });
+    ['cur-gold-lv', 'cur-gold-shop', 'cur-gold-game', 'cur-gold-armory'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = META.currency.gold || 0;
+    });
+    ['cur-gem-lv', 'cur-gem-shop', 'cur-gem-game', 'cur-gem-armory'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = META.currency.gem || 0;
+    });
+}
+
+// 每种植物在升级时对哪个字段生效
+const PLANT_LEVEL_STAT = {
+    sunflower:  { field: 'produceRate', label: '产阳光速度', base: 24, invert: true },  // 周期越短越好
+    peashooter: { field: 'damage',      label: '豌豆伤害',    base: 20 },
+    wallnut:    { field: 'hp',          label: '血量',        base: 4000 },
+    cherry:     { field: 'radius',      label: '爆炸半径',    base: 130 },
+};
+
+// 获取植物某属性的当前等级增益值
+function getPlantStat(kind) {
+    const lv = META.levels[kind] || 1;
+    const mul = levelInfo(lv).mul;
+    const spec = PLANT_LEVEL_STAT[kind];
+    if (!spec) return { lv, mul, value: 0 };
+    const value = spec.invert ? spec.base / mul : spec.base * mul;
+    return { lv, mul, value };
+}
+
+// ---------- 僵尸图鉴 ----------
+const ZOMBIES = {
+    // 原版数据。damage = 每秒对植物 DPS（原版 100 DPS）
+    normal:  { name: '僵尸',     hp: 200,  speed: 22, color: '#B0B0B0', damage: 100 },
+    cone:    { name: '路障僵尸', hp: 370,  speed: 22, color: '#FFA500', damage: 100 },
+    bucket:  { name: '铁桶僵尸', hp: 1100, speed: 22, color: '#909090', damage: 100 },
+    spitter: {
+        name: '喷射僵尸', hp: 260, speed: 18, color: '#88DDFF', damage: 100,
+        ranged: true, range: 460, fireInterval: 1.8,
+        bulletSpeed: 320, bulletDamage: 1, bulletColor: '#88DDFF', bulletLabel: '×',
+    },
+};
+
+// ---------- 武器 & 弹药定义 ----------
+// 数值参照豌豆（20 伤害/1.425s）。远程武器与豌豆同级，近战略高。
+const WEAPONS = {
+    pistol: {
+        name: '手枪',
+        kind: 'ranged',
+        damage: 20,              // = 豌豆
+        fireInterval: 0.4,       // 略快于豌豆
+        bulletSpeed: 500,
+        ammoType: 'pistolAmmo',
+        ammoLabel: '手枪弹',
+        color: '#B0C4DE',
+        bulletLabel: '·',
+    },
+    shotgun: {
+        name: '散弹枪',
+        kind: 'ranged',
+        damage: 15,              // 单发略低，散射 3 发合计 45
+        pellets: 3,              // 3 发扇形
+        spread: 0.35,            // 扩散角度（弧度）
+        fireInterval: 1.0,
+        bulletSpeed: 460,
+        ammoType: 'shellAmmo',
+        ammoLabel: '散弹壳',
+        color: '#DAA520',
+        bulletLabel: '‥',
+    },
+    dagger: {
+        name: '匕首',
+        kind: 'melee',
+        damage: 40,              // 略高于豌豆
+        fireInterval: 0.3,
+        reach: 60,               // 近战范围
+        arc: Math.PI * 0.6,      // 挥砍扇形角度
+        ammoType: 'durability',
+        ammoLabel: '耐久',
+        maxDurability: 15,
+        color: '#C0C0C0',
+    },
+    sword: {
+        name: '长剑',
+        kind: 'melee',
+        damage: 60,              // 更高
+        fireInterval: 0.6,
+        reach: 95,
+        arc: Math.PI * 0.9,
+        ammoType: 'durability',
+        ammoLabel: '耐久',
+        maxDurability: 10,
+        color: '#E5E5E5',
+    },
+    shovel: {
+        name: '铲子',
+        kind: 'melee',
+        damage: 10,              // 豌豆伤害的一半
+        fireInterval: 0.35,      // 挥得快
+        reach: 45,               // 短距近战
+        arc: Math.PI * 0.55,     // 前方约 100°
+        ammoType: 'infinite',    // 无限耐久
+        ammoLabel: '∞',
+        color: '#B87333',
+        // 特殊功能：可以铲除植物（回收 50% 阳光）
+        canDigPlant: true,
+        digRefundRate: 0.5,
+    },
+};
+
+// 铲子解锁：通关 1-3 后自动解锁
+function isShovelUnlocked() {
+    return typeof saveData !== 'undefined' && saveData && saveData.cleared && saveData.cleared.includes('1-3');
+}
+
+// ---------- 武器碎片 · 掉落权重（决定僵尸倾向掉哪种）----------
+// 权重和不必为100，纯相对权重。
+const WEAPON_FRAG_WEIGHTS = {
+    normal:  { pistol: 45, dagger: 40, shotgun: 10, sword: 5 },
+    cone:    { pistol: 30, dagger: 25, shotgun: 30, sword: 15 },
+    bucket:  { pistol: 15, dagger: 15, shotgun: 35, sword: 35 },
+    spitter: { pistol: 50, dagger: 15, shotgun: 25, sword: 10 },
+};
+function pickWeightedWeaponFrag(zombieKind) {
+    const w = WEAPON_FRAG_WEIGHTS[zombieKind] || WEAPON_FRAG_WEIGHTS.normal;
+    let total = 0;
+    for (const k in w) total += w[k];
+    let r = Math.random() * total;
+    for (const k in w) { r -= w[k]; if (r <= 0) return k; }
+    return 'pistol';
+}
+
+// ---------- 武器解锁与升级表 ----------
+// 每把武器：解锁需要 N 片；等级 1..MAX，每级消耗 cost 碎片，提升 mul(伤害/攻速倍率简单叠)。
+// 每把武器 baseDurability = 局内出场耐久上限；等级提升会加耐久
+const WEAPON_META = {
+    pistol:  { fragKey: 'pistol',  fragLabel: '枪片', unlockCost: 15, maxLevel: 5, perLevel: 15, baseDurability: 40 },
+    shotgun: { fragKey: 'shotgun', fragLabel: '壳片', unlockCost: 25, maxLevel: 5, perLevel: 20, baseDurability: 20 },
+    dagger:  { fragKey: 'dagger',  fragLabel: '匕片', unlockCost: 10, maxLevel: 5, perLevel: 10, baseDurability: 30 },
+    sword:   { fragKey: 'sword',   fragLabel: '剑片', unlockCost: 20, maxLevel: 5, perLevel: 18, baseDurability: 22 },
+};
+const WEAPON_ORDER = ['pistol', 'shotgun', 'dagger', 'sword']; // 图鉴顺序
+// 每级伤害/攻速倍率
+const WEAPON_LEVEL_MUL = [1.00, 1.15, 1.30, 1.50, 1.75, 2.00]; // idx = lv
+
+function weaponMul(lv)   { return WEAPON_LEVEL_MUL[Math.max(1, Math.min(lv, WEAPON_LEVEL_MUL.length - 1))]; }
+function weaponDurCap(k, lv) {
+    const m = WEAPON_META[k]; if (!m) return 0;
+    // 等级越高耐久越多（每级 +20%）
+    return Math.round(m.baseDurability * (1 + (lv - 1) * 0.2));
+}
+
+// ---------- 武器存储 ----------
+function loadWeapons() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(WEAPON_STORAGE_KEY)) || {};
+        return {
+            unlocked: raw.unlocked || {},   // { pistol: true, ... }
+            levels:   raw.levels   || {},   // { pistol: 1, ... }
+            equipped: raw.equipped || null, // 当前携带武器 key
+        };
+    } catch {
+        return { unlocked: {}, levels: {}, equipped: null };
+    }
+}
+function saveWeapons() {
+    try { localStorage.setItem(WEAPON_STORAGE_KEY, JSON.stringify(META.weapons)); } catch {}
+}
+function loadWeaponFrags() {
+    try { return JSON.parse(localStorage.getItem(WFRAG_STORAGE_KEY)) || {}; }
+    catch { return {}; }
+}
+function saveWeaponFrags() {
+    try { localStorage.setItem(WFRAG_STORAGE_KEY, JSON.stringify(META.weaponFrags)); } catch {}
+}
+
+// ---------- 难度参数（可实时调整）----------
+// 注意：阳光收益不受难度影响，恒为 25/颗
+const DIFFICULTY = {
+    hpMul: 1.0,           // 僵尸血量倍率
+    speedMul: 1.0,        // 僵尸速度倍率
+    countMul: 1.0,        // 每波数量倍率
+    intervalMul: 1.0,     // 出怪间隔倍率
+    restMul: 1.0,         // 波次间休整倍率
+    initialSun: 50,       // 初始阳光
+    dropRateMul: 1.0,     // 全局掉率倍率
+    rewardMul: 1.0,       // 货币/碎片奖励倍率
+    attackSpeedMul: 1.0,  // 植物攻击速度倍率（越大越快）
+};
+
+// 难度预设（4 档：简单/普通/困难/地狱）
+const DIFFICULTY_PRESETS = {
+    easy:   { hpMul: 0.7,  speedMul: 0.85, countMul: 0.6, intervalMul: 1.5,  restMul: 1.4,  initialSun: 100, dropRateMul: 0.7, rewardMul: 0.5, attackSpeedMul: 1.35 },
+    normal: { hpMul: 1.0,  speedMul: 1.0,  countMul: 1.0, intervalMul: 1.0,  restMul: 1.0,  initialSun: 50,  dropRateMul: 1.0, rewardMul: 1.0, attackSpeedMul: 1.0  },
+    hard:   { hpMul: 1.4,  speedMul: 1.15, countMul: 1.3, intervalMul: 0.75, restMul: 0.75, initialSun: 50,  dropRateMul: 1.3, rewardMul: 1.5, attackSpeedMul: 0.95 },
+    hell:   { hpMul: 2.0,  speedMul: 1.4,  countMul: 1.6, intervalMul: 0.5,  restMul: 0.5,  initialSun: 50,  dropRateMul: 1.8, rewardMul: 2.5, attackSpeedMul: 0.85 },
+};
+
+// 全局当前难度键（在选关屏切换）
+let currentDifficulty = 'normal';
+
+// ---------- 全局状态 ----------
+const state = {
+    sun: 50,   // 会在启动时被 DIFFICULTY.initialSun 覆盖
+    wave: 1,
+    maxWave: 10,
+    selectedCard: -1,
+    plants: [],
+    zombies: [],
+    bullets: [],
+    suns: [],
+    effects: [],
+    pickups: [],       // 拾取物：银币/金币/钻石/血包/碎片/局内卡
+    tempCards: [],     // 局内即用植物卡（僵尸掉落）
+    cooldowns: {},
+    waveTimer: 8,
+    waveActive: false,
+    zombiesInWave: 0,
+    zombiesSpawned: 0,
+    spawnInterval: 3,
+    spawnTimer: 1,
+    naturalSunTimer: 8,
+    gameOver: false,
+    victory: false,
+    time: 0,
+    killedTotal: 0,     // 全关累计击杀（用于进度条）
+    // 联机（房主）持有远端玩家状态；客人仅从 snapshot 反序列化
+    mp: {
+        active: false,
+        role: null,           // 'host' | 'guest'
+        remoteInput: null,    // 房主端：最近一次收到的客人输入
+        snapshotAcc: 0,       // 房主端：广播定时累计
+    },
+};
+// 第二玩家（远端）—— 房主端跟踪，客人端从 snapshot 覆盖
+const dave2 = {
+    x: 0, y: 0, jumpOffset: 0,
+    hp: 3, hurtFlash: 0,
+    facing: 1, facingAngle: 0,
+    color: '#66FFCC',
+    label: 'P2',
+    isJumping: false, vy: 0, jumpCooldown: 0,
+    weaponCooldown: 0,
+    swingTimer: 0, swingDir: 0, swingWeapon: null,
+    dashing: false, dashTimer: 0, dashCooldown: 0,
+    guarding: false, guardTimer: 0, guardCooldown: 0,
+    invuln: 0, perfectFlash: 0, guardFacing: 0,
+    sprinting: false,
+    currentWeapon: null,
+    equippedWeapon: null, equippedLevel: 1, equippedDurability: 0,
+    _damageAcc: 0,
+    get row() { return yToRow(this.y); },
+};
+CARD_ORDER.forEach(k => state.cooldowns[k] = 0);
+
+// ---------- DOM 引用 ----------
+const sunValueEl = document.getElementById('sun-value');
+const waveValueEl = document.getElementById('wave-value');
+const hpValueEl = document.getElementById('hp-value');
+const heroNameEl = document.getElementById('hero-name');
+const logEl = document.getElementById('log-text');
+const cardEls = Array.from(document.querySelectorAll('#card-slots .card'));
+
+// 主角改名
+heroNameEl.addEventListener('input', () => {
+    const v = heroNameEl.value.trim();
+    dave.label = v.length > 0 ? v : '戴夫';
+});
+let inputFocused = false;
+heroNameEl.addEventListener('focus', () => { inputFocused = true; });
+heroNameEl.addEventListener('blur', () => { inputFocused = false; });
+
+// 卡槽点击
+cardEls.forEach((el, idx) => {
+    el.addEventListener('click', () => selectCard(idx));
+});
+
+// ---------- 日志 ----------
+let logTimer = 0;
+function log(msg) {
+    logEl.textContent = msg;
+    logTimer = 3;
+}
+
+// ---------- 输入 ----------
+const keys = {};
+window.addEventListener('keydown', (e) => {
+    if (inputFocused) return;
+    const k = e.key.toLowerCase();
+    const wasDown = keys[k];
+    keys[k] = true;
+
+    // 客人：只保留 keys 状态用于上行输入，不本地触发副作用
+    const isGuest = state.mp.active && state.mp.role === 'guest';
+
+    if (k === ' ') {
+        e.preventDefault();
+        if (!isGuest && !dave.isJumping && dave.jumpCooldown <= 0 && !state.gameOver) {
+            dave.vy = JUMP_VELOCITY;
+            dave.isJumping = true;
+            dave.jumpCooldown = JUMP_CD;
+            dave.ghost = { x: dave.x, y: dave.y, alpha: 0.6 };
+        }
+    }
+    if (!isGuest) {
+        if (k >= '1' && k <= '4') selectCard(parseInt(k) - 1);
+        if (k >= '5' && k <= '8') useTempCard(parseInt(k) - 5);
+        if (k === 'f') tryPlant();
+    }
+
+    // 动作按键（避免与浏览器冲突）
+    if (k === 'q' || k === 'e') e.preventDefault();
+    if (!wasDown && !isGuest) {
+        if (k === 'q')      startDash();
+        else if (k === 'e') startGuard();
+    }
+
+    if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
+});
+window.addEventListener('keyup', (e) => {
+    if (inputFocused) return;
+    const k = e.key.toLowerCase();
+    keys[k] = false;
+    if (k === 'e') endGuard();
+});
+
+// ---------- 卡槽选择 ----------
+// 鼠标位置追踪（用于挥砍方向 & 铲子瞄准）
+const mouse = { x: 0, y: 0, inside: false };
+canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - rect.left) * (W / rect.width);
+    mouse.y = (e.clientY - rect.top) * (H / rect.height);
+    mouse.inside = true;
+});
+canvas.addEventListener('mouseleave', () => { mouse.inside = false; });
+
+// 左键点击 → 用当前武器攻击（智能判定）
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (state.gameOver || !gameRunning) return;
+    // 客人不本地开火，走 evt 上行（见文件末尾）
+    if (state.mp.active && state.mp.role === 'guest') return;
+    tryUseWeapon();
+});
+
+function tryUseWeapon() {
+    const wkey = dave.currentWeapon;
+    if (!wkey) {
+        log('未装备武器');
+        return;
+    }
+    if (dave.weaponCooldown > 0) return;
+    const w = WEAPONS[wkey];
+    if (!w) return;
+
+    // 铲子以外的武器：检查耐久
+    const isEquipped = wkey === dave.equippedWeapon;
+    if (isEquipped) {
+        if ((dave.equippedDurability || 0) <= 0) {
+            // 用尽：自动切回铲子（若解锁）或空
+            log(`${w.name} 已损坏`);
+            dave.currentWeapon = isShovelUnlocked() ? 'shovel' : null;
+            return;
+        }
+    }
+
+    // 攻击朝向：优先鼠标方向
+    let angle;
+    const daveY = dave.y - dave.jumpOffset;
+    if (mouse.inside) {
+        angle = Math.atan2(mouse.y - daveY, mouse.x - dave.x);
+    } else {
+        angle = dave.facing > 0 ? 0 : Math.PI;
+    }
+    dave.facingAngle = angle;
+
+    // 等级倍率（只对玩家装备的武器）
+    const mul = isEquipped ? weaponMul(dave.equippedLevel || 1) : 1;
+
+    if (w.kind === 'ranged') {
+        // 远程：射子弹
+        const speed = w.bulletSpeed || 500;
+        const dmg = Math.round(w.damage * mul);
+        const pellets = w.pellets || 1;
+        const spread = w.spread || 0;
+        for (let i = 0; i < pellets; i++) {
+            const t = pellets === 1 ? 0 : (i / (pellets - 1) - 0.5);
+            const a = angle + t * spread;
+            state.bullets.push({
+                x: dave.x + Math.cos(a) * 22,
+                y: daveY + Math.sin(a) * 22,
+                vx: Math.cos(a) * speed,
+                vy: Math.sin(a) * speed,
+                row: null,           // 自由方向标记（updateBullets 兼容）
+                friendly: true,
+                damage: dmg,
+                color: w.color,
+                label: w.bulletLabel || '·',
+                life: 1.2,
+            });
+        }
+        dave.weaponCooldown = w.fireInterval / (mul);
+        startSwing(angle, wkey);
+    } else {
+        // 近战：智能判定 (铲子挖植物)
+        const cx = dave.x + Math.cos(angle) * (w.reach || 40) * 0.5;
+        const cy = daveY + Math.sin(angle) * (w.reach || 40) * 0.5;
+        if (w.canDigPlant) {
+            const zombieNear = state.zombies.find(z =>
+                Math.hypot(z.x - cx, z.y - cy) < (w.reach || 40)
+            );
+            if (!zombieNear) {
+                const plant = findPlantNear(cx, cy, w.reach || 40);
+                if (plant) {
+                    digPlant(plant);
+                    dave.weaponCooldown = w.fireInterval;
+                    startSwing(angle, wkey);
+                    return;
+                }
+            }
+        }
+        // 挥砍扇形
+        const dmg = Math.round(w.damage * mul);
+        for (const z of state.zombies) {
+            const dx = z.x - dave.x;
+            const dy = z.y - daveY;
+            const dist = Math.hypot(dx, dy);
+            if (dist > (w.reach || 40)) continue;
+            const zAngle = Math.atan2(dy, dx);
+            let delta = zAngle - angle;
+            while (delta >  Math.PI) delta -= Math.PI * 2;
+            while (delta < -Math.PI) delta += Math.PI * 2;
+            if (Math.abs(delta) <= (w.arc || Math.PI) / 2) {
+                z.hp -= dmg;
+                z.hurtFlash = 0.12;
+                state.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.15, maxLife: 0.15 });
+            }
+        }
+        dave.weaponCooldown = w.fireInterval / mul;
+        startSwing(angle, wkey);
+    }
+
+    // 扣耐久（铲子/无限耐久不扣）
+    if (isEquipped && w.ammoType !== 'infinite') {
+        dave.equippedDurability = Math.max(0, (dave.equippedDurability || 0) - 1);
+        if (dave.equippedDurability === 0) {
+            log(`${w.name} 耐久耗尽！`);
+            // 用尽后回退到铲子或无武器
+            dave.currentWeapon = isShovelUnlocked() ? 'shovel' : null;
+        }
+    }
+}
+
+// 触发挥砍动画
+function startSwing(angle, wkey) {
+    dave.swingTimer = 0.22;
+    dave.swingDir = angle;
+    dave.swingWeapon = wkey;
+}
+
+// ---------- 动作：奔跑 / 滑铲 / 闪避 / 格挡 ----------
+function currentMoveDir() {
+    // 从按键取当前方向；没有按方向则用 facing
+    let vx = 0, vy = 0;
+    if (keys['a'] || keys['arrowleft'])  vx -= 1;
+    if (keys['d'] || keys['arrowright']) vx += 1;
+    if (keys['w'] || keys['arrowup'])    vy -= 1;
+    if (keys['s'] || keys['arrowdown'])  vy += 1;
+    if (vx === 0 && vy === 0) { vx = dave.facing; vy = 0; }
+    const m = Math.hypot(vx, vy) || 1;
+    return { x: vx / m, y: vy / m };
+}
+
+function startDash() {
+    if (state.gameOver || !gameRunning) return;
+    if (dave.dashCooldown > 0 || dave.dashing) return;
+    dave.dashing = true;
+    dave.dashTimer = ACTION.dashDuration;
+    dave.dashDir = currentMoveDir();
+    dave.dashCooldown = ACTION.dashCooldown;
+    dave.invuln = Math.max(dave.invuln, ACTION.dashInvuln);
+    dave.dashGhosts = [];
+    log('闪避！');
+}
+
+function startGuard() {
+    if (state.gameOver || !gameRunning) return;
+    if (dave.guardCooldown > 0 || dave.guarding) return;
+    dave.guarding = true;
+    dave.guardTimer = 0;
+    // 记录当前朝向作为盾牌方向（跟随鼠标或面朝）
+    if (mouse.inside) {
+        const daveY = dave.y - dave.jumpOffset;
+        dave.guardFacing = Math.atan2(mouse.y - daveY, mouse.x - dave.x);
+    } else {
+        dave.guardFacing = dave.facing > 0 ? 0 : Math.PI;
+    }
+}
+function endGuard() {
+    if (!dave.guarding) return;
+    dave.guarding = false;
+    dave.guardCooldown = ACTION.guardCooldown;
+}
+// 判断当前是否在完美格挡窗口内
+function inPerfectGuard() {
+    return dave.guarding && dave.guardTimer <= ACTION.guardPerfectMs;
+}
+
+// 找到附近可铲的植物
+function findPlantNear(x, y, r) {
+    let best = null, bestDist = Infinity;
+    for (const p of state.plants) {
+        const d = Math.hypot(p.x - x, p.y - y);
+        if (d <= r && d < bestDist) { best = p; bestDist = d; }
+    }
+    return best;
+}
+
+// 铲除植物：返还 50% 阳光
+function digPlant(plant) {
+    const def = PLANTS[plant.kind];
+    const refund = Math.round(def.cost * 0.5);
+    state.sun += refund;
+    state.effects.push({
+        kind: 'pickup', x: plant.x, y: plant.y,
+        life: 0.6, maxLife: 0.6, label: `+${refund}`,
+    });
+    plant.hp = 0;   // 交由 updatePlants 清理
+    log(`铲除 ${def.name}，退回 ${refund} 阳光`);
+}
+
+function selectCard(idx) {
+    if (idx < 0 || idx >= CARD_ORDER.length) return;
+    state.selectedCard = state.selectedCard === idx ? -1 : idx;
+    cardEls.forEach((el, i) => el.classList.toggle('active', i === state.selectedCard));
+}
+
+// ---------- 种植 ----------
+// 使用临时植物卡（僵尸掉落的即用卡，按 5/6/7/8）
+// 无阳光消耗、无 CD，但用完就消失
+function useTempCard(idx) {
+    if (state.gameOver) return;
+    if (!state.tempCards || !state.tempCards[idx]) {
+        log('临时卡槽 ' + (5 + idx) + ' 为空');
+        return;
+    }
+    if (dave.isJumping) { log('空中无法种植'); return; }
+
+    const kind = state.tempCards[idx];
+    const def = PLANTS[kind];
+    // 间距校验（同行）
+    for (const p of state.plants) {
+        if (p.row === dave.row && Math.abs(p.x - dave.x) < MIN_PLANT_DIST) {
+            log('此处太挤，无法种植'); return;
+        }
+    }
+    if (dave.x < FIELD.left + 20 || dave.x > FIELD.right - 30) {
+        log('此处不能种植'); return;
+    }
+
+    state.plants.push(makePlant(kind, dave.x, dave.row, dave.y));
+    state.tempCards.splice(idx, 1);
+    log(`使用即用卡种下 ${def.name}！`);
+}
+
+function tryPlant() {
+    if (state.gameOver) return;
+    if (state.selectedCard < 0) { log('请先选择植物 (按 1-4)'); return; }
+    if (dave.isJumping) { log('空中无法种植'); return; }
+
+    const key = CARD_ORDER[state.selectedCard];
+    const def = PLANTS[key];
+
+    if (state.cooldowns[key] > 0) { log(`${def.name} 冷却中…`); return; }
+    if (state.sun < def.cost) { log(`阳光不足 (需 ${def.cost})`); return; }
+
+    for (const p of state.plants) {
+        if (p.row === dave.row && Math.abs(p.x - dave.x) < MIN_PLANT_DIST) {
+            log('此处太挤，无法种植'); return;
+        }
+    }
+    if (dave.x < FIELD.left + 20 || dave.x > FIELD.right - 30) {
+        log('此处不能种植'); return;
+    }
+
+    state.sun -= def.cost;
+    state.cooldowns[key] = def.cooldown;
+    state.plants.push(makePlant(key, dave.x, dave.row, dave.y));
+    log(`种下 ${def.name}`);
+}
+
+function makePlant(kind, x, row, y) {
+    const def = PLANTS[kind];
+    const lv = META.levels[kind] || 1;
+    const mul = levelInfo(lv).mul;
+    // 血量按等级放大
+    const hp = def.hp * mul;
+    return {
+        kind, x, row,
+        y: y != null ? y : rowY(row),
+        lv,               // 记录种下时的等级
+        mul,              // 等级倍率
+        hp,
+        maxHp: hp,
+        fireTimer: def.fireInterval ? Math.random() * 0.5 : 0,
+        produceTimer: def.produceInterval ? 7 + Math.random() * 2 : 0,
+        fuseTimer: def.fuse || 0,
+        exploded: false,
+        shake: 0,
+    };
+}
+
+// ---------- 阳光 ----------
+function spawnNaturalSun() {
+    const x = FIELD.left + 40 + Math.random() * (FIELD.right - FIELD.left - 80);
+    state.suns.push({
+        x, y: FIELD.top - 10,
+        targetY: FIELD.top + 40 + Math.random() * (FIELD.bottom - FIELD.top - 80),
+        vy: 40, value: 25, life: 10,
+    });
+}
+function spawnSunAt(x, y, value = 25) {
+    state.suns.push({
+        x, y,
+        targetY: y + 30,
+        vy: 60, value, life: 10,
+    });
+}
+
+// ---------- 僵尸生成 ----------
+function spawnZombie() {
+    let kind;
+    // 优先使用关卡定义的僵尸池
+    if (state._zombiePool && state._zombiePool.length > 0) {
+        kind = state._zombiePool[Math.floor(Math.random() * state._zombiePool.length)];
+    } else {
+        // 默认逻辑
+        kind = 'normal';
+        const r = Math.random();
+        if (state.wave >= 5 && r < 0.15) kind = 'bucket';
+        else if (state.wave >= 4 && r < 0.30) kind = 'spitter';
+        else if (state.wave >= 3 && r < 0.50) kind = 'cone';
+    }
+
+    const def = ZOMBIES[kind];
+    const row = randomActiveRow();
+    // 应用难度倍率（不修改原始数据）
+    const hp = def.hp * DIFFICULTY.hpMul;
+    const speed = def.speed * (0.9 + Math.random() * 0.3) * DIFFICULTY.speedMul;
+    state.zombies.push({
+        kind,
+        x: FIELD.right + 20,
+        row,
+        y: rowY(row),
+        hp,
+        maxHp: hp,
+        speed,
+        eating: null,
+        hurtFlash: 0,
+    });
+    state.zombiesSpawned++;
+}
+
+function startWave() {
+    state.waveActive = true;
+    // 每波数量：基础 3+wave*2，套 countMul
+    state.zombiesInWave = Math.max(1, Math.round((3 + state.wave * 2) * DIFFICULTY.countMul));
+    state.zombiesSpawned = 0;
+    // 生成间隔：基础 max(1.2, 4-wave*0.3)，套 intervalMul
+    state.spawnInterval = Math.max(0.4, (4 - state.wave * 0.3) * DIFFICULTY.intervalMul);
+    state.spawnTimer = 1;
+    log(`第 ${state.wave} 波来袭！共 ${state.zombiesInWave} 只`);
+}
+
+// ---------- 主循环 ----------
+let lastTime = performance.now();
+function loop(now) {
+    if (!gameRunning) return;
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+    // 弹窗打开时暂停世界
+    const settingsEl = document.getElementById('settings-modal');
+    const aboutEl = document.getElementById('about-modal');
+    const settingsOpen = settingsEl ? !settingsEl.classList.contains('hidden') : false;
+    const aboutOpen = aboutEl ? !aboutEl.classList.contains('hidden') : false;
+    if (!state.gameOver && !settingsOpen && !aboutOpen) update(dt);
+    render();
+    updateHUD();
+    rafId = requestAnimationFrame(loop);
+}
+
+function update(dt) {
+    state.time += dt;
+
+    // 客人：完全被动，只发上行输入，不跑本地模拟
+    if (state.mp.active && state.mp.role === 'guest') {
+        mpGuestSendInput(dt);
+        // 客人本地也需要动作 CD / 无敌帧 / 视觉计时递减，让 UI 反馈流畅
+        finishDaveTimers(dt);
+        return;
+    }
+
+    updateDave(dt);
+    if (state.mp.active && state.mp.role === 'host') {
+        // 应用客人的输入到 dave2，并推进 dave2
+        mpHostApplyRemoteInput(dt);
+        updateDave2(dt);
+    }
+    updatePlants(dt);
+    updateBullets(dt);
+    updateZombies(dt);
+    updateSuns(dt);
+    updateEffects(dt);
+    updatePickups(dt);
+    updateCooldowns(dt);
+    updateWaves(dt);
+    checkDaveDamage(dt);
+    if (state.mp.active && state.mp.role === 'host') {
+        checkDave2Damage(dt);
+        // 广播 snapshot（15Hz）
+        state.mp.snapshotAcc += dt;
+        if (state.mp.snapshotAcc >= 1 / 15) {
+            state.mp.snapshotAcc = 0;
+            mpHostBroadcastSnapshot();
+        }
+    }
+
+    if (logTimer > 0) {
+        logTimer -= dt;
+        if (logTimer <= 0) {
+            logEl.textContent = 'WASD 移动 · Shift 奔跑 · Q 闪避 · E 格挡（完美窗口反弹） · 空格 跳 · 1-4 选卡 · F 种 · 左键 攻击';
+        }
+    }
+}
+
+function updateDave(dt) {
+    // 阵亡后旋转倒地
+    if (state.gameOver && !state.victory) {
+        if (dave.deathRot < Math.PI / 2) dave.deathRot += dt * 3;
+        return;
+    }
+    // 胜利弹跳
+    if (state.gameOver && state.victory) {
+        dave.victoryBounce += dt;
+        return;
+    }
+
+    // ---- 动作 CD 递减 ----
+    if (dave.dashCooldown  > 0) dave.dashCooldown  -= dt;
+    if (dave.guardCooldown > 0) dave.guardCooldown -= dt;
+    if (dave.invuln        > 0) dave.invuln        -= dt;
+    if (dave.perfectFlash  > 0) dave.perfectFlash  -= dt;
+
+    // ---- 奔跑（Shift 持续）----
+    dave.sprinting = !!(keys['shift']);
+
+    // ---- 闪避（短时间高速位移 + 残影）----
+    if (dave.dashing) {
+        dave.dashTimer -= dt;
+        // 记录残影
+        dave.dashGhosts.push({ x: dave.x, y: dave.y - dave.jumpOffset, alpha: 0.55 });
+        if (dave.dashGhosts.length > 6) dave.dashGhosts.shift();
+        dave.x += dave.dashDir.x * ACTION.dashSpeed * dt;
+        dave.y += dave.dashDir.y * ACTION.dashSpeed * dt;
+        dave.x = Math.max(FIELD.left, Math.min(FIELD.right, dave.x));
+        dave.y = Math.max(FIELD.top + 12, Math.min(FIELD.bottom - 12, dave.y));
+        if (dave.dashTimer <= 0) dave.dashing = false;
+        finishDaveTimers(dt);
+        return;
+    }
+
+    // 残影淡出
+    if (dave.dashGhosts.length) {
+        for (const g of dave.dashGhosts) g.alpha -= dt * 3;
+        dave.dashGhosts = dave.dashGhosts.filter(g => g.alpha > 0);
+    }
+
+    // ---- 格挡计时 ----
+    if (dave.guarding) {
+        dave.guardTimer += dt;
+        // 格挡期间可以低速移动
+    }
+
+    let vx = 0, vy = 0;
+    if (keys['a'] || keys['arrowleft']) vx -= 1;
+    if (keys['d'] || keys['arrowright']) vx += 1;
+    if (keys['w'] || keys['arrowup']) vy -= 1;
+    if (keys['s'] || keys['arrowdown']) vy += 1;
+
+    // 归一化对角速度（避免 √2 加速）
+    if (vx !== 0 && vy !== 0) {
+        const inv = 1 / Math.SQRT2;
+        vx *= inv; vy *= inv;
+    }
+
+    // 速度倍率：奔跑 1.65×，格挡 0.55×
+    let mul = 1;
+    if (dave.sprinting) mul *= dave.sprintMul;
+    if (dave.guarding)  mul *= 0.55;
+
+    if (vx !== 0) {
+        dave.x += vx * dave.speed * mul * dt;
+        dave.facing = vx > 0 ? 1 : -1;
+        dave.facingAngle = Math.atan2(vy, vx);
+        dave.x = Math.max(FIELD.left, Math.min(FIELD.right, dave.x));
+    } else if (vy !== 0) {
+        dave.facingAngle = vy > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+
+    if (vy !== 0) {
+        dave.y += vy * dave.speedY * mul * dt;
+        dave.y = Math.max(FIELD.top + 12, Math.min(FIELD.bottom - 12, dave.y));
+    }
+
+    finishDaveTimers(dt);
+}
+
+function finishDaveTimers(dt) {
+    if (dave.isJumping) {
+        dave.jumpOffset += dave.vy * dt;
+        dave.vy -= GRAVITY * dt;
+        if (dave.jumpOffset <= 0) {
+            dave.jumpOffset = 0;
+            dave.vy = 0;
+            dave.isJumping = false;
+        }
+    }
+    if (dave.jumpCooldown > 0) dave.jumpCooldown -= dt;
+    if (dave.ghost) {
+        dave.ghost.alpha -= dt * 2;
+        if (dave.ghost.alpha <= 0) dave.ghost = null;
+    }
+    if (dave.hurtFlash > 0) dave.hurtFlash -= dt;
+    if (dave.weaponCooldown > 0) dave.weaponCooldown -= dt;
+    if (dave.swingTimer > 0) dave.swingTimer -= dt;
+    // 后仰逐渐归零
+    if (Math.abs(dave.recoil) > 0.1) {
+        dave.recoil *= Math.max(0, 1 - dt * 8);
+    } else {
+        dave.recoil = 0;
+    }
+}
+
+function updatePlants(dt) {
+    for (let i = state.plants.length - 1; i >= 0; i--) {
+        const p = state.plants[i];
+        const def = PLANTS[p.kind];
+        const mul = p.mul || 1;   // 兼容：旧种下的植物没有 mul
+        if (p.shake > 0) p.shake -= dt;
+
+        if (def.produceInterval) {
+            p.produceTimer -= dt;
+            if (p.produceTimer <= 0) {
+                // 等级提升 → 周期缩短（除以倍率）
+                p.produceTimer = def.produceInterval / mul;
+                spawnSunAt(p.x, p.y, 25);
+            }
+        }
+        if (def.fireInterval) {
+            p.fireTimer -= dt;
+            const hasTarget = state.zombies.some(z => z.row === p.row && z.x > p.x && z.x < p.x + def.range);
+            if (p.fireTimer <= 0 && hasTarget) {
+                p.fireTimer = def.fireInterval / (DIFFICULTY.attackSpeedMul || 1);
+                state.bullets.push({
+                    x: p.x + 20, y: p.y, row: p.row,
+                    vx: 380, damage: def.bulletDamage * mul,   // 伤害 × 等级倍率
+                    color: def.color, label: '豌',
+                });
+            }
+        }
+        if (def.fuse) {
+            p.fuseTimer -= dt;
+            if (p.fuseTimer <= 0 && !p.exploded) {
+                p.exploded = true;
+                const radius = def.blastRadius * mul;  // 半径 × 等级倍率
+                for (const z of state.zombies) {
+                    if (Math.hypot(z.x - p.x, z.y - p.y) < radius) {
+                        z.hp -= def.blastDamage;
+                        z.hurtFlash = 0.15;
+                    }
+                }
+                state.effects.push({
+                    kind: 'boom', x: p.x, y: p.y,
+                    radius, life: 0.5, maxLife: 0.5,
+                });
+                p.hp = 0;
+                log('轰！');
+            }
+        }
+        if (p.hp <= 0) state.plants.splice(i, 1);
+    }
+}
+
+function updateBullets(dt) {
+    for (let i = state.bullets.length - 1; i >= 0; i--) {
+        const b = state.bullets[i];
+        b.x += b.vx * dt;
+        if (b.vy) b.y += b.vy * dt;
+        // 出界 / 生命结束
+        if (b.x > FIELD.right + 20 || b.x < FIELD.left - 20
+            || b.y < FIELD.top - 20 || b.y > FIELD.bottom + 20) {
+            state.bullets.splice(i, 1); continue;
+        }
+        if (b.life != null) {
+            b.life -= dt;
+            if (b.life <= 0) { state.bullets.splice(i, 1); continue; }
+        }
+
+        // 敌人子弹命中戴夫的判定
+        if (b.enemy) {
+            const daveY = dave.y - dave.jumpOffset;
+            if (Math.hypot(b.x - dave.x, b.y - daveY) < 20) {
+                // 无敌帧：直接免伤
+                if (dave.invuln > 0) {
+                    state.bullets.splice(i, 1);
+                    continue;
+                }
+                // 格挡：完美窗口 → 反弹；普通格挡 → 免伤
+                if (dave.guarding) {
+                    if (inPerfectGuard()) {
+                        // 反弹：转向 + 变友军 + 加伤
+                        b.vx = -b.vx;
+                        b.vy = -b.vy;
+                        b.enemy = false;
+                        b.friendly = true;
+                        b.damage = Math.round((b.damage || 1) * ACTION.perfectReflectMul * 20); // 敌人子弹伤害是"命中扣 1 HP"，反弹按 20 基准折算成对僵尸伤害
+                        b.color = '#FFEE66';
+                        b.label = '✦';
+                        dave.perfectFlash = 0.4;
+                        log('★ 完美格挡·反弹！');
+                    } else {
+                        // 普通格挡：免伤但子弹消失
+                        state.bullets.splice(i, 1);
+                    }
+                    continue;
+                }
+                // 中弹
+                dave.hurtFlash = 0.15;
+                dave.hp--;
+                dave.recoil = (b.vx < 0 ? 1 : -1) * 6;
+                dave.invuln = Math.max(dave.invuln, 0.6);
+                log('被远程僵尸击中！HP -1');
+                if (dave.hp <= 0) gameOver(false);
+                state.bullets.splice(i, 1);
+                continue;
+            }
+        }
+
+        // 命中判定（对僵尸）
+        let hit = null;
+        if (b.friendly) {
+            // 自由方向：圆形近距命中
+            let bestDist = 22;
+            for (const z of state.zombies) {
+                if (z.hp <= 0) continue;
+                const d = Math.hypot(z.x - b.x, z.y - b.y);
+                if (d < bestDist) { bestDist = d; hit = z; }
+            }
+        } else if (!b.enemy) {
+            // 传统 row-based：植物子弹
+            for (const z of state.zombies) {
+                if (z.row === b.row && z.hp > 0 && Math.abs(z.x - b.x) < 20) {
+                    if (!hit || z.x < hit.x) hit = z;
+                }
+            }
+        }
+        if (hit) {
+            hit.hp -= b.damage;
+            hit.hurtFlash = 0.12;
+            state.effects.push({ kind: 'hit', x: b.x, y: b.y, life: 0.15, maxLife: 0.15 });
+            state.bullets.splice(i, 1);
+        }
+    }
+}
+
+function updateZombies(dt) {
+    for (let i = state.zombies.length - 1; i >= 0; i--) {
+        const z = state.zombies[i];
+        const def = ZOMBIES[z.kind];
+
+        // 硬直：完美格挡触发的僵尸僵直
+        if (z._stunTimer && z._stunTimer > 0) {
+            z._stunTimer -= dt;
+            if (z._stunTimer <= 0) { z._stunned = false; }
+            if (z.hurtFlash > 0) z.hurtFlash -= dt;
+            if (z.hp <= 0) {
+                state.effects.push({ kind: 'dead', x: z.x, y: z.y, life: 0.6, maxLife: 0.6, label: def.name });
+                spawnZombieDrops(z);
+                state.zombies.splice(i, 1);
+                state.killedTotal++;
+            }
+            continue;
+        }
+
+        let blocker = null;
+        for (const p of state.plants) {
+            if (p.row === z.row && p.x < z.x && p.x > z.x - 30) {
+                if (!blocker || p.x > blocker.x) blocker = p;
+            }
+        }
+        // 远程僵尸：在射程内停下开火
+        if (def.ranged) {
+            const dist = z.x - dave.x;
+            const daveY = dave.y - dave.jumpOffset;
+            const rowDy = Math.abs(dave.y - z.y);
+            const inRange = dist > 60 && dist < (def.range || 380) && rowDy < 40;
+            if (blocker) {
+                z.eating = blocker;
+                blocker.hp -= def.damage * dt;
+                blocker.shake = 0.1;
+            } else if (inRange) {
+                z.eating = null;
+                z._shootTimer = (z._shootTimer || 0) - dt;
+                if (z._shootTimer <= 0) {
+                    z._shootTimer = def.fireInterval || 2.0;
+                    // 朝戴夫射子弹
+                    const dx = dave.x - z.x;
+                    const dy = daveY - z.y;
+                    const d = Math.hypot(dx, dy) || 1;
+                    state.bullets.push({
+                        x: z.x - 12, y: z.y,
+                        vx: (dx / d) * (def.bulletSpeed || 320),
+                        vy: (dy / d) * (def.bulletSpeed || 320),
+                        row: null,
+                        friendly: false,
+                        enemy: true,
+                        damage: def.bulletDamage || 1,
+                        color: def.bulletColor || '#FF6666',
+                        label: def.bulletLabel || '×',
+                        life: 2.5,
+                    });
+                }
+            } else {
+                z.eating = null;
+                z.x -= z.speed * dt;
+            }
+        } else if (blocker) {
+            z.eating = blocker;
+            blocker.hp -= def.damage * dt;
+            blocker.shake = 0.1;
+        } else {
+            z.eating = null;
+            z.x -= z.speed * dt;
+        }
+        if (z.hurtFlash > 0) z.hurtFlash -= dt;
+
+        if (z.x < FIELD.left - 10) gameOver(false);
+
+        if (z.hp <= 0) {
+            state.effects.push({
+                kind: 'dead', x: z.x, y: z.y,
+                life: 0.6, maxLife: 0.6, label: def.name,
+            });
+            // 掉落物
+            spawnZombieDrops(z);
+            state.zombies.splice(i, 1);
+            state.killedTotal++;
+        }
+    }
+
+    if (state.waveActive &&
+        state.zombiesSpawned >= state.zombiesInWave &&
+        state.zombies.length === 0) {
+        state.waveActive = false;
+        if (state.wave >= state.maxWave) {
+            gameOver(true);
+        } else {
+            state.wave++;
+            state.waveTimer = 12 * DIFFICULTY.restMul;
+            log(`第 ${state.wave - 1} 波清空！休整 12 秒…`);
+        }
+    }
+}
+
+function updateSuns(dt) {
+    const daveY = dave.y - dave.jumpOffset;
+    const PICK_RADIUS = 28;   // 接触拾取半径
+    for (let i = state.suns.length - 1; i >= 0; i--) {
+        const s = state.suns[i];
+        if (s.y < s.targetY) {
+            s.y += s.vy * dt;
+            if (s.y > s.targetY) s.y = s.targetY;
+        }
+        // 接触即拾（戴夫任意位置只要碰到就吃）
+        if (Math.hypot(s.x - dave.x, s.y - daveY) < PICK_RADIUS) {
+            state.sun += s.value;
+            state.effects.push({
+                kind: 'pickup', x: s.x, y: s.y,
+                life: 0.6, maxLife: 0.6, label: `+${s.value}`,
+            });
+            state.suns.splice(i, 1);
+            continue;
+        }
+        s.life -= dt;
+        if (s.life <= 0) state.suns.splice(i, 1);
+    }
+    state.naturalSunTimer -= dt;
+    if (state.naturalSunTimer <= 0) {
+        // 原版 PvZ：天降阳光间隔 5~10s，随波次略微加快
+        const base = Math.max(4, 10 - state.wave * 0.3);
+        state.naturalSunTimer = base + Math.random() * 5;
+        spawnNaturalSun();
+    }
+}
+
+function updateEffects(dt) {
+    for (let i = state.effects.length - 1; i >= 0; i--) {
+        const e = state.effects[i];
+        e.life -= dt;
+        if (e.life <= 0) state.effects.splice(i, 1);
+    }
+}
+
+// ---------- 掉落物：银币/金币/钻石/血包/植物碎片 ----------
+// 类型定义（字符 + 颜色）
+const PICKUP_DEFS = {
+    silver:   { label: '银', color: '#C0C0C0', shadow: '#909090' },
+    gold:     { label: '金', color: '#FFD700', shadow: '#FFA500' },
+    gem:      { label: '钻', color: '#66FFFF', shadow: '#00CCFF' },
+    heal:     { label: '药', color: '#FF6688', shadow: '#FF3366' },
+    fragment: { label: '片', color: '#AA88FF', shadow: '#7755CC' },
+    card:     { label: '卡', color: '#00FFAA', shadow: '#00FF88' },
+    wfrag:    { label: '械', color: '#FFCC66', shadow: '#CC9933' },
+};
+
+// 僵尸死亡：按掉落表生成拾取物
+function spawnZombieDrops(z) {
+    const table = DROP_TABLE[z.kind];
+    if (!table) return;
+    const rate = DIFFICULTY.dropRateMul || 1;
+    const rew = DIFFICULTY.rewardMul || 1;
+
+    // 银币
+    if (Math.random() < table.silver.chance * rate) {
+        const n = Math.max(1, Math.round(randInt(table.silver.min, table.silver.max) * rew));
+        spawnPickup(z.x, z.y, 'silver', n);
+    }
+    // 金币
+    if (Math.random() < table.gold.chance * rate) {
+        const n = Math.max(1, Math.round(randInt(table.gold.min, table.gold.max) * rew));
+        spawnPickup(z.x, z.y, 'gold', n);
+    }
+    // 钻石
+    if (table.gem.chance > 0 && Math.random() < table.gem.chance * rate) {
+        const n = Math.max(1, randInt(table.gem.min, table.gem.max));
+        spawnPickup(z.x, z.y, 'gem', n);
+    }
+    // 血包
+    if (Math.random() < table.heal.chance * rate) {
+        spawnPickup(z.x, z.y, 'heal', 1);
+    }
+    // 植物碎片（局外持久）
+    if (Math.random() < table.fragment.chance * rate) {
+        const n = Math.max(1, Math.round(randInt(table.fragment.min, table.fragment.max) * rew));
+        const plant = pickWeightedFragment(z.kind);
+        spawnPickup(z.x, z.y, 'fragment', n, plant);
+    }
+    // 局内即用植物卡（拾到本局可无成本使用一次）
+    if (table.card && Math.random() < table.card.chance * rate) {
+        const plant = pickWeightedFragment(z.kind);
+        spawnPickup(z.x, z.y, 'card', 1, plant);
+    }
+    // 武器碎片（局外持久）
+    if (table.wfrag && Math.random() < table.wfrag.chance * rate) {
+        const n = Math.max(1, Math.round(randInt(table.wfrag.min, table.wfrag.max) * rew));
+        const wkey = pickWeightedWeaponFrag(z.kind);
+        spawnPickup(z.x, z.y, 'wfrag', n, wkey);
+    }
+}
+function randInt(a, b) {
+    return Math.floor(a + Math.random() * (b - a + 1));
+}
+
+function spawnPickup(x, y, kind, amount, extra) {
+    // 略微散开，避免重叠
+    const dx = (Math.random() - 0.5) * 20;
+    const dy = (Math.random() - 0.5) * 20;
+    state.pickups.push({
+        kind, x: x + dx, y: y + dy,
+        amount: amount || 1,
+        extra: extra || null,     // 碎片时存放植物 kind
+        vy: -80,                   // 初始向上弹
+        life: 12,
+        hopPhase: 0,
+    });
+}
+
+function updatePickups(dt) {
+    const daveY = dave.y - dave.jumpOffset;
+    const PICK_R = 30;
+    for (let i = state.pickups.length - 1; i >= 0; i--) {
+        const p = state.pickups[i];
+        // 抛物线弹一下，然后停在原地小幅浮动
+        p.y += p.vy * dt;
+        p.vy += 240 * dt;   // 重力
+        // 落到略高于起始点，防止穿出屏幕
+        if (p.vy > 0 && p.y > FIELD.bottom - 20) {
+            p.y = FIELD.bottom - 20;
+            p.vy = 0;
+        }
+        p.hopPhase += dt * 3;
+        p.life -= dt;
+        if (p.life <= 0) { state.pickups.splice(i, 1); continue; }
+        // 接触拾取
+        if (Math.hypot(p.x - dave.x, p.y - daveY) < PICK_R) {
+            collectPickup(p);
+            state.pickups.splice(i, 1);
+        }
+    }
+}
+
+function collectPickup(p) {
+    if (p.kind === 'silver' || p.kind === 'gold' || p.kind === 'gem') {
+        addCurrency(p.kind, p.amount);
+        if (state.roundRewards) state.roundRewards[p.kind] += p.amount;
+    } else if (p.kind === 'heal') {
+        // 满血则跳过，否则回 1
+        if (dave.hp < 3) {
+            dave.hp = Math.min(3, dave.hp + 1);
+        }
+    } else if (p.kind === 'fragment') {
+        const plant = p.extra || 'peashooter';
+        META.fragments[plant] = (META.fragments[plant] || 0) + p.amount;
+        saveFragments(META.fragments);
+        if (state.roundRewards) {
+            state.roundRewards.fragments[plant] = (state.roundRewards.fragments[plant] || 0) + p.amount;
+        }
+    } else if (p.kind === 'card') {
+        // 局内即用卡：加入临时卡槽
+        const plant = p.extra || 'peashooter';
+        if (!state.tempCards) state.tempCards = [];
+        state.tempCards.push(plant);
+        const pdef = PLANTS[plant];
+        log(`拾到 ${pdef?.name || plant} 即用卡！按 ${5 + state.tempCards.length - 1} 使用`);
+    } else if (p.kind === 'wfrag') {
+        // 武器碎片：局外持久
+        const wkey = p.extra || 'pistol';
+        META.weaponFrags[wkey] = (META.weaponFrags[wkey] || 0) + p.amount;
+        saveWeaponFrags();
+        if (state.roundRewards) {
+            if (!state.roundRewards.wfrags) state.roundRewards.wfrags = {};
+            state.roundRewards.wfrags[wkey] = (state.roundRewards.wfrags[wkey] || 0) + p.amount;
+        }
+        const wm = WEAPON_META[wkey];
+        log(`拾到 ${wm?.fragLabel || '武器碎片'} × ${p.amount}`);
+    }
+    // 拾取动画：金字上飘
+    const def = PICKUP_DEFS[p.kind];
+    state.effects.push({
+        kind: 'pickup', x: p.x, y: p.y,
+        life: 0.7, maxLife: 0.7,
+        label: p.kind === 'heal' ? '+HP' : `+${p.amount} ${def.label}`,
+    });
+}
+
+function updateCooldowns(dt) {
+    for (const k of CARD_ORDER) {
+        if (state.cooldowns[k] > 0) state.cooldowns[k] -= dt;
+    }
+}
+
+function updateWaves(dt) {
+    if (!state.waveActive) {
+        state.waveTimer -= dt;
+        if (state.waveTimer <= 0) startWave();
+        return;
+    }
+    if (state.zombiesSpawned < state.zombiesInWave) {
+        state.spawnTimer -= dt;
+        if (state.spawnTimer <= 0) {
+            state.spawnTimer = state.spawnInterval;
+            spawnZombie();
+        }
+    }
+}
+
+function checkDaveDamage(dt) {
+    if (dave.isJumping) { dave._damageAcc = 0; return; }
+    // 无敌帧：滑铲/闪避/受击保护
+    if (dave.invuln > 0) { dave._damageAcc = 0; return; }
+    for (const z of state.zombies) {
+        if (z.row === dave.row && Math.abs(z.x - dave.x) < 25) {
+            // 格挡中：完全免伤；完美窗口内额外硬直僵尸
+            if (dave.guarding) {
+                dave._damageAcc = 0;
+                if (inPerfectGuard() && !z._stunned) {
+                    z._stunTimer = ACTION.perfectStunTime;
+                    z._stunned = true;
+                    z.hurtFlash = 0.2;
+                    dave.perfectFlash = 0.35;
+                    log('★ 完美格挡！');
+                    // 反击：把僵尸推回一点
+                    z.x += 30;
+                }
+                return;
+            }
+            dave.hurtFlash = 0.15;
+            dave._damageAcc += dt;
+            if (dave._damageAcc >= 1) {
+                dave._damageAcc = 0;
+                dave.hp--;
+                dave.recoil = (dave.x < z.x ? -1 : 1) * 6;
+                dave.invuln = Math.max(dave.invuln, 0.6); // 受击后 0.6s 无敌
+                log(`被 ${ZOMBIES[z.kind].name} 咬了！HP -1`);
+                if (dave.hp <= 0) gameOver(false);
+            }
+            return;
+        }
+    }
+    dave._damageAcc = 0;
+}
+
+function gameOver(win) {
+    if (state.gameOver) return;   // 防重复触发
+    state.gameOver = true;
+    state.victory = win;
+    log(win ? '胜利！全部僵尸已清除！' : '失败！僵尸攻破了防线…');
+    // 通关记录写档
+    if (win && typeof currentLevel !== 'undefined' && currentLevel) {
+        if (!saveData.cleared.includes(currentLevel.id)) {
+            saveData.cleared.push(currentLevel.id);
+        }
+        writeSave(saveData);
+        refreshContinueBtn();
+    }
+    // 延迟弹出结算 UI，让戴夫先播完动作（胜利弹跳/阵亡旋转）
+    setTimeout(() => showResultModal(win), 1400);
+}
+
+// 显示结算弹窗
+function showResultModal(win) {
+    const modal = document.getElementById('result-modal');
+    if (!modal) return;
+
+    const title = document.getElementById('result-title');
+    const icon = document.getElementById('result-icon');
+    const stat = document.getElementById('result-stat');
+    const rewards = document.getElementById('result-rewards');
+    const tip = document.getElementById('result-tip');
+    const btnNext = document.getElementById('btn-result-next');
+
+    title.textContent = win ? '胜  利' : '失  败';
+    title.className = 'modal-title ' + (win ? 'win' : 'lose');
+    icon.textContent = win ? '胜' : '败';
+    icon.className = 'result-icon ' + (win ? 'win' : 'lose');
+    stat.innerHTML = `击杀 <b>${state.killedTotal || 0}</b> · 波次 <b>${state.wave}</b> / <b>${state.maxWave}</b>`;
+    if (rewards) {
+        rewards.innerHTML = '';
+        const r = state.roundRewards || { silver: 0, gold: 0, gem: 0, fragments: {} };
+        const parts = [];
+        if (r.silver > 0) parts.push(`<span class="rw-silver">银 +${r.silver}</span>`);
+        if (r.gold > 0)   parts.push(`<span class="rw-gold">金 +${r.gold}</span>`);
+        if (r.gem > 0)    parts.push(`<span class="rw-gem">钻 +${r.gem}</span>`);
+        const fragParts = [];
+        Object.entries(r.fragments || {}).forEach(([kind, n]) => {
+            if (n > 0) {
+                const pdef = PLANTS[kind];
+                fragParts.push(`<span class="rw-frag" style="color:${pdef?.color || '#AA88FF'}">${pdef?.name?.charAt(0) || '?'}片 +${n}</span>`);
+            }
+        });
+        Object.entries(r.wfrags || {}).forEach(([kind, n]) => {
+            if (n > 0) {
+                const wm = WEAPON_META[kind];
+                fragParts.push(`<span class="rw-wfrag">${wm?.fragLabel || '械'} +${n}</span>`);
+            }
+        });
+        if (parts.length || fragParts.length) {
+            rewards.innerHTML = '<div class="rw-title">本局奖励</div><div class="rw-list">' + parts.concat(fragParts).join(' ') + '</div>';
+        }
+    }
+
+    // 是否有下一关
+    let nextLevel = null;
+    if (win && currentLevel) {
+        const idx = LEVELS.findIndex(l => l.id === currentLevel.id);
+        if (idx >= 0 && idx < LEVELS.length - 1) nextLevel = LEVELS[idx + 1];
+    }
+    if (nextLevel) {
+        btnNext.classList.remove('hidden');
+        btnNext.textContent = `下一关 ${nextLevel.id} ▶`;
+        btnNext.onclick = () => {
+            hideResultModal();
+            startGame(nextLevel);
+        };
+    } else {
+        btnNext.classList.add('hidden');
+    }
+
+    if (tip) {
+        if (win && currentLevel && currentLevel.id === '1-3' && !saveData.__shovelToldOnce) {
+            tip.innerHTML = '<span class="c-green">★ 通关 1-3 · 已解锁铲子！</span><br>下一局起自动装备，左键攻击僵尸或铲除植物退回 50% 阳光';
+            saveData.__shovelToldOnce = true;
+            writeSave(saveData);
+        } else if (win) {
+            tip.textContent = nextLevel ? '继续挑战下一关，或返回主页整理装备。' : '恭喜通关全部关卡！';
+        } else {
+            tip.textContent = '再接再厉。可点『重新游戏』再战一局。';
+        }
+    }
+
+    modal.classList.remove('hidden');
+}
+function hideResultModal() {
+    const modal = document.getElementById('result-modal');
+    if (modal) modal.classList.add('hidden');
+}
+
+// ---------- 渲染 ----------
+function render() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    drawRowHighlight();
+    drawField();
+    drawPlantPreview();
+    drawPlants();
+    drawZombies();
+    drawBullets();
+    drawSuns();
+    drawEffects();
+    drawPickups();
+    if (state.mp.active) drawDave2();
+    drawDave();
+    drawOverlays();
+}
+
+// 简易渲染远端玩家（仅字形 + 状态标签）
+function drawDave2() {
+    const d = dave2;
+    const y = d.y - (d.jumpOffset || 0);
+    ctx.save();
+    // 残影：闪避
+    if (d._dashing) {
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = '#66FFCC';
+        ctx.font = 'bold 20px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(d.label, d.x - 16, y);
+        ctx.globalAlpha = 1;
+    }
+    ctx.fillStyle = d.hurtFlash > 0 ? '#FF4444' : d.color;
+    ctx.font = 'bold 20px "Microsoft YaHei", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowColor = d.color;
+    ctx.shadowBlur = d.isJumping ? 12 : 4;
+    ctx.fillText(d.label, d.x, y);
+    // 盾牌
+    if (d.guarding) {
+        ctx.strokeStyle = d._perfect ? '#FFEE66' : '#88CCFF';
+        ctx.lineWidth = 3;
+        ctx.shadowColor = '#88CCFF';
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.arc(d.x + Math.cos(d.guardFacing || 0) * 24, y + Math.sin(d.guardFacing || 0) * 24,
+                12, (d.guardFacing || 0) - Math.PI * 0.55, (d.guardFacing || 0) + Math.PI * 0.55);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawRowHighlight() {
+    ctx.fillStyle = 'rgba(0, 255, 100, 0.04)';
+    ctx.fillRect(FIELD.left, FIELD.top + FIELD.rowHeight * dave.row, FIELD.right - FIELD.left, FIELD.rowHeight);
+}
+
+function drawField() {
+    // 先给禁用行盖一层暗色遮罩（视觉上"关闭"）
+    ctx.save();
+    ctx.fillStyle = 'rgba(20, 20, 20, 0.85)';
+    for (let i = 0; i < FIELD.rows; i++) {
+        if (!isRowActive(i)) {
+            ctx.fillRect(FIELD.left, FIELD.top + FIELD.rowHeight * i, FIELD.right - FIELD.left, FIELD.rowHeight);
+        }
+    }
+    ctx.restore();
+
+    // 分隔线
+    ctx.strokeStyle = '#0a2a10';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 6]);
+    for (let i = 1; i < FIELD.rows; i++) {
+        const y = FIELD.top + FIELD.rowHeight * i;
+        ctx.beginPath();
+        ctx.moveTo(FIELD.left, y);
+        ctx.lineTo(FIELD.right, y);
+        ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.strokeStyle = '#331111';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(FIELD.left, FIELD.top);
+    ctx.lineTo(FIELD.left, FIELD.bottom);
+    ctx.stroke();
+    ctx.strokeStyle = '#330000';
+    ctx.setLineDash([2, 8]);
+    ctx.beginPath();
+    ctx.moveTo(FIELD.right, FIELD.top);
+    ctx.lineTo(FIELD.right, FIELD.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#222';
+    ctx.font = '10px Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < FIELD.rows; i++) {
+        ctx.fillText(`行${i + 1}`, 6, rowY(i));
+    }
+}
+
+function drawPlantPreview() {
+    if (state.selectedCard < 0 || dave.isJumping) return;
+    const key = CARD_ORDER[state.selectedCard];
+    const def = PLANTS[key];
+
+    let ok = state.sun >= def.cost && state.cooldowns[key] <= 0;
+    let reason = '';
+    if (state.sun < def.cost) { ok = false; reason = '阳光不足'; }
+    else if (state.cooldowns[key] > 0) { ok = false; reason = '冷却中'; }
+    for (const p of state.plants) {
+        if (p.row === dave.row && Math.abs(p.x - dave.x) < MIN_PLANT_DIST) {
+            ok = false; reason = '太挤';
+        }
+    }
+    if (dave.x < FIELD.left + 20 || dave.x > FIELD.right - 30) { ok = false; reason = '禁种区'; }
+
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = ok ? def.color : '#FF4444';
+    ctx.font = 'bold 18px "Microsoft YaHei", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(def.name, dave.x, rowY(dave.row));
+    if (!ok) {
+        ctx.globalAlpha = 0.85;
+        ctx.font = '10px "Microsoft YaHei", monospace';
+        ctx.fillStyle = '#FF6666';
+        ctx.fillText(reason, dave.x, rowY(dave.row) + 18);
+    }
+    ctx.restore();
+}
+
+function drawPlants() {
+    for (const p of state.plants) {
+        const def = PLANTS[p.kind];
+        ctx.save();
+        const shakeX = p.shake > 0 ? (Math.random() - 0.5) * 3 : 0;
+        ctx.fillStyle = def.color;
+        ctx.font = 'bold 18px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(def.name, p.x + shakeX, p.y);
+
+        // 等级角标（Lv 2 起显示）
+        if (p.lv && p.lv >= 2) {
+            const isAwaken = p.lv >= 5;
+            ctx.fillStyle = isAwaken ? '#FF88DD' : '#FFD700';
+            ctx.font = 'bold 9px Consolas, monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.shadowColor = ctx.fillStyle;
+            ctx.shadowBlur = 6;
+            ctx.fillText(isAwaken ? '★' : `L${p.lv}`, p.x + 18, p.y - 12);
+            ctx.shadowBlur = 0;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+        }
+
+        if (p.hp < p.maxHp && p.kind !== 'cherry') {
+            const w = 30;
+            const ratio = Math.max(0, p.hp / p.maxHp);
+            ctx.fillStyle = '#222';
+            ctx.fillRect(p.x - w / 2, p.y + 14, w, 3);
+            ctx.fillStyle = ratio > 0.4 ? '#00FF00' : '#FF4444';
+            ctx.fillRect(p.x - w / 2, p.y + 14, w * ratio, 3);
+        }
+        if (p.kind === 'cherry') {
+            ctx.fillStyle = '#FF9999';
+            ctx.font = '10px "Microsoft YaHei", monospace';
+            ctx.fillText(p.fuseTimer.toFixed(1), p.x, p.y - 14);
+        }
+        ctx.restore();
+    }
+}
+
+function drawZombies() {
+    for (const z of state.zombies) {
+        const def = ZOMBIES[z.kind];
+        ctx.save();
+        ctx.fillStyle = z.hurtFlash > 0 ? '#FFFFFF' : def.color;
+        ctx.font = 'bold 18px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        if (z.hp / z.maxHp < 0.3) ctx.globalAlpha = 0.7;
+        ctx.fillText(def.name, z.x, z.y);
+
+        const w = 34;
+        const ratio = Math.max(0, z.hp / z.maxHp);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#222';
+        ctx.fillRect(z.x - w / 2, z.y + 14, w, 3);
+        ctx.fillStyle = '#FF4444';
+        ctx.fillRect(z.x - w / 2, z.y + 14, w * ratio, 3);
+        ctx.restore();
+    }
+}
+
+function drawBullets() {
+    for (const b of state.bullets) {
+        ctx.fillStyle = b.color;
+        ctx.font = 'bold 14px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(b.label, b.x, b.y);
+    }
+}
+
+function drawSuns() {
+    for (const s of state.suns) {
+        const flash = s.life < 3 && Math.floor(s.life * 6) % 2 === 0;
+        ctx.save();
+        ctx.fillStyle = flash ? '#FFF' : '#FFD700';
+        ctx.shadowColor = '#FFD700';
+        ctx.shadowBlur = 10;
+        ctx.font = 'bold 20px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('阳', s.x, s.y);
+        ctx.restore();
+    }
+}
+
+function drawEffects() {
+    for (const e of state.effects) {
+        const t = e.life / e.maxLife;
+        ctx.save();
+        if (e.kind === 'boom') {
+            ctx.globalAlpha = t;
+            ctx.strokeStyle = '#FF4400';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, e.radius * (1 - t) * 1.1, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fillStyle = '#FF6633';
+            ctx.font = 'bold 22px "Microsoft YaHei", monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('轰！', e.x, e.y);
+        } else if (e.kind === 'hit') {
+            ctx.globalAlpha = t;
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = 'bold 14px "Microsoft YaHei", monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('×', e.x, e.y);
+        } else if (e.kind === 'dead') {
+            ctx.globalAlpha = t;
+            ctx.fillStyle = '#666';
+            ctx.font = '16px "Microsoft YaHei", monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(e.label || '碎', e.x, e.y - (1 - t) * 20);
+        } else if (e.kind === 'pickup') {
+            ctx.globalAlpha = t;
+            ctx.fillStyle = '#FFD700';
+            ctx.shadowColor = '#FFD700';
+            ctx.shadowBlur = 8;
+            ctx.font = 'bold 14px "Microsoft YaHei", monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(e.label, e.x, e.y - (1 - t) * 30);
+        }
+        ctx.restore();
+    }
+}
+
+// 掉落物渲染：字 + 光晕 + 数量下标 + 剩余时间闪烁
+function drawPickups() {
+    for (const p of state.pickups) {
+        const def = PICKUP_DEFS[p.kind];
+        if (!def) continue;
+        const hop = Math.sin(p.hopPhase) * 3;
+        const flashing = p.life < 3 && Math.floor(p.life * 6) % 2 === 0;
+        ctx.save();
+        ctx.fillStyle = flashing ? '#FFFFFF' : def.color;
+        ctx.shadowColor = def.shadow;
+        ctx.shadowBlur = 10;
+        ctx.font = 'bold 16px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(def.label, p.x, p.y + hop);
+        // 数量（>1 显示）
+        if (p.amount > 1) {
+            ctx.shadowBlur = 0;
+            ctx.font = 'bold 10px Consolas, monospace';
+            ctx.fillStyle = '#FFF';
+            ctx.fillText(`×${p.amount}`, p.x + 12, p.y + hop + 8);
+        }
+        // 碎片：小字标注属于哪种植物
+        if (p.kind === 'fragment' && p.extra) {
+            const plantDef = PLANTS[p.extra];
+            if (plantDef) {
+                ctx.shadowBlur = 0;
+                ctx.font = '9px "Microsoft YaHei", monospace';
+                ctx.fillStyle = plantDef.color;
+                ctx.fillText(plantDef.name.charAt(0), p.x, p.y + hop - 12);
+            }
+        }
+        // 武器碎片：小字标注属于哪种武器
+        if (p.kind === 'wfrag' && p.extra) {
+            const wdef = WEAPONS[p.extra];
+            const wm = WEAPON_META[p.extra];
+            if (wdef && wm) {
+                ctx.shadowBlur = 0;
+                ctx.font = '9px "Microsoft YaHei", monospace';
+                ctx.fillStyle = wdef.color;
+                ctx.fillText(wm.fragLabel, p.x, p.y + hop - 12);
+            }
+        }
+        ctx.restore();
+    }
+}
+
+function drawDave() {
+    // 闪避残影
+    if (dave.dashGhosts && dave.dashGhosts.length) {
+        ctx.save();
+        ctx.font = 'bold 20px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        for (const g of dave.dashGhosts) {
+            ctx.globalAlpha = g.alpha;
+            ctx.fillStyle = '#66FFCC';
+            ctx.fillText(dave.label, g.x, g.y);
+        }
+        ctx.restore();
+    }
+    // 奔跑拖尾（每几帧留一个淡影）
+    if (dave.sprinting && !state.gameOver) {
+        ctx.save();
+        ctx.globalAlpha = 0.25;
+        ctx.fillStyle = '#00FF88';
+        ctx.font = 'bold 20px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const trailX = dave.x - dave.facing * 12;
+        ctx.fillText(dave.label, trailX, dave.y - dave.jumpOffset);
+        ctx.restore();
+    }
+
+    if (dave.ghost) {
+        ctx.save();
+        ctx.globalAlpha = dave.ghost.alpha;
+        ctx.fillStyle = '#004422';
+        ctx.font = 'bold 20px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(dave.label, dave.ghost.x, dave.ghost.y);
+        ctx.restore();
+    }
+
+    // 胜利弹跳偏移
+    let bounceY = 0;
+    if (state.gameOver && state.victory) {
+        bounceY = -Math.abs(Math.sin(dave.victoryBounce * 6)) * 18;
+    }
+
+    const y = dave.y - dave.jumpOffset + bounceY;
+    const drawX = dave.x + dave.recoil;
+
+    ctx.save();
+
+    // 阵亡：绕自身中心旋转
+    if (state.gameOver && !state.victory) {
+        ctx.translate(drawX, y);
+        ctx.rotate(dave.deathRot);
+        ctx.translate(-drawX, -y);
+        ctx.fillStyle = '#888';
+    } else {
+        ctx.fillStyle = dave.hurtFlash > 0 ? '#FF4444' : dave.color;
+    }
+
+    ctx.font = 'bold 20px "Microsoft YaHei", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (dave.isJumping) {
+        ctx.shadowColor = '#00FF88';
+        ctx.shadowBlur = 12;
+    }
+    if (state.gameOver && state.victory) {
+        ctx.shadowColor = '#FFD700';
+        ctx.shadowBlur = 16;
+    }
+    ctx.fillText(dave.label, drawX, y);
+    ctx.restore();
+
+    // 跳跃提示字
+    if (dave.isJumping && dave.jumpOffset > 40) {
+        ctx.fillStyle = '#88FFAA';
+        ctx.font = '12px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('跃！', drawX + 24, y - 14);
+    }
+
+    // 胜利姿势：头顶星
+    if (state.gameOver && state.victory) {
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 14px Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('★', drawX, y - 22);
+    }
+
+    // 挥砍动画：在戴夫身前画一个弧形，中心是武器名首字
+    if (dave.swingTimer > 0 && dave.swingWeapon) {
+        const w = WEAPONS[dave.swingWeapon];
+        if (w) {
+            const t = dave.swingTimer / 0.22;   // 1 → 0
+            const reach = (w.reach || 40) * (1 - t * 0.3);
+            const arc = w.arc || Math.PI * 0.6;
+            const cx = drawX + Math.cos(dave.swingDir) * reach * 0.6;
+            const cy = y + Math.sin(dave.swingDir) * reach * 0.6;
+
+            ctx.save();
+            ctx.globalAlpha = t * 0.9;
+            ctx.strokeStyle = w.color;
+            ctx.lineWidth = 2;
+            ctx.shadowColor = w.color;
+            ctx.shadowBlur = 8;
+            ctx.beginPath();
+            ctx.arc(drawX, y, reach, dave.swingDir - arc / 2, dave.swingDir + arc / 2);
+            ctx.stroke();
+            // 武器字（第一个字符）
+            ctx.globalAlpha = t;
+            ctx.fillStyle = w.color;
+            ctx.font = 'bold 16px "Microsoft YaHei", monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(w.name.charAt(0), cx, cy);
+            ctx.restore();
+        }
+    }
+
+    // 格挡：盾牌
+    if (dave.guarding) {
+        const isPerfect = inPerfectGuard();
+        const face = dave.guardFacing;
+        ctx.save();
+        ctx.translate(drawX, y);
+        ctx.rotate(face);
+        // 盾牌形状：一小段弧
+        ctx.strokeStyle = isPerfect ? '#FFEE66' : '#88CCFF';
+        ctx.lineWidth = isPerfect ? 4 : 3;
+        ctx.shadowColor = isPerfect ? '#FFEE66' : '#88CCFF';
+        ctx.shadowBlur = isPerfect ? 16 : 8;
+        ctx.beginPath();
+        ctx.arc(24, 0, 12, -Math.PI * 0.55, Math.PI * 0.55);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // 完美格挡爆发闪光
+    if (dave.perfectFlash > 0) {
+        ctx.save();
+        ctx.globalAlpha = dave.perfectFlash / 0.4;
+        ctx.strokeStyle = '#FFEE66';
+        ctx.lineWidth = 3;
+        ctx.shadowColor = '#FFEE66';
+        ctx.shadowBlur = 20;
+        ctx.beginPath();
+        ctx.arc(drawX, y, 26 + (1 - dave.perfectFlash / 0.4) * 20, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+function drawOverlays() {
+    drawProgressBar();
+
+    if (!state.waveActive && !state.gameOver && state.wave <= state.maxWave) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = '14px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText(`下一波: ${Math.ceil(state.waveTimer)}s`, FIELD.right - 8, FIELD.top - 22);
+        ctx.restore();
+    }
+    if (state.gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = state.victory ? '#00FF00' : '#FF3333';
+        ctx.font = 'bold 48px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(state.victory ? '胜  利' : '失  败', W / 2, H / 2 - 20);
+        ctx.fillStyle = '#AAA';
+        ctx.font = '16px "Microsoft YaHei", monospace';
+        ctx.fillText('刷新页面重开一局', W / 2, H / 2 + 30);
+    }
+}
+
+// ---------- 关卡进度条（文字版）----------
+// 轨道横贴战场顶部。左端 [家] 起点，右端 [旗！] 终点。
+// 每波结束标 [旗]。当前进度头 [僵] 随累计击杀移动。
+function drawProgressBar() {
+    const barLeft = FIELD.left + 40;
+    const barRight = FIELD.right - 40;
+    const barY = 20;                    // 顶栏上方
+    const totalKills = computeTotalKills();
+    const progress = totalKills > 0 ? Math.min(1, state.killedTotal / totalKills) : 0;
+
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    ctx.font = '13px "Microsoft YaHei", monospace';
+
+    // 轨道底线
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(barLeft, barY);
+    ctx.lineTo(barRight, barY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 已完成部分高亮
+    const headX = barLeft + (barRight - barLeft) * progress;
+    ctx.strokeStyle = 'rgba(0, 255, 136, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(barLeft, barY);
+    ctx.lineTo(headX, barY);
+    ctx.stroke();
+
+    // 起点 [家]
+    ctx.fillStyle = '#00FF88';
+    ctx.textAlign = 'center';
+    ctx.fillText('家', barLeft - 12, barY);
+
+    // 每波节点 [旗]
+    for (let w = 1; w <= state.maxWave; w++) {
+        const px = barLeft + (barRight - barLeft) * (w / state.maxWave);
+        const passed = w < state.wave || (w === state.wave && !state.waveActive && state.zombies.length === 0);
+        const isLast = w === state.maxWave;
+        const isCurrent = w === state.wave;
+
+        // 竖短线
+        ctx.strokeStyle = passed ? '#00AA55' : (isLast ? '#661111' : '#333');
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(px, barY - 4);
+        ctx.lineTo(px, barY + 4);
+        ctx.stroke();
+
+        // 旗
+        let flagColor, flagText;
+        if (isLast) {
+            flagColor = passed ? '#00FF88' : '#FF3333';
+            flagText = '旗！';
+        } else {
+            flagColor = passed ? '#00AA55' : (isCurrent ? '#FFD700' : '#555');
+            flagText = '旗';
+        }
+        ctx.fillStyle = flagColor;
+        ctx.font = (isCurrent || isLast) ? 'bold 12px "Microsoft YaHei", monospace' : '11px "Microsoft YaHei", monospace';
+        ctx.fillText(flagText, px, barY - 12);
+    }
+
+    // 进度头 [僵]
+    if (!state.gameOver || state.victory) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.shadowColor = '#00FF88';
+        ctx.shadowBlur = 8;
+        ctx.font = 'bold 14px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('僵', headX, barY);
+        ctx.shadowBlur = 0;
+    }
+
+    // 右下角小字：击杀数 / 总数
+    ctx.fillStyle = '#666';
+    ctx.font = '10px Consolas, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${state.killedTotal} / ${totalKills}`, barRight + 8, barY + 10);
+
+    ctx.restore();
+}
+
+// 全关总僵尸数（预估，用于进度条比例）
+function computeTotalKills() {
+    let total = 0;
+    for (let w = 1; w <= state.maxWave; w++) {
+        total += Math.max(1, Math.round((3 + w * 2) * DIFFICULTY.countMul));
+    }
+    return total;
+}
+
+// ---------- HUD 更新 ----------
+function updateHUD() {
+    sunValueEl.textContent = Math.floor(state.sun);
+    waveValueEl.textContent = state.wave;
+    hpValueEl.textContent = dave.hp;
+    // 多人：显示第二玩家血量
+    const hp2Bar = document.getElementById('hp2-display');
+    if (hp2Bar) {
+        if (state.mp.active) {
+            hp2Bar.classList.remove('hidden');
+            const hp2Val = document.getElementById('hp2-value');
+            if (hp2Val) hp2Val.textContent = dave2.hp;
+        } else {
+            hp2Bar.classList.add('hidden');
+        }
+    }
+    cardEls.forEach((el, i) => {
+        const key = CARD_ORDER[i];
+        const def = PLANTS[key];
+        const cd = state.cooldowns[key];
+        const cheap = state.sun >= def.cost;
+        el.classList.toggle('disabled', cd > 0 || !cheap);
+        if (cd > 0) {
+            el.classList.add('cooling');
+            const pct = (cd / def.cooldown) * 100;
+            el.style.setProperty('--cd', pct + '%');
+        } else {
+            el.classList.remove('cooling');
+            el.style.setProperty('--cd', '0%');
+        }
+    });
+    // 武器状态条
+    const wBar = document.getElementById('weapon-display');
+    if (wBar) {
+        const wk = dave.currentWeapon;
+        if (!wk || wk === 'shovel') {
+            // 只有铲子的话不显示武器耐久（无限耐久）；未装备武器也隐藏
+            const showShovel = wk === 'shovel' && !dave.equippedWeapon;
+            wBar.classList.toggle('hidden', !showShovel);
+            if (showShovel) {
+                document.getElementById('weapon-name').textContent = '铲子';
+                const durEl = document.getElementById('weapon-dur');
+                durEl.textContent = '∞';
+                durEl.className = 'w-dur';
+            }
+        } else {
+            wBar.classList.remove('hidden');
+            const w = WEAPONS[wk];
+            document.getElementById('weapon-name').textContent = w?.name || wk;
+            const dur = dave.equippedDurability || 0;
+            const cap = weaponDurCap(wk, dave.equippedLevel || 1);
+            const durEl = document.getElementById('weapon-dur');
+            durEl.textContent = `${dur}/${cap}`;
+            durEl.className = 'w-dur' + (dur === 0 ? ' zero' : (dur / cap < 0.25 ? ' low' : ''));
+        }
+    }
+
+    // 动作条：奔跑 / 闪避 / 格挡
+    updateActionSlot('act-sprint', dave.sprinting, 0, 0);
+    updateActionSlot('act-dash',   dave.dashing,   dave.dashCooldown,  ACTION.dashCooldown);
+    updateActionSlot('act-guard',  dave.guarding,  dave.guardCooldown, ACTION.guardCooldown);
+}
+
+function updateActionSlot(id, active, cd, cdMax) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle('active', !!active);
+    if (!active && cd > 0 && cdMax > 0) {
+        el.classList.add('cooling');
+        el.classList.remove('ready');
+        el.style.setProperty('--cd', (cd / cdMax * 100) + '%');
+    } else {
+        el.classList.remove('cooling');
+        el.style.setProperty('--cd', '0%');
+        if (!active) el.classList.add('ready');
+        else el.classList.remove('ready');
+    }
+}
+
+// ============================================================
+// 难度调整面板：预设 + 6 滑块，实时生效
+// ============================================================
+const settingsModal = document.getElementById('settings-modal');
+const settingsBtn = document.getElementById('settings-btn');
+const settingsClose = document.getElementById('settings-close');
+const settingsReset = document.getElementById('settings-reset');
+const presetBtns = document.querySelectorAll('.preset');
+
+// 每项滑块的绑定表：滑块 id、显示 id、DIFFICULTY 键、格式化函数
+const SLIDER_BINDS = [
+    { s: 's-hp',       v: 'v-hp',       key: 'hpMul',       fmt: v => `${(+v).toFixed(1)}×` },
+    { s: 's-speed',    v: 'v-speed',    key: 'speedMul',    fmt: v => `${(+v).toFixed(1)}×` },
+    { s: 's-count',    v: 'v-count',    key: 'countMul',    fmt: v => `${(+v).toFixed(1)}×` },
+    { s: 's-interval', v: 'v-interval', key: 'intervalMul', fmt: v => `${(+v).toFixed(1)}×` },
+    { s: 's-rest',     v: 'v-rest',     key: 'restMul',     fmt: v => `${(+v).toFixed(1)}×` },
+    { s: 's-sun',      v: 'v-sun',      key: 'initialSun',  fmt: v => `${v}`,      isInt: true },
+];
+
+// 面板输入框防止吞掉游戏键
+document.querySelectorAll('#settings-modal input, #settings-modal button').forEach(el => {
+    el.addEventListener('focus', () => { inputFocused = true; });
+    el.addEventListener('blur', () => { inputFocused = false; });
+});
+
+// 打开/关闭（旧难度面板已从 UI 移除，做 null 兼容以保留同步函数）
+if (settingsBtn) {
+    settingsBtn.addEventListener('click', () => {
+        if (settingsModal) settingsModal.classList.remove('hidden');
+        syncSlidersFromDifficulty();
+    });
+}
+if (settingsClose) {
+    settingsClose.addEventListener('click', () => {
+        if (settingsModal) settingsModal.classList.add('hidden');
+    });
+}
+if (settingsModal) {
+    settingsModal.addEventListener('click', (e) => {
+        if (e.target === settingsModal) settingsModal.classList.add('hidden');
+    });
+}
+
+// 从 DIFFICULTY 反向同步到 UI（预设切换、重置时用）
+function syncSlidersFromDifficulty() {
+    SLIDER_BINDS.forEach(b => {
+        const sEl = document.getElementById(b.s);
+        const vEl = document.getElementById(b.v);
+        if (!sEl || !vEl) return;
+        sEl.value = DIFFICULTY[b.key];
+        vEl.textContent = b.fmt(sEl.value);
+    });
+}
+
+// 滑块滑动即时生效
+SLIDER_BINDS.forEach(b => {
+    const sEl = document.getElementById(b.s);
+    const vEl = document.getElementById(b.v);
+    if (!sEl || !vEl) return;
+    sEl.addEventListener('input', () => {
+        const raw = sEl.value;
+        DIFFICULTY[b.key] = b.isInt ? parseInt(raw, 10) : parseFloat(raw);
+        vEl.textContent = b.fmt(raw);
+        // 高亮"自定义"：清除所有 preset 的 active
+        presetBtns.forEach(p => p.classList.remove('active'));
+    });
+});
+
+// 预设点击
+presetBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        const name = btn.dataset.preset;
+        const preset = DIFFICULTY_PRESETS[name];
+        if (!preset) return;
+        Object.assign(DIFFICULTY, preset);
+        presetBtns.forEach(p => p.classList.toggle('active', p === btn));
+        syncSlidersFromDifficulty();
+        log(`难度: ${btn.textContent}`);
+    });
+});
+
+// 重置默认
+// 重置默认（旧面板已移除，做兼容）
+if (settingsReset) {
+    settingsReset.addEventListener('click', () => {
+        Object.assign(DIFFICULTY, DIFFICULTY_PRESETS.normal);
+        presetBtns.forEach(p => p.classList.toggle('active', p.dataset.preset === 'normal'));
+        syncSlidersFromDifficulty();
+        log('难度已重置为普通');
+    });
+}
+
+// 启动时应用初始阳光
+state.sun = DIFFICULTY.initialSun;
+syncSlidersFromDifficulty();
+
+// 注意：主循环由 startGame() 触发，此处不自动启动
+// requestAnimationFrame(loop);
+
+// ============================================================
+// 关卡表 & 菜单状态机
+// ============================================================
+
+// 关卡定义（对齐 PvZ 冒险模式第一章前 5 关）
+const LEVELS = [
+    {
+        id: '1-1',
+        name: '前院初遇',
+        waves: 3,
+        rows: [2],                            // 只中间一行
+        desc: '第一次遭遇僵尸。学会用<span class="g">向日葵</span>攒阳光，用<span class="g">豌豆射手</span>输出。',
+        zombiePool: ['normal'],
+        firstSun: 100,
+        allowedCards: ['sunflower', 'peashooter'],
+        diffMod: { hpMul: 0.7, speedMul: 0.85, countMul: 0.5, intervalMul: 1.5, restMul: 1.4 },
+    },
+    {
+        id: '1-2',
+        name: '增援登场',
+        waves: 5,
+        rows: [1, 2, 3],                      // 中间三行
+        desc: '出现<span class="k">路障僵尸</span>。用<span class="g">坚果</span>顶前排。',
+        zombiePool: ['normal', 'normal', 'normal', 'cone'],
+        firstSun: 75,
+        allowedCards: ['sunflower', 'peashooter', 'wallnut'],
+        diffMod: { hpMul: 0.85, speedMul: 0.9, countMul: 0.7, intervalMul: 1.2, restMul: 1.2 },
+    },
+    {
+        id: '1-3',
+        name: '车道压迫',
+        waves: 6,
+        rows: [0, 1, 2, 3, 4],                // 全五行
+        desc: '铁桶登场，靠<span class="r">樱桃</span>清场。',
+        zombiePool: ['normal', 'normal', 'cone', 'cone', 'bucket'],
+        firstSun: 50,
+        allowedCards: ['sunflower', 'peashooter', 'wallnut', 'cherry'],
+        diffMod: { hpMul: 1.0, speedMul: 1.0, countMul: 0.9, intervalMul: 1.0, restMul: 1.0 },
+    },
+    {
+        id: '1-4',
+        name: '铁桶来袭',
+        waves: 8,
+        rows: [0, 1, 2, 3, 4],
+        desc: '铁桶比例升高。密集火力才能撑住。',
+        zombiePool: ['normal', 'cone', 'cone', 'bucket', 'bucket'],
+        firstSun: 50,
+        allowedCards: ['sunflower', 'peashooter', 'wallnut', 'cherry'],
+        diffMod: { hpMul: 1.1, speedMul: 1.05, countMul: 1.1, intervalMul: 0.85, restMul: 0.9 },
+    },
+    {
+        id: '1-5',
+        name: '前院终章',
+        waves: 10,
+        rows: [0, 1, 2, 3, 4],
+        desc: '<span class="r">章末考验</span>。全类型高强度，抵御 10 波。',
+        zombiePool: ['normal', 'cone', 'cone', 'bucket', 'bucket', 'bucket'],
+        firstSun: 50,
+        allowedCards: ['sunflower', 'peashooter', 'wallnut', 'cherry'],
+        diffMod: { hpMul: 1.25, speedMul: 1.15, countMul: 1.3, intervalMul: 0.7, restMul: 0.7 },
+    },
+];
+
+// 局外存档：通关记录、当前关卡
+function loadSave() {
+    try {
+        return JSON.parse(localStorage.getItem(SAVE_KEY)) || { cleared: [], lastLevel: null };
+    } catch {
+        return { cleared: [], lastLevel: null };
+    }
+}
+function writeSave(s) {
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch {}
+}
+const saveData = loadSave();
+
+// 界面元素
+const screens = {
+    login:   document.getElementById('login-screen'),
+    menu:    document.getElementById('menu-screen'),
+    level:   document.getElementById('level-screen'),
+    game:    document.getElementById('game-screen'),
+    almanac: document.getElementById('almanac-screen'),
+    armory:  document.getElementById('armory-screen'),
+    shop:    document.getElementById('shop-screen'),
+};
+function showScreen(name) {
+    Object.entries(screens).forEach(([k, el]) => {
+        if (el) el.classList.toggle('hidden', k !== name);
+    });
+}
+
+// 主菜单
+document.getElementById('btn-new-game').addEventListener('click', () => {
+    renderLevelGrid();
+    showScreen('level');
+});
+document.getElementById('btn-continue').addEventListener('click', () => {
+    const last = saveData.lastLevel;
+    if (!last) return;
+    const lv = LEVELS.find(l => l.id === last);
+    if (lv) startGame(lv);
+});
+document.getElementById('btn-about').addEventListener('click', () => {
+    document.getElementById('about-modal').classList.remove('hidden');
+});
+document.getElementById('about-close').addEventListener('click', () => {
+    document.getElementById('about-modal').classList.add('hidden');
+});
+const btnSettingsMenu = document.getElementById('btn-settings-menu');
+if (btnSettingsMenu) {
+    btnSettingsMenu.addEventListener('click', () => {
+        const sm = document.getElementById('settings-modal');
+        if (sm) {
+            sm.classList.remove('hidden');
+            syncSlidersFromDifficulty();
+        }
+    });
+}
+
+// 继续按钮启用状态
+function refreshContinueBtn() {
+    const btn = document.getElementById('btn-continue');
+    if (saveData.lastLevel) {
+        btn.disabled = false;
+        btn.textContent = `继续游戏 (${saveData.lastLevel})`;
+    } else {
+        btn.disabled = true;
+        btn.textContent = '继续游戏';
+    }
+}
+refreshContinueBtn();
+
+// ============================================================
+// 账户 / 登录系统
+// ============================================================
+(function initAuth() {
+    if (!window.Net) return;
+
+    const loginScreen  = document.getElementById('login-screen');
+    const menuScreen   = document.getElementById('menu-screen');
+    const tabs         = document.querySelectorAll('.login-tab');
+    const submitBtn    = document.getElementById('login-submit');
+    const guestBtn     = document.getElementById('login-guest');
+    const usernameEl   = document.getElementById('login-username');
+    const passwordEl   = document.getElementById('login-password');
+    const msgEl        = document.getElementById('login-msg');
+    const accountsEl   = document.getElementById('login-accounts');
+    const userNameSpan = document.getElementById('user-name');
+    const btnLogout    = document.getElementById('btn-logout');
+
+    let mode = 'login'; // 'login' | 'register'
+
+    function setMsg(text, ok) {
+        msgEl.textContent = text || '\u00a0';
+        msgEl.classList.toggle('ok', !!ok);
+    }
+    function setMode(next) {
+        mode = next;
+        tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === mode));
+        submitBtn.textContent = (mode === 'login') ? '登  录' : '注 册 并 登 录';
+        setMsg('');
+    }
+    function renderAccounts() {
+        const list = Net.auth.listAccounts();
+        if (!list.length) {
+            accountsEl.innerHTML = '<div class="acc-title">尚无本地账户，请先注册</div>';
+            return;
+        }
+        accountsEl.innerHTML =
+            '<div class="acc-title">已有账户 (点击填入):</div>' +
+            list.map(u => `<span class="acc-item" data-u="${u}">${u}</span>`).join('');
+        accountsEl.querySelectorAll('.acc-item').forEach(el => {
+            el.addEventListener('click', () => {
+                usernameEl.value = el.dataset.u;
+                passwordEl.focus();
+            });
+        });
+    }
+
+    tabs.forEach(t => t.addEventListener('click', () => setMode(t.dataset.tab)));
+
+    async function submit() {
+        const u = usernameEl.value.trim();
+        const p = passwordEl.value;
+        setMsg('处理中...');
+        submitBtn.disabled = true;
+        try {
+            let res;
+            if (mode === 'register') {
+                res = await Net.auth.register(u, p);
+                if (!res.ok) { setMsg(res.error); return; }
+                res = await Net.auth.login(u, p);
+            } else {
+                res = await Net.auth.login(u, p);
+            }
+            if (!res.ok) { setMsg(res.error); return; }
+            setMsg('登录成功，正在进入...', true);
+            // 用户命名空间变了，最简单可靠的做法是刷新页面重新加载存档
+            setTimeout(() => location.reload(), 250);
+        } finally {
+            submitBtn.disabled = false;
+        }
+    }
+    submitBtn.addEventListener('click', submit);
+    [usernameEl, passwordEl].forEach(el => {
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submit();
+        });
+    });
+
+    guestBtn.addEventListener('click', () => {
+        // 访客：不建立会话，直接进主菜单（用 __guest__ 命名空间）
+        showScreen('menu');
+        refreshUserBar();
+    });
+
+    btnLogout.addEventListener('click', () => {
+        if (!Net.auth.isLoggedIn()) {
+            // 访客状态直接回登录屏
+            showScreen('login');
+            renderAccounts();
+            return;
+        }
+        if (!confirm('确认登出当前账户？')) return;
+        Net.auth.logout();
+        location.reload();
+    });
+
+    function refreshUserBar() {
+        const u = Net.currentUser();
+        userNameSpan.textContent = u || '访客';
+        if (heroNameEl && !heroNameEl.dataset.userEdited) {
+            heroNameEl.value = (u || '戴夫').slice(0, 6);
+        }
+        btnLogout.textContent = u ? '登出' : '切换账户';
+    }
+    if (heroNameEl) {
+        heroNameEl.addEventListener('input', () => { heroNameEl.dataset.userEdited = '1'; });
+    }
+
+    // 启动路由：已登录 -> 主菜单；未登录 -> 登录屏
+    if (Net.auth.isLoggedIn()) {
+        showScreen('menu');
+    } else {
+        showScreen('login');
+    }
+    renderAccounts();
+    refreshUserBar();
+})();
+
+// 关卡网格
+let selectedLevel = null;
+function renderLevelGrid() {
+    // 顺便刷新货币显示
+    refreshCurrencyUI();
+    const grid = document.getElementById('level-grid');
+    grid.innerHTML = '';
+    LEVELS.forEach((lv, idx) => {
+        const cleared = saveData.cleared.includes(lv.id);
+        const prevCleared = idx === 0 || saveData.cleared.includes(LEVELS[idx - 1].id);
+        const locked = !prevCleared;
+        const card = document.createElement('div');
+        card.className = 'level-card' + (cleared ? ' cleared' : '') + (locked ? ' locked' : '');
+        card.innerHTML = `
+            <div class="lv-code">${lv.id}</div>
+            <div class="lv-name">${lv.name}</div>
+        `;
+        if (!locked) {
+            card.addEventListener('click', () => selectLevel(lv, card));
+        }
+        grid.appendChild(card);
+    });
+    // 默认选中第一个未通关的关卡（或最后一关）
+    const firstUncleared = LEVELS.find(l => !saveData.cleared.includes(l.id)) || LEVELS[0];
+    const idx = LEVELS.indexOf(firstUncleared);
+    const cards = grid.querySelectorAll('.level-card');
+    if (cards[idx] && !cards[idx].classList.contains('locked')) {
+        selectLevel(firstUncleared, cards[idx]);
+    }
+}
+
+function selectLevel(lv, cardEl) {
+    selectedLevel = lv;
+    document.querySelectorAll('.level-card').forEach(c => c.classList.remove('active'));
+    if (cardEl) cardEl.classList.add('active');
+    const zombieNames = [...new Set(lv.zombiePool)].map(k => ZOMBIES[k].name).join(' · ');
+    const cardNames = lv.allowedCards.map(k => PLANTS[k].name).join(' · ');
+    document.getElementById('detail-title').innerHTML =
+        `<span class="g">${lv.id}</span>　${lv.name}　　波次 <span class="k">${lv.waves}</span>`;
+    document.getElementById('detail-body').innerHTML =
+        `${lv.desc}<br>
+         初始阳光: <span class="k">${lv.firstSun}</span> · 敌人: ${zombieNames}<br>
+         可用: ${cardNames}`;
+}
+
+document.getElementById('btn-play').addEventListener('click', () => {
+    if (selectedLevel) startGame(selectedLevel);
+});
+document.getElementById('btn-back-menu').addEventListener('click', () => {
+    showScreen('menu');
+});
+
+// 退出关卡回菜单
+document.getElementById('btn-quit-level').addEventListener('click', () => {
+    if (confirm('放弃当前关卡？')) {
+        stopGame();
+        showScreen('menu');
+        refreshContinueBtn();
+    }
+});
+
+// ---------- 启动关卡 ----------
+let currentLevel = null;
+let gameRunning = false;
+let rafId = 0;
+
+function startGame(level) {
+    currentLevel = level;
+
+    // 步骤 1：先应用玩家在选关屏选的难度（简单/普通/困难/地狱）
+    const basePreset = DIFFICULTY_PRESETS[currentDifficulty] || DIFFICULTY_PRESETS.normal;
+    Object.assign(DIFFICULTY, basePreset);
+
+    // 步骤 2：叠加关卡专属难度修正（乘法叠加，让关卡节奏保留）
+    if (level.diffMod) {
+        DIFFICULTY.hpMul       *= (level.diffMod.hpMul ?? 1);
+        DIFFICULTY.speedMul    *= (level.diffMod.speedMul ?? 1);
+        DIFFICULTY.countMul    *= (level.diffMod.countMul ?? 1);
+        DIFFICULTY.intervalMul *= (level.diffMod.intervalMul ?? 1);
+        DIFFICULTY.restMul     *= (level.diffMod.restMul ?? 1);
+    }
+    syncSlidersFromDifficulty();
+
+    // 重置游戏状态
+    state.sun = level.firstSun;
+    state.wave = 1;
+    state.maxWave = level.waves;
+    state.selectedCard = -1;
+    state.plants.length = 0;
+    state.zombies.length = 0;
+    state.bullets.length = 0;
+    state.suns.length = 0;
+    state.effects.length = 0;
+    state.pickups.length = 0;
+    state.tempCards.length = 0;
+    // 本局奖励累计（结算显示用）
+    state.roundRewards = { silver: 0, gold: 0, gem: 0, fragments: {}, wfrags: {} };
+    state.waveTimer = 8;
+    state.waveActive = false;
+    state.zombiesInWave = 0;
+    state.zombiesSpawned = 0;
+    state.naturalSunTimer = 8;
+    state.gameOver = false;
+    state.victory = false;
+    state.time = 0;
+    state.killedTotal = 0;
+    CARD_ORDER.forEach(k => state.cooldowns[k] = 0);
+
+    // 应用关卡通道数
+    FIELD.activeRows = (level.rows && level.rows.length > 0) ? level.rows.slice() : [0, 1, 2, 3, 4];
+    const middleRow = FIELD.activeRows[Math.floor(FIELD.activeRows.length / 2)];
+
+    // 戴夫复位
+    dave.x = FIELD.left + 40;
+    dave.y = rowY(middleRow);
+    dave.jumpOffset = 0;
+    dave.vy = 0;
+    dave.isJumping = false;
+    dave.jumpCooldown = 0;
+    dave.hp = 3;
+    dave.hurtFlash = 0;
+    dave.ghost = null;
+    dave._damageAcc = 0;
+    dave.weaponCooldown = 0;
+    dave.swingTimer = 0;
+    dave.recoil = 0;
+    dave.victoryBounce = 0;
+    dave.deathRot = 0;
+    dave.facingAngle = 0;
+    // 多人：远端玩家复位（房主端才推进；客人靠 snapshot 覆盖）
+    if (state.mp.active && state.mp.role === 'host') {
+        dave2.x = FIELD.left + 80;
+        dave2.y = rowY(middleRow);
+        dave2.jumpOffset = 0; dave2.vy = 0; dave2.isJumping = false;
+        dave2.hp = 3; dave2.hurtFlash = 0; dave2._damageAcc = 0;
+        dave2.weaponCooldown = 0; dave2.swingTimer = 0;
+        dave2.dashing = false; dave2.dashCooldown = 0;
+        dave2.guarding = false; dave2.guardCooldown = 0;
+        dave2.invuln = 0; dave2.perfectFlash = 0;
+        dave2.currentWeapon = 'dagger';
+        dave2.label = 'P2'; dave2.color = '#66FFCC';
+    }
+    // 标签：房主自己是 P1，客人自己是 P2（客人的 label 会在 mp start 事件里被改）
+    if (state.mp.active && state.mp.role === 'host') {
+        dave.label = 'P1'; dave.color = '#00FF88';
+    }
+    // 动作系统复位
+    dave.sprinting = false;
+    dave.dashing = false;   dave.dashTimer = 0;    dave.dashCooldown = 0;
+    dave.dashGhosts = [];
+    dave.guarding = false;  dave.guardTimer = 0;   dave.guardCooldown = 0;
+    dave.perfectFlash = 0;
+    dave.invuln = 0;
+    // 装备设定：
+    //  1) 铲子解锁后无条件常驻（无限耐久）
+    //  2) 玩家在武器库装备的武器带耐久上限，本局用尽即不可用
+    dave.currentWeapon = isShovelUnlocked() ? 'shovel' : null;
+    const eq = META.weapons?.equipped;
+    if (eq && META.weapons.unlocked[eq]) {
+        const lv = META.weapons.levels[eq] || 1;
+        dave.equippedWeapon = eq;
+        dave.equippedLevel  = lv;
+        dave.equippedDurability = weaponDurCap(eq, lv);
+        // 装备的武器优先于铲子成为出手武器
+        dave.currentWeapon = eq;
+    } else {
+        dave.equippedWeapon = null;
+        dave.equippedLevel  = 1;
+        dave.equippedDurability = 0;
+    }
+
+    // 关卡可用卡片：禁用不允许的
+    applyAllowedCards(level.allowedCards);
+
+    // 关卡专属僵尸池：临时改写 spawnZombie 的类型选择
+    state._zombiePool = level.zombiePool;
+
+    // UI 顶栏
+    document.getElementById('level-tag').textContent = level.id;
+    document.getElementById('wave-max').textContent = level.waves;
+    document.getElementById('sun-value').textContent = state.sun;
+    document.getElementById('hp-value').textContent = dave.hp;
+
+    // 存档
+    saveData.lastLevel = level.id;
+    writeSave(saveData);
+    refreshContinueBtn();
+
+    // 切屏
+    showScreen('game');
+
+    // 启动主循环
+    if (!gameRunning) {
+        gameRunning = true;
+        lastTime = performance.now();
+        rafId = requestAnimationFrame(loop);
+    }
+
+    log(`${level.id} · ${level.name} — 准备开始`);
+}
+
+function stopGame() {
+    gameRunning = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+    // 退出游戏时断开联机会话
+    if (state.mp.active) {
+        state.mp.active = false;
+        state.mp.role = null;
+        state.mp.remoteInput = null;
+        try { Net.mp.close(true); } catch {}
+        // 恢复标签
+        dave.label = '戴夫'; dave.color = '#00FF88';
+    }
+}
+
+function applyAllowedCards(allowed) {
+    cardEls.forEach((el, i) => {
+        const key = CARD_ORDER[i];
+        if (allowed.includes(key)) {
+            el.style.display = '';
+            el.classList.remove('locked');
+        } else {
+            el.style.display = 'none';
+        }
+    });
+}
+
+// 让 spawnZombie 使用关卡的 zombiePool（在 spawnZombie 内部已处理）
+
+// 主循环已在原函数内处理暂停逻辑
+
+// ============================================================
+// 植物图鉴 & 升级 UI
+// ============================================================
+const almanacScreen = document.getElementById('almanac-screen');
+const almanacGrid = document.getElementById('almanac-grid');
+const btnAlmanac = document.getElementById('btn-almanac');
+const btnBackMenuAlmanac = document.getElementById('btn-back-menu-almanac');
+const btnUpgrade = document.getElementById('btn-upgrade');
+const btnGiveFrags = document.getElementById('btn-give-frags');
+
+// 植物碎片键名（与 META.fragments 对应）
+const PLANT_FRAG_LABEL = {
+    sunflower:  '葵片',
+    peashooter: '豌片',
+    wallnut:    '果片',
+    cherry:     '桃片',
+};
+
+let almanacSelected = 'peashooter';
+
+// 打开图鉴
+btnAlmanac.addEventListener('click', () => {
+    renderAlmanac();
+    showScreen('almanac');
+});
+btnBackMenuAlmanac.addEventListener('click', () => {
+    showScreen('menu');
+});
+
+// 领取试用碎片（调试用）
+btnGiveFrags.addEventListener('click', () => {
+    CARD_ORDER.forEach(k => {
+        META.fragments[k] = (META.fragments[k] || 0) + 20;
+    });
+    saveFragments(META.fragments);
+    renderAlmanac();
+});
+
+// 升级按钮
+btnUpgrade.addEventListener('click', () => {
+    if (!almanacSelected) return;
+    const kind = almanacSelected;
+    const lv = META.levels[kind] || 1;
+    const next = nextLevelInfo(lv);
+    if (!next) return;
+    const need = next.cumulative - (levelInfo(lv).cumulative);
+    const owned = META.fragments[kind] || 0;
+    if (owned < need) return;
+    META.fragments[kind] = owned - need;
+    META.levels[kind] = lv + 1;
+    saveFragments(META.fragments);
+    saveLevels(META.levels);
+    renderAlmanac();
+    // 简短提示
+    document.getElementById('a-detail-name').classList.add('lvup-flash');
+    setTimeout(() => document.getElementById('a-detail-name').classList.remove('lvup-flash'), 600);
+});
+
+function renderAlmanac() {
+    // 卡片网格
+    almanacGrid.innerHTML = '';
+    CARD_ORDER.forEach(kind => {
+        const def = PLANTS[kind];
+        const lv = META.levels[kind] || 1;
+        const info = levelInfo(lv);
+        const next = nextLevelInfo(lv);
+        const owned = META.fragments[kind] || 0;
+        const curBase = info.cumulative;
+        const nextBase = next ? next.cumulative : info.cumulative;
+        const need = next ? next.cumulative - info.cumulative : 0;
+        const pct = next ? Math.min(100, Math.floor((owned / need) * 100)) : 100;
+
+        const card = document.createElement('div');
+        card.className = 'plant-card' + (almanacSelected === kind ? ' active' : '');
+        card.style.color = def.color;
+        card.innerHTML = `
+            <span class="p-lv ${lv >= 5 ? 'awakened' : ''}">${info.label}</span>
+            <div class="p-name">${def.name}</div>
+            <div class="p-frag">${PLANT_FRAG_LABEL[kind]} <b>${owned}</b>${next ? ` / ${need}` : ''}</div>
+            <div class="p-bar"><div class="p-bar-inner" style="width: ${pct}%"></div></div>
+        `;
+        card.addEventListener('click', () => {
+            almanacSelected = kind;
+            renderAlmanac();
+        });
+        almanacGrid.appendChild(card);
+    });
+
+    // 详情面板
+    updateAlmanacDetail();
+
+    // 底栏碎片
+    CARD_ORDER.forEach(k => {
+        const el = document.getElementById(`frag-${k}`);
+        if (el) el.textContent = META.fragments[k] || 0;
+    });
+}
+
+function updateAlmanacDetail() {
+    if (!almanacSelected) return;
+    const kind = almanacSelected;
+    const def = PLANTS[kind];
+    const lv = META.levels[kind] || 1;
+    const info = levelInfo(lv);
+    const next = nextLevelInfo(lv);
+    const owned = META.fragments[kind] || 0;
+    const spec = PLANT_LEVEL_STAT[kind];
+
+    // 名字
+    const nameEl = document.getElementById('a-detail-name');
+    nameEl.textContent = def.name;
+    nameEl.style.color = def.color;
+    nameEl.style.textShadow = `0 0 12px ${def.color}`;
+
+    // 属性对比（当前 → 下一级）
+    const statEl = document.getElementById('a-detail-stat');
+    statEl.innerHTML = '';
+    const stats = getAlmanacStats(kind, info.mul, next ? next.mul : info.mul);
+    stats.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'stat-line';
+        row.innerHTML = `
+            <span>${s.label}</span>
+            <span>
+                <span class="cur">${s.cur}</span>
+                ${next ? `<span class="next">→ ${s.next}</span>` : `<span class="max-tag">★ 满级</span>`}
+            </span>
+        `;
+        statEl.appendChild(row);
+    });
+
+    // 描述
+    document.getElementById('a-detail-desc').textContent = getAlmanacDesc(kind, lv);
+
+    // 等级标签
+    const tagEl = document.getElementById('a-lv-tag');
+    tagEl.textContent = info.label;
+    tagEl.style.color = lv >= 5 ? '#FF88DD' : '#FFD700';
+
+    // 进度条
+    const need = next ? next.cumulative - info.cumulative : 0;
+    const pct = next ? Math.min(100, Math.floor((owned / need) * 100)) : 100;
+    document.getElementById('a-lv-bar-inner').style.width = pct + '%';
+    document.getElementById('a-lv-bar-text').textContent = next
+        ? `${owned} / ${need} ${PLANT_FRAG_LABEL[kind]}`
+        : `★ 已觉醒（Lv 5 最高等级）`;
+
+    // 升级按钮
+    const canUpgrade = next && owned >= need;
+    btnUpgrade.disabled = !canUpgrade;
+    if (!next) {
+        btnUpgrade.textContent = '已 觉 醒';
+    } else if (canUpgrade) {
+        btnUpgrade.textContent = `升级 Lv ${lv + 1} · 消耗 ${need} ${PLANT_FRAG_LABEL[kind]}`;
+    } else {
+        btnUpgrade.textContent = `还差 ${need - owned} ${PLANT_FRAG_LABEL[kind]}`;
+    }
+}
+
+// 生成图鉴属性表（当前值 / 下一级值）
+function getAlmanacStats(kind, curMul, nextMul) {
+    const def = PLANTS[kind];
+    switch (kind) {
+        case 'sunflower':
+            return [
+                { label: '每颗阳光', cur: '25', next: '25' },
+                { label: '产阳光周期', cur: (24 / curMul).toFixed(1) + 's', next: (24 / nextMul).toFixed(1) + 's' },
+                { label: '每分钟产量', cur: Math.round(60 / (24 / curMul) * 25), next: Math.round(60 / (24 / nextMul) * 25) },
+            ];
+        case 'peashooter':
+            return [
+                { label: '豌豆伤害', cur: Math.round(def.bulletDamage * curMul), next: Math.round(def.bulletDamage * nextMul) },
+                { label: '射速', cur: def.fireInterval.toFixed(2) + 's', next: def.fireInterval.toFixed(2) + 's' },
+                { label: 'DPS', cur: (def.bulletDamage * curMul / def.fireInterval).toFixed(1), next: (def.bulletDamage * nextMul / def.fireInterval).toFixed(1) },
+            ];
+        case 'wallnut':
+            return [
+                { label: '血量', cur: Math.round(def.hp * curMul), next: Math.round(def.hp * nextMul) },
+                { label: '成本', cur: def.cost, next: def.cost },
+            ];
+        case 'cherry':
+            return [
+                { label: '爆炸半径', cur: Math.round(def.blastRadius * curMul) + 'px', next: Math.round(def.blastRadius * nextMul) + 'px' },
+                { label: '爆炸伤害', cur: '致命', next: '致命' },
+                { label: '成本', cur: def.cost, next: def.cost },
+            ];
+        default:
+            return [];
+    }
+}
+
+function getAlmanacDesc(kind, lv) {
+    const map = {
+        sunflower:  '产阳光的主力。种得越多、产越快，前期核心。' + (lv >= 5 ? '【觉醒】产量翻倍！' : ''),
+        peashooter: '基础输出植物。一颗豌豆一份伤害。' + (lv >= 5 ? '【觉醒】伤害翻倍，一枪一个！' : ''),
+        wallnut:    '肉盾。血厚，能挡住僵尸让后排火力输出。' + (lv >= 5 ? '【觉醒】血量翻倍！' : ''),
+        cherry:     '一次性范围炸弹。可清一片僵尸。' + (lv >= 5 ? '【觉醒】爆炸半径翻倍！' : ''),
+    };
+    return map[kind] || '';
+}
+
+// 首次启动赠送 5 个每种碎片（便于陛下先熟悉 UI）
+(function initialFragmentGift() {
+    const key = 'pvz_txt_first_gift_v1';
+    if (localStorage.getItem(key)) return;
+    CARD_ORDER.forEach(k => {
+        if ((META.fragments[k] || 0) < 5) META.fragments[k] = 5;
+    });
+    saveFragments(META.fragments);
+    try { localStorage.setItem(key, '1'); } catch {}
+})();
+
+// ============================================================
+// 难度选择器接线（选关屏顶部四个按钮）
+// ============================================================
+const DIFFICULTY_TIPS = {
+    easy:   '简单：敌方弱化，植物攻速 1.35× · 奖励减半',
+    normal: '普通：敌方标准 · 奖励标准',
+    hard:   '困难：敌方加强 · 奖励 1.5× · 掉率 1.3×',
+    hell:   '地狱：敌方强化 · 奖励 2.5× · 掉率 1.8×',
+};
+function applyDifficulty(name) {
+    const preset = DIFFICULTY_PRESETS[name];
+    if (!preset) return;
+    Object.assign(DIFFICULTY, preset);
+    currentDifficulty = name;
+    // 高亮按钮
+    document.querySelectorAll('.diff-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.diff === name);
+    });
+    // 更新提示
+    const tip = document.getElementById('diff-tip');
+    if (tip) tip.textContent = DIFFICULTY_TIPS[name] || '';
+}
+(function bindDifficultyButtons() {
+    document.querySelectorAll('.diff-btn').forEach(btn => {
+        btn.addEventListener('click', () => applyDifficulty(btn.dataset.diff));
+    });
+    // 初始为普通
+    applyDifficulty('normal');
+})();
+
+// ============================================================
+// 结算弹窗按钮接线（返回主页 / 重新游戏 / 下一关）
+// ============================================================
+(function bindResultButtons() {
+    const btnMenu = document.getElementById('btn-result-menu');
+    const btnRetry = document.getElementById('btn-result-retry');
+    // btn-result-next 在 showResultModal 中动态绑定，因为要用当前关信息
+
+    if (btnMenu) {
+        btnMenu.addEventListener('click', () => {
+            hideResultModal();
+            stopGame();
+            showScreen('menu');
+            refreshContinueBtn();
+        });
+    }
+    if (btnRetry) {
+        btnRetry.addEventListener('click', () => {
+            hideResultModal();
+            if (currentLevel) {
+                startGame(currentLevel);
+            }
+        });
+    }
+
+    // 点击遮罩不关闭结算（避免误触）——但 ESC 键返回主页
+    window.addEventListener('keydown', (e) => {
+        const modal = document.getElementById('result-modal');
+        if (!modal || modal.classList.contains('hidden')) return;
+        if (e.key === 'Escape') {
+            hideResultModal();
+            stopGame();
+            showScreen('menu');
+            refreshContinueBtn();
+        }
+    });
+})();
+
+// 初始屏由账户系统 initAuth() 决定：已登录进主菜单，未登录进登录屏
+
+// ============================================================
+// 武器库：图鉴 · 掉率 · 解锁 · 升级 · 装备
+// ============================================================
+const armoryGrid    = document.getElementById('armory-grid');
+const btnArmory     = document.getElementById('btn-armory');
+const btnBackArmory = document.getElementById('btn-back-menu-armory');
+const btnWAction    = document.getElementById('btn-w-action');
+const btnWEquip     = document.getElementById('btn-w-equip');
+const btnGiveWFrag  = document.getElementById('btn-give-wfrags');
+let armorySelected  = 'pistol';
+
+// 帮助：某种武器碎片在指定僵尸类型上的估算掉率 (%)
+function estimateWfragChance(zombieKind, weaponKey) {
+    const t = DROP_TABLE[zombieKind];
+    if (!t || !t.wfrag) return 0;
+    const weights = WEAPON_FRAG_WEIGHTS[zombieKind] || WEAPON_FRAG_WEIGHTS.normal;
+    let total = 0;
+    for (const k in weights) total += weights[k];
+    const share = (weights[weaponKey] || 0) / total;
+    return t.wfrag.chance * share * 100;
+}
+
+function renderArmory() {
+    refreshCurrencyUI();
+    // 卡片网格
+    armoryGrid.innerHTML = '';
+    WEAPON_ORDER.forEach(kind => {
+        const w  = WEAPONS[kind];
+        const wm = WEAPON_META[kind];
+        const unlocked = !!META.weapons.unlocked[kind];
+        const equipped = META.weapons.equipped === kind;
+        const lv = META.weapons.levels[kind] || (unlocked ? 1 : 0);
+        const owned = META.weaponFrags[kind] || 0;
+
+        let need, pct, tag;
+        if (!unlocked) {
+            need = wm.unlockCost;
+            pct  = Math.min(100, Math.floor((owned / need) * 100));
+            tag  = '未解锁';
+        } else if (lv < wm.maxLevel) {
+            need = wm.perLevel * lv;
+            pct  = Math.min(100, Math.floor((owned / need) * 100));
+            tag  = 'Lv' + lv;
+        } else {
+            need = 0;
+            pct  = 100;
+            tag  = '★ 满级';
+        }
+
+        const card = document.createElement('div');
+        card.className = 'plant-card'
+            + (armorySelected === kind ? ' active' : '')
+            + (unlocked ? '' : ' locked')
+            + (equipped ? ' equipped-card' : '');
+        card.style.color = w.color;
+        card.innerHTML = `
+            <span class="p-lv ${lv >= wm.maxLevel ? 'awakened' : ''}">${tag}</span>
+            <div class="p-name">${w.name}</div>
+            <div class="p-frag">${wm.fragLabel} <b>${owned}</b>${need ? ` / ${need}` : ''}</div>
+            <div class="p-bar"><div class="p-bar-inner" style="width: ${pct}%"></div></div>
+        `;
+        card.addEventListener('click', () => {
+            armorySelected = kind;
+            renderArmory();
+        });
+        armoryGrid.appendChild(card);
+    });
+
+    updateArmoryDetail();
+
+    // 底栏碎片
+    WEAPON_ORDER.forEach(k => {
+        const el = document.getElementById(`wfrag-${k}`);
+        if (el) el.textContent = META.weaponFrags[k] || 0;
+    });
+}
+
+function updateArmoryDetail() {
+    const kind = armorySelected;
+    if (!kind) return;
+    const w  = WEAPONS[kind];
+    const wm = WEAPON_META[kind];
+    const unlocked = !!META.weapons.unlocked[kind];
+    const equipped = META.weapons.equipped === kind;
+    const lv = META.weapons.levels[kind] || (unlocked ? 1 : 0);
+    const owned = META.weaponFrags[kind] || 0;
+    const mul = weaponMul(Math.max(1, lv));
+
+    // 名字
+    const nameEl = document.getElementById('w-detail-name');
+    nameEl.textContent = w.name + (unlocked ? '' : '（未解锁）');
+    nameEl.style.color = w.color;
+    nameEl.style.textShadow = `0 0 12px ${w.color}`;
+
+    // 属性
+    const statEl = document.getElementById('w-detail-stat');
+    statEl.innerHTML = '';
+    const nextLv = lv < wm.maxLevel ? lv + 1 : null;
+    const nextMul = nextLv ? weaponMul(nextLv) : mul;
+    const rows = getArmoryStats(kind, mul, nextMul, lv, nextLv);
+    rows.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'stat-line';
+        row.innerHTML = `
+            <span>${s.label}</span>
+            <span>
+                <span class="cur">${s.cur}</span>
+                ${nextLv ? `<span class="next">→ ${s.next}</span>` : `<span class="max-tag">★ 满级</span>`}
+            </span>
+        `;
+        statEl.appendChild(row);
+    });
+
+    // 描述
+    document.getElementById('w-detail-desc').textContent = getArmoryDesc(kind);
+
+    // 掉率表（局内使用/观察）
+    const dropsEl = document.getElementById('w-drops');
+    const rows2 = [];
+    ['normal', 'cone', 'bucket'].forEach(z => {
+        const p = estimateWfragChance(z, kind);
+        const zname = ZOMBIES[z]?.name || z;
+        rows2.push(`<div class="drop-row"><span>${zname}</span><b>${p.toFixed(2)}%</b></div>`);
+    });
+    dropsEl.innerHTML = `<div class="drops-title">局内掉落率 (每只僵尸)</div>` + rows2.join('');
+
+    // 等级标签
+    const tagEl = document.getElementById('w-lv-tag');
+    tagEl.textContent = unlocked ? (lv >= wm.maxLevel ? '★ 满级' : 'Lv ' + lv) : '未解锁';
+    tagEl.style.color = !unlocked ? '#888' : (lv >= wm.maxLevel ? '#FF88DD' : '#FFD700');
+
+    // 进度条
+    let need = 0;
+    if (!unlocked) need = wm.unlockCost;
+    else if (lv < wm.maxLevel) need = wm.perLevel * lv;
+    const pct = need ? Math.min(100, Math.floor((owned / need) * 100)) : 100;
+    document.getElementById('w-lv-bar-inner').style.width = pct + '%';
+    document.getElementById('w-lv-bar-text').textContent = need
+        ? `${owned} / ${need} ${wm.fragLabel}`
+        : `★ 已满级`;
+
+    // 主动作按钮：解锁 / 升级 / 已满级
+    if (!unlocked) {
+        const can = owned >= wm.unlockCost;
+        btnWAction.disabled = !can;
+        btnWAction.textContent = can
+            ? `解锁 · 消耗 ${wm.unlockCost} ${wm.fragLabel}`
+            : `还差 ${wm.unlockCost - owned} ${wm.fragLabel}`;
+    } else if (lv < wm.maxLevel) {
+        const cost = wm.perLevel * lv;
+        const can = owned >= cost;
+        btnWAction.disabled = !can;
+        btnWAction.textContent = can
+            ? `升级 Lv ${lv + 1} · 消耗 ${cost} ${wm.fragLabel}`
+            : `还差 ${cost - owned} ${wm.fragLabel}`;
+    } else {
+        btnWAction.disabled = true;
+        btnWAction.textContent = '已 满 级';
+    }
+
+    // 装备按钮
+    btnWEquip.classList.toggle('equipped', equipped);
+    btnWEquip.disabled = !unlocked;
+    btnWEquip.textContent = !unlocked ? '装 备' : (equipped ? '★ 已装备（点击卸下）' : '装 备');
+}
+
+function getArmoryStats(kind, mul, nextMul, lv, nextLv) {
+    const w  = WEAPONS[kind];
+    const wm = WEAPON_META[kind];
+    const dCur  = Math.round(w.damage * mul);
+    const dNext = Math.round(w.damage * nextMul);
+    const cdCur  = (w.fireInterval / mul).toFixed(2);
+    const cdNext = (w.fireInterval / nextMul).toFixed(2);
+    const durCur = weaponDurCap(kind, Math.max(1, lv));
+    const durNxt = nextLv ? weaponDurCap(kind, nextLv) : durCur;
+
+    const rows = [
+        { label: '伤害',   cur: dCur,      next: dNext },
+        { label: '攻速',   cur: `${cdCur}s`, next: `${cdNext}s` },
+        { label: '射程',   cur: w.reach || (w.bulletSpeed ? '远程' : '-'), next: w.reach || (w.bulletSpeed ? '远程' : '-') },
+        { label: '类型',   cur: w.kind === 'ranged' ? '远程' : '近战', next: w.kind === 'ranged' ? '远程' : '近战' },
+        { label: '耐久上限', cur: durCur, next: durNxt },
+    ];
+    if (w.pellets) rows.push({ label: '散射', cur: `${w.pellets} 发`, next: `${w.pellets} 发` });
+    return rows;
+}
+function getArmoryDesc(kind) {
+    const map = {
+        pistol:  '轻便的远程武器。每次点击射出一发子弹，鼠标决定方向。',
+        shotgun: '一次击发 3 颗散弹壳，扇形扩散，近距离威力惊人。',
+        dagger:  '短距离近战。挥砍速度快，适合灵活切入切出。',
+        sword:   '长剑挥砍范围广，一击横扫多敌，攻速较慢。',
+    };
+    return map[kind] || '';
+}
+
+// 打开图鉴
+if (btnArmory) {
+    btnArmory.addEventListener('click', () => {
+        renderArmory();
+        showScreen('armory');
+    });
+}
+if (btnBackArmory) {
+    btnBackArmory.addEventListener('click', () => showScreen('menu'));
+}
+
+// 解锁 / 升级
+if (btnWAction) {
+    btnWAction.addEventListener('click', () => {
+        const kind = armorySelected;
+        const wm = WEAPON_META[kind];
+        const owned = META.weaponFrags[kind] || 0;
+        const unlocked = !!META.weapons.unlocked[kind];
+        if (!unlocked) {
+            if (owned < wm.unlockCost) return;
+            META.weaponFrags[kind] = owned - wm.unlockCost;
+            META.weapons.unlocked[kind] = true;
+            META.weapons.levels[kind] = 1;
+            // 首次解锁自动装备（除非已经装备了别的）
+            if (!META.weapons.equipped) META.weapons.equipped = kind;
+            log(`解锁武器：${WEAPONS[kind].name}`);
+        } else {
+            const lv = META.weapons.levels[kind] || 1;
+            if (lv >= wm.maxLevel) return;
+            const cost = wm.perLevel * lv;
+            if (owned < cost) return;
+            META.weaponFrags[kind] = owned - cost;
+            META.weapons.levels[kind] = lv + 1;
+            log(`${WEAPONS[kind].name} 升级到 Lv ${lv + 1}`);
+        }
+        saveWeapons();
+        saveWeaponFrags();
+        renderArmory();
+    });
+}
+
+// 装备 / 卸下
+if (btnWEquip) {
+    btnWEquip.addEventListener('click', () => {
+        const kind = armorySelected;
+        if (!META.weapons.unlocked[kind]) return;
+        if (META.weapons.equipped === kind) {
+            META.weapons.equipped = null;
+        } else {
+            META.weapons.equipped = kind;
+        }
+        saveWeapons();
+        renderArmory();
+    });
+}
+
+// 调试：领取武器碎片
+if (btnGiveWFrag) {
+    btnGiveWFrag.addEventListener('click', () => {
+        WEAPON_ORDER.forEach(k => {
+            META.weaponFrags[k] = (META.weaponFrags[k] || 0) + 20;
+        });
+        saveWeaponFrags();
+        renderArmory();
+    });
+}
+
+// ============================================================
+// 多人对战：房主权威 + PeerJS P2P
+// ============================================================
+
+// ---- 客人本地按键快照 ----
+function mpBuildInputSnapshot() {
+    return {
+        left:  !!(keys['a'] || keys['arrowleft']),
+        right: !!(keys['d'] || keys['arrowright']),
+        up:    !!(keys['w'] || keys['arrowup']),
+        down:  !!(keys['s'] || keys['arrowdown']),
+        sprint:!!keys['shift'],
+        guard: !!keys['e'],
+        // 触发事件（jump/dash/attack/plant/selectCard/useTempCard）作为一次性 evt 消息，见下
+    };
+}
+
+// 客人：每帧发送输入
+let _mpLastInputSent = 0;
+function mpGuestSendInput(dt) {
+    if (!Net.mp.isConnected()) return;
+    _mpLastInputSent += dt;
+    if (_mpLastInputSent < 1 / 30) return;
+    _mpLastInputSent = 0;
+    Net.mp.send('input', mpBuildInputSnapshot());
+}
+
+// 客人：一次性事件上行
+function mpGuestSendEvt(name, payload) {
+    if (!state.mp.active || state.mp.role !== 'guest' || !Net.mp.isConnected()) return;
+    Net.mp.send('evt', { name, payload });
+}
+
+// ---- 房主：应用客人输入到 dave2 ----
+function mpHostApplyRemoteInput(dt) {
+    const inp = state.mp.remoteInput;
+    if (!inp) return;
+    let vx = 0, vy = 0;
+    if (inp.left)  vx -= 1;
+    if (inp.right) vx += 1;
+    if (inp.up)    vy -= 1;
+    if (inp.down)  vy += 1;
+    dave2._input = { vx, vy, sprint: !!inp.sprint, guard: !!inp.guard };
+}
+
+// ---- 房主：推进 dave2（简化版 updateDave）----
+function updateDave2(dt) {
+    const d = dave2;
+    // CD 递减
+    if (d.dashCooldown  > 0) d.dashCooldown  -= dt;
+    if (d.guardCooldown > 0) d.guardCooldown -= dt;
+    if (d.invuln        > 0) d.invuln        -= dt;
+    if (d.perfectFlash  > 0) d.perfectFlash  -= dt;
+    if (d.weaponCooldown > 0) d.weaponCooldown -= dt;
+    if (d.swingTimer > 0) d.swingTimer -= dt;
+    if (d.hurtFlash > 0) d.hurtFlash -= dt;
+    if (d.jumpCooldown > 0) d.jumpCooldown -= dt;
+
+    // 闪避
+    if (d.dashing) {
+        d.dashTimer -= dt;
+        d._dashing = true;
+        d.x += d.dashDir.x * ACTION.dashSpeed * dt;
+        d.y += d.dashDir.y * ACTION.dashSpeed * dt;
+        d.x = Math.max(FIELD.left, Math.min(FIELD.right, d.x));
+        d.y = Math.max(FIELD.top + 12, Math.min(FIELD.bottom - 12, d.y));
+        if (d.dashTimer <= 0) { d.dashing = false; d._dashing = false; }
+        // 跳跃 & guard 计时仍然要走
+        if (d.isJumping) {
+            d.jumpOffset += d.vy * dt;
+            d.vy -= GRAVITY * dt;
+            if (d.jumpOffset <= 0) { d.jumpOffset = 0; d.vy = 0; d.isJumping = false; }
+        }
+        return;
+    }
+    d._dashing = false;
+
+    // 格挡：受 guard 输入控制 —— 上升沿在 evt 里发起；这里只处理持续 & 计时
+    if (d.guarding) {
+        d.guardTimer += dt;
+        if (!d._input?.guard) {
+            d.guarding = false;
+            d.guardCooldown = ACTION.guardCooldown;
+        }
+    }
+    d._perfect = d.guarding && d.guardTimer <= ACTION.guardPerfectMs;
+
+    // 常规移动
+    const inp = d._input;
+    let vx = inp?.vx || 0, vy = inp?.vy || 0;
+    if (vx !== 0 && vy !== 0) {
+        const inv = 1 / Math.SQRT2;
+        vx *= inv; vy *= inv;
+    }
+    d.sprinting = !!inp?.sprint;
+    let mul = 1;
+    if (d.sprinting) mul *= 1.65;
+    if (d.guarding)  mul *= 0.55;
+    if (vx !== 0) {
+        d.x += vx * 220 * mul * dt;
+        d.facing = vx > 0 ? 1 : -1;
+        d.facingAngle = Math.atan2(vy, vx);
+        d.x = Math.max(FIELD.left, Math.min(FIELD.right, d.x));
+    }
+    if (vy !== 0) {
+        d.y += vy * 180 * mul * dt;
+        d.y = Math.max(FIELD.top + 12, Math.min(FIELD.bottom - 12, d.y));
+    }
+    // 跳跃
+    if (d.isJumping) {
+        d.jumpOffset += d.vy * dt;
+        d.vy -= GRAVITY * dt;
+        if (d.jumpOffset <= 0) { d.jumpOffset = 0; d.vy = 0; d.isJumping = false; }
+    }
+}
+
+// ---- 房主：dave2 受伤 & 格挡（合并版）----
+function checkDave2Damage(dt) {
+    const d = dave2;
+    if (d.isJumping) { d._damageAcc = 0; return; }
+    if (d.invuln > 0) { d._damageAcc = 0; return; }
+    for (const z of state.zombies) {
+        if (z.row === d.row && Math.abs(z.x - d.x) < 25) {
+            if (d.guarding) {
+                d._damageAcc = 0;
+                if (d._perfect && !z._stunned) {
+                    z._stunTimer = ACTION.perfectStunTime;
+                    z._stunned = true;
+                    z.hurtFlash = 0.2;
+                    d.perfectFlash = 0.35;
+                    z.x += 30;
+                }
+                return;
+            }
+            d.hurtFlash = 0.15;
+            d._damageAcc = (d._damageAcc || 0) + dt;
+            if (d._damageAcc >= 1) {
+                d._damageAcc = 0;
+                d.hp--;
+                d.invuln = Math.max(d.invuln, 0.6);
+                if (d.hp <= 0) gameOver(false); // 双人：任意一方 0 血都败
+            }
+            return;
+        }
+    }
+    d._damageAcc = 0;
+}
+
+// ---- 房主：处理来自客人的事件 ----
+function mpHostHandleEvt(msg) {
+    const { name, payload } = msg || {};
+    const d = dave2;
+    if (name === 'jump') {
+        if (!d.isJumping && d.jumpCooldown <= 0) {
+            d.vy = JUMP_VELOCITY;
+            d.isJumping = true;
+            d.jumpCooldown = JUMP_CD;
+        }
+    } else if (name === 'dash') {
+        if (d.dashCooldown > 0 || d.dashing) return;
+        const dir = payload && payload.dir;
+        if (!dir) return;
+        d.dashing = true;
+        d.dashTimer = ACTION.dashDuration;
+        d.dashDir = dir;
+        d.dashCooldown = ACTION.dashCooldown;
+        d.invuln = Math.max(d.invuln, ACTION.dashInvuln);
+    } else if (name === 'guardStart') {
+        if (d.guardCooldown > 0 || d.guarding) return;
+        d.guarding = true;
+        d.guardTimer = 0;
+        d.guardFacing = (payload && typeof payload.face === 'number') ? payload.face : 0;
+    } else if (name === 'attack') {
+        // 客人的攻击方向由客人计算并发送角度
+        const angle = payload?.angle ?? 0;
+        mpHostFireForDave2(angle);
+    }
+    // 种植/选卡：暂不支持客人操作（简化）
+}
+
+// 房主：为 dave2 触发一次攻击
+function mpHostFireForDave2(angle) {
+    const d = dave2;
+    if (d.weaponCooldown > 0) return;
+    // 装备（简化）：客人默认用 dagger；后续可加协商
+    const wkey = d.currentWeapon || 'dagger';
+    const w = WEAPONS[wkey]; if (!w) return;
+    const y = d.y - d.jumpOffset;
+    d.facingAngle = angle;
+    if (w.kind === 'ranged') {
+        const speed = w.bulletSpeed || 500;
+        const dmg = Math.round(w.damage);
+        const pellets = w.pellets || 1;
+        const spread = w.spread || 0;
+        for (let i = 0; i < pellets; i++) {
+            const t = pellets === 1 ? 0 : (i / (pellets - 1) - 0.5);
+            const a = angle + t * spread;
+            state.bullets.push({
+                x: d.x + Math.cos(a) * 22,
+                y: y + Math.sin(a) * 22,
+                vx: Math.cos(a) * speed, vy: Math.sin(a) * speed,
+                friendly: true, damage: dmg, color: w.color,
+                label: w.bulletLabel || '·', life: 1.2,
+            });
+        }
+    } else {
+        for (const z of state.zombies) {
+            const dx = z.x - d.x, dy = z.y - y;
+            if (Math.hypot(dx, dy) > (w.reach || 40)) continue;
+            let delta = Math.atan2(dy, dx) - angle;
+            while (delta >  Math.PI) delta -= Math.PI * 2;
+            while (delta < -Math.PI) delta += Math.PI * 2;
+            if (Math.abs(delta) <= (w.arc || Math.PI) / 2) {
+                z.hp -= w.damage;
+                z.hurtFlash = 0.12;
+                state.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.15, maxLife: 0.15 });
+            }
+        }
+    }
+    d.weaponCooldown = w.fireInterval;
+    d.swingTimer = 0.22; d.swingDir = angle; d.swingWeapon = wkey;
+}
+
+// ---- 房主：广播 snapshot ----
+function mpHostBroadcastSnapshot() {
+    // 只发必要字段，尽量小
+    const snap = {
+        t: state.time,
+        wave: state.wave, maxWave: state.maxWave, sun: state.sun,
+        waveTimer: state.waveTimer, waveActive: state.waveActive,
+        gameOver: state.gameOver, victory: state.victory,
+        p1: {
+            x: Math.round(dave.x), y: Math.round(dave.y),
+            j: Math.round(dave.jumpOffset), hp: dave.hp,
+            f: dave.facing, fa: +dave.facingAngle.toFixed(2),
+            hf: dave.hurtFlash > 0 ? 1 : 0,
+            gd: dave.guarding ? 1 : 0,
+            gf: +(dave.guardFacing || 0).toFixed(2),
+            gp: inPerfectGuard() ? 1 : 0,
+            dx: dave.dashing ? 1 : 0,
+            sw: dave.swingTimer > 0 ? 1 : 0,
+            swD: +dave.swingDir.toFixed(2), swW: dave.swingWeapon,
+            jp: dave.isJumping ? 1 : 0,
+        },
+        p2: {
+            x: Math.round(dave2.x), y: Math.round(dave2.y),
+            j: Math.round(dave2.jumpOffset), hp: dave2.hp,
+            hf: dave2.hurtFlash > 0 ? 1 : 0,
+            gd: dave2.guarding ? 1 : 0,
+            gp: dave2._perfect ? 1 : 0,
+            dx: dave2.dashing ? 1 : 0,
+            sw: dave2.swingTimer > 0 ? 1 : 0,
+            swD: +(dave2.swingDir || 0).toFixed(2),
+            jp: dave2.isJumping ? 1 : 0,
+        },
+        zs: state.zombies.map(z => ({
+            k: z.kind, x: Math.round(z.x), y: Math.round(z.y),
+            hp: Math.round(z.hp), mhp: Math.round(z.maxHp),
+            hf: z.hurtFlash > 0 ? 1 : 0,
+        })),
+        bs: state.bullets.map(b => ({
+            x: Math.round(b.x), y: Math.round(b.y),
+            l: b.label, c: b.color, e: b.enemy ? 1 : 0,
+        })),
+        pl: state.plants.map(p => ({
+            k: p.kind, x: Math.round(p.x), y: Math.round(p.y),
+        })),
+        su: state.suns.map(s => ({ x: Math.round(s.x), y: Math.round(s.y) })),
+        pk: state.pickups.map(p => ({ k: p.kind, x: Math.round(p.x), y: Math.round(p.y), a: p.amount })),
+    };
+    Net.mp.send('snap', snap);
+}
+
+// ---- 客人：应用 snapshot 到本地 state（用于渲染）----
+function mpGuestApplySnapshot(snap) {
+    state.wave = snap.wave; state.maxWave = snap.maxWave;
+    state.sun = snap.sun; state.waveTimer = snap.waveTimer;
+    state.waveActive = snap.waveActive;
+    if (snap.gameOver && !state.gameOver) {
+        state.gameOver = true; state.victory = !!snap.victory;
+    }
+    // P1 = 房主的戴夫 → 用 dave2 显示（客人本身是 P2 = dave）
+    if (snap.p1) {
+        dave2.x = snap.p1.x; dave2.y = snap.p1.y;
+        dave2.jumpOffset = snap.p1.j; dave2.hp = snap.p1.hp;
+        dave2.facing = snap.p1.f; dave2.facingAngle = snap.p1.fa;
+        dave2.hurtFlash = snap.p1.hf ? 0.15 : 0;
+        dave2.guarding = !!snap.p1.gd; dave2.guardFacing = snap.p1.gf;
+        dave2._perfect = !!snap.p1.gp;
+        dave2._dashing = !!snap.p1.dx;
+        dave2.isJumping = !!snap.p1.jp;
+        dave2.swingTimer = snap.p1.sw ? 0.22 : 0;
+        dave2.swingDir = snap.p1.swD || 0; dave2.swingWeapon = snap.p1.swW;
+        dave2.label = 'P1';
+        dave2.color = '#00FF88';
+    }
+    // P2 = 客人自身 → 用 dave（覆盖位置以对齐权威）
+    if (snap.p2) {
+        dave.x = snap.p2.x; dave.y = snap.p2.y;
+        dave.jumpOffset = snap.p2.j; dave.hp = snap.p2.hp;
+        dave.hurtFlash = snap.p2.hf ? 0.15 : Math.max(0, dave.hurtFlash - 0.02);
+        dave.guarding = !!snap.p2.gd;
+        dave.isJumping = !!snap.p2.jp;
+        dave.dashing = !!snap.p2.dx;
+        dave.swingTimer = snap.p2.sw ? 0.22 : 0;
+        dave.swingDir = snap.p2.swD || 0;
+        dave.label = 'P2';
+        dave.color = '#66FFCC';
+    }
+    // 重建僵尸、子弹、植物、阳光、拾取（简单粗暴：整表替换用于渲染）
+    state.zombies = (snap.zs || []).map(z => ({
+        kind: z.k, x: z.x, y: z.y, row: yToRow(z.y),
+        hp: z.hp, maxHp: z.mhp, hurtFlash: z.hf ? 0.12 : 0,
+        speed: 0, // 客人不推进
+    }));
+    state.bullets = (snap.bs || []).map(b => ({
+        x: b.x, y: b.y, vx: 0, vy: 0, label: b.l, color: b.c,
+        enemy: !!b.e, friendly: !b.e, damage: 0, row: null,
+    }));
+    state.plants = (snap.pl || []).map(p => ({
+        kind: p.k, x: p.x, y: p.y, row: yToRow(p.y),
+        hp: 999, mul: 1, produceTimer: 999, fireTimer: 999, fuseTimer: 999, shake: 0,
+    }));
+    state.suns = (snap.su || []).map(s => ({ x: s.x, y: s.y, targetY: s.y, vy: 0, value: 25, life: 10 }));
+    state.pickups = (snap.pk || []).map(p => ({
+        kind: p.k, x: p.x, y: p.y, amount: p.a || 1, vy: 0, life: 12, hopPhase: 0, extra: null,
+    }));
+}
+
+// ---- 主菜单 · 多人按钮 ----
+const mpModal   = document.getElementById('mp-modal');
+const btnMp     = document.getElementById('btn-multiplayer');
+const btnMpClose= document.getElementById('mp-close');
+const btnMpHost = document.getElementById('mp-host-btn');
+const btnMpJoin = document.getElementById('mp-join-btn');
+const btnMpStart= document.getElementById('mp-start');
+const btnMpCopy = document.getElementById('mp-copy');
+const mpCodeEl  = document.getElementById('mp-room-code');
+const mpInfoEl  = document.getElementById('mp-room-info');
+const mpInputEl = document.getElementById('mp-code-input');
+const mpStatusEl= document.getElementById('mp-status');
+const mpTabs    = document.querySelectorAll('.mp-tab');
+const mpPanels  = document.querySelectorAll('.mp-panel');
+
+function setMpStatus(text, cls) {
+    if (!mpStatusEl) return;
+    mpStatusEl.textContent = text;
+    mpStatusEl.className = 'mp-status ' + (cls || '');
+}
+
+if (btnMp) {
+    btnMp.addEventListener('click', () => {
+        mpModal.classList.remove('hidden');
+        setMpStatus('未连接');
+        btnMpStart.classList.add('hidden');
+        mpInfoEl.classList.add('hidden');
+    });
+}
+if (btnMpClose) {
+    btnMpClose.addEventListener('click', () => {
+        mpModal.classList.add('hidden');
+        if (!Net.mp.isConnected() && !state.mp.active) Net.mp.close(true);
+    });
+}
+mpTabs.forEach(t => t.addEventListener('click', () => {
+    const tab = t.dataset.tab;
+    mpTabs.forEach(x => x.classList.toggle('active', x === t));
+    mpPanels.forEach(p => p.classList.toggle('hidden', p.dataset.panel !== tab));
+}));
+
+if (btnMpHost) {
+    btnMpHost.addEventListener('click', async () => {
+        setMpStatus('创建中...', 'wait');
+        btnMpHost.disabled = true;
+        const r = await Net.mp.host();
+        btnMpHost.disabled = false;
+        if (!r.ok) { setMpStatus('创建失败：' + r.error, 'err'); return; }
+        mpCodeEl.textContent = r.code;
+        mpInfoEl.classList.remove('hidden');
+        setMpStatus('等待好友加入... (房间码：' + r.code + ')', 'wait');
+    });
+}
+if (btnMpCopy) {
+    btnMpCopy.addEventListener('click', () => {
+        const code = mpCodeEl.textContent;
+        if (!code || code === '------') return;
+        try {
+            navigator.clipboard.writeText(code);
+            btnMpCopy.textContent = '已复制';
+            setTimeout(() => btnMpCopy.textContent = '复制', 1200);
+        } catch {}
+    });
+}
+if (btnMpJoin) {
+    btnMpJoin.addEventListener('click', async () => {
+        const code = (mpInputEl.value || '').toUpperCase().trim();
+        if (!code) return;
+        setMpStatus('连接房主...', 'wait');
+        btnMpJoin.disabled = true;
+        const r = await Net.mp.join(code);
+        btnMpJoin.disabled = false;
+        if (!r.ok) { setMpStatus('加入失败：' + r.error, 'err'); return; }
+        setMpStatus('已连接，等待房主开始...', 'ok');
+    });
+}
+if (btnMpStart) {
+    btnMpStart.addEventListener('click', () => {
+        if (!Net.mp.isHost() || !Net.mp.isConnected()) return;
+        mpModal.classList.add('hidden');
+        // 房主开局：默认第一关（或最后一次进过的关）
+        const lastId = saveData.lastLevel;
+        const lv = LEVELS.find(l => l.id === lastId) || LEVELS[0];
+        state.mp.active = true;
+        state.mp.role = 'host';
+        Net.mp.send('start', { levelId: lv.id });
+        startGame(lv);
+    });
+}
+
+// PeerJS 事件监听
+if (window.Net && Net.mp) {
+    Net.mp.on('status', (s) => {
+        if (s.status === 'connected') {
+            if (Net.mp.isHost()) {
+                setMpStatus('★ 好友已加入！房主可开始游戏', 'ok');
+                btnMpStart.classList.remove('hidden');
+            } else {
+                setMpStatus('★ 已加入房间，等待房主开始...', 'ok');
+            }
+        } else if (s.status === 'closed') {
+            if (state.mp.active) {
+                log('联机连接已断开，回到主菜单');
+                state.mp.active = false;
+                state.mp.role = null;
+                stopGame();
+                showScreen('menu');
+            } else {
+                setMpStatus('连接已关闭');
+                btnMpStart.classList.add('hidden');
+            }
+        } else if (s.status === 'error') {
+            setMpStatus('错误：' + s.error, 'err');
+        }
+    });
+
+    // 客人：收到房主开局广播
+    Net.mp.on('start', (d) => {
+        if (!Net.mp.isGuest()) return;
+        state.mp.active = true;
+        state.mp.role = 'guest';
+        const lv = LEVELS.find(l => l.id === d.levelId) || LEVELS[0];
+        mpModal.classList.add('hidden');
+        startGame(lv);
+        // 覆盖客人本地的分工：客人是 P2
+        dave.label = 'P2'; dave.color = '#66FFCC';
+    });
+
+    // 房主：收到客人输入 / 事件
+    Net.mp.on('input', (d) => {
+        if (!Net.mp.isHost() || !state.mp.active) return;
+        state.mp.remoteInput = d;
+    });
+    Net.mp.on('evt', (d) => {
+        if (!Net.mp.isHost() || !state.mp.active) return;
+        mpHostHandleEvt(d);
+    });
+
+    // 客人：收到 snapshot
+    Net.mp.on('snap', (d) => {
+        if (!Net.mp.isGuest() || !state.mp.active) return;
+        mpGuestApplySnapshot(d);
+    });
+}
+
+// ---- 客人：捕获本地事件并上行 ----
+// 拦截 keydown 里的一次性动作 & 鼠标攻击
+window.addEventListener('keydown', (e) => {
+    if (!state.mp.active || state.mp.role !== 'guest') return;
+    if (inputFocused) return;
+    const k = e.key.toLowerCase();
+    if (k === ' ')       mpGuestSendEvt('jump');
+    else if (k === 'q')  mpGuestSendEvt('dash', { dir: currentMoveDir() });
+    else if (k === 'e')  {
+        const daveY = dave.y - dave.jumpOffset;
+        const face = mouse.inside
+            ? Math.atan2(mouse.y - daveY, mouse.x - dave.x)
+            : (dave.facing > 0 ? 0 : Math.PI);
+        mpGuestSendEvt('guardStart', { face });
+    }
+}, true);
+
+// 客人：左键攻击 → 上行角度（不本地执行）
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (!state.mp.active || state.mp.role !== 'guest') return;
+    const daveY = dave.y - dave.jumpOffset;
+    const angle = mouse.inside
+        ? Math.atan2(mouse.y - daveY, mouse.x - dave.x)
+        : (dave.facing > 0 ? 0 : Math.PI);
+    mpGuestSendEvt('attack', { angle });
+}, true);

@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>文字版植物大战僵尸</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="loading-overlay" style="display:flex;position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:10001;flex-direction:column;align-items:center;justify-content:center;transition:opacity 0.8s;">
+        <span id="load-title" style="color:#222;font-size:5vw;letter-spacing:1vw;opacity:0;transition:opacity 0.5s;">加载中...</span>
+        <div style="margin-top:2vw;width:33vw;height:0.6vw;background:#1a1a1a;border-radius:0.3vw;overflow:hidden;">
+            <div id="load-bar" style="height:100%;width:0%;background:#FFD700;border-radius:0.3vw;transition:width 0.15s;"></div>
+        </div>
+        <div id="load-press" style="margin-top:3vw;color:#888;font-size:1.6vw;letter-spacing:0.4vw;opacity:0;transition:opacity 0.5s;">点击任意键进入游戏</div>
+    </div>
+    <div id="white-flash" style="position:fixed;top:0;left:0;width:100%;height:100%;background:#FFF;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s;"></div>
+    <!-- 登录屏 -->
+    <div id="login-screen" class="screen">
+        <div class="menu-title">
+            <span class="title-plant">植物</span>
+            <span class="title-vs">大战</span>
+            <span class="title-zombie">僵尸</span>
+        </div>
+        <div class="menu-sub">文 字 版 · Text Edition</div>
+        <div class="login-card">
+            <div class="login-tabs">
+                <button class="login-tab active" data-tab="login">登  录</button>
+                <button class="login-tab" data-tab="register">注  册</button>
+            </div>
+            <div class="login-form">
+                <label class="login-row">
+                    <span>用户名</span>
+                    <input id="login-username" type="text" maxlength="12" autocomplete="username" placeholder="2-12位 中英文/数字/_">
+                </label>
+                <label class="login-row">
+                    <span>密　码</span>
+                    <input id="login-password" type="password" maxlength="32" autocomplete="current-password" placeholder="4-32位">
+                </label>
+                <div class="login-msg" id="login-msg">&nbsp;</div>
+                <button class="menu-btn login-submit" id="login-submit">登  录</button>
+                <button class="ghost-btn" id="login-guest">以访客身份进入</button>
+            </div>
+            <div class="login-accounts" id="login-accounts"></div>
+        </div>
+        <div class="menu-footer">数据本地保存 · 联机接口就绪</div>
+    </div>
+
+    <!-- 主菜单 -->
+    <div id="menu-screen" class="screen hidden">
+        <div class="user-bar" id="user-bar">
+            <span class="user-hi">你好，<b id="user-name">戴夫</b></span>
+            <button class="user-btn" id="btn-rename" title="修改昵称（每次消耗 10 银币，登录仍用账户名）">改名</button>
+            <button class="user-btn" id="btn-logout">登出</button>
+        </div>
+        <div class="menu-title">
+            <span class="title-plant">植物</span>
+            <span class="title-vs">大战</span>
+            <span class="title-zombie">僵尸</span>
+        </div>
+        <div class="menu-sub">文 字 版 · Text Edition</div>
+        <div class="menu-buttons">
+            <button class="menu-btn" id="btn-new-game">开始游戏</button>
+            <button class="menu-btn" id="btn-continue">继续游戏</button>
+            <button class="menu-btn" id="btn-multiplayer">联机对战</button>
+            <button class="menu-btn" id="btn-workshop">创意工坊</button>
+            <button class="menu-btn" id="btn-almanac">植物图鉴</button>
+            <button class="menu-btn" id="btn-shop">潘妮的小店</button>
+            <button class="menu-btn" id="btn-mission">任务</button>
+            <button class="menu-btn" id="btn-settings">设置</button>
+            <button class="menu-btn" id="btn-about">关于</button>
+            <button class="menu-btn" id="btn-training">训练营</button>
+        </div>
+        <div class="menu-footer">按方向键或点击选择 · Enter 确认</div>
+    </div>
+
+    <!-- 关卡选择 -->
+    <div id="level-screen" class="screen hidden">
+        <div class="level-header">
+            <button class="back-btn" id="btn-back-menu">◀ 返回</button>
+            <div class="level-title">选 择 关 卡</div>
+            <span class="currency-bar" id="currency-level">
+                <span class="cur-item"><span class="c-silver">银</span> <b id="cur-silver-lv">0</b></span>
+                <span class="cur-item"><span class="c-gold">金</span> <b id="cur-gold-lv">0</b></span>
+                <span class="cur-item"><span class="c-gem">钻</span> <b id="cur-gem-lv">0</b></span>
+            </span>
+        </div>
+
+        <div class="difficulty-row">
+            <span class="preset-label">难度:</span>
+            <button class="diff-btn" data-diff="easy">简单</button>
+            <button class="diff-btn active" data-diff="normal">普通</button>
+            <button class="diff-btn" data-diff="hard">困难</button>
+            <button class="diff-btn" data-diff="hell">地狱</button>
+            <span class="diff-tip" id="diff-tip">敌方标准 · 奖励标准</span>
+        </div>
+
+        <div class="level-grid" id="level-grid">
+            <!-- JS 生成 -->
+        </div>
+        <div class="level-detail" id="level-detail">
+            <div class="detail-title" id="detail-title">1-1 前院初遇</div>
+            <div class="detail-body" id="detail-body">选择一关开始</div>
+            <button class="menu-btn play-btn" id="btn-play">开始</button>
+        </div>
+    </div>
+
+    <!-- 选卡界面 -->
+    <div id="card-select-screen" class="screen hidden">
+        <div class="level-header">
+            <button class="back-btn" id="btn-back-select">◀ 返回</button>
+            <div class="level-title" id="cs-title">选择植物 · 1-1</div>
+            <span class="cs-hint" id="cs-hint">可选卡槽: 0 / 6</span>
+        </div>
+
+        <div class="cs-layout">
+            <div class="cs-deck-row" id="cs-deck">
+                <!-- JS 生成 6 个卡槽 -->
+            </div>
+            <div class="cs-divider"><span>已解锁植物</span></div>
+            <div class="cs-pool-row" id="cs-pool">
+                <!-- JS 生成植物列表 -->
+            </div>
+        </div>
+
+        <div class="cs-footer">
+            <button class="menu-btn" id="btn-cs-confirm">开始战斗 ▶</button>
+        </div>
+    </div>
+
+    <!-- 关于 -->
+    <div id="about-modal" class="hidden modal-overlay">
+        <div class="modal-box">
+            <div class="modal-title">关于</div>
+            <div class="modal-body">
+                <p><b class="c-green">文字版植物大战僵尸</b></p>
+                <p>—— 以字代形的黑底策略小游戏</p>
+                <div class="sep"></div>
+                <p>操作：<b>WASD</b> 移动 · <b>空格</b> 跳跃 · <b>数字键</b> 选卡 · <b>F</b> 种植 · 走过阳光即拾</p>
+                <p>目标：抵御 10 波僵尸，守住家门口</p>
+                <div class="sep"></div>
+                <p class="hint">v0.1 · 单机版本 · 更多功能开发中</p>
+            </div>
+            <div class="modal-footer">
+                <button id="about-close">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 联机对战 -->
+    <div id="mp-modal" class="hidden modal-overlay">
+        <div class="modal-box">
+            <div class="modal-title">联 机 对 战</div>
+            <div class="modal-body">
+                <div class="mp-tabs">
+                    <button class="mp-tab active" data-tab="host">创建房间</button>
+                    <button class="mp-tab" data-tab="join">加入房间</button>
+                </div>
+
+                <div class="mp-panel" data-panel="host">
+                    <p class="hint">创建一个房间，把房间码发给好友让他加入。</p>
+                    <button class="menu-btn" id="mp-host-btn">生成房间</button>
+                    <div class="mp-room-row hidden" id="mp-room-info">
+                        <span>房间码：</span>
+                        <span class="mp-code" id="mp-room-code">------</span>
+                        <button class="ghost-btn" id="mp-copy">复制</button>
+                    </div>
+                    <div class="mp-room-row hidden" id="mp-room-url-row">
+                        <span>邀请链接：</span>
+                        <span class="mp-url" id="mp-room-url"></span>
+                        <button class="ghost-btn" id="mp-copy-url">复制链接</button>
+                    </div>
+                    <p class="hint hidden" id="mp-url-hint">好友复制链接在浏览器打开，登录后自动进入房间。</p>
+                </div>
+
+                <div class="mp-panel hidden" data-panel="join">
+                    <p class="hint">输入房主给你的 6 位房间码。</p>
+                    <input class="mp-input" id="mp-code-input" maxlength="6" placeholder="例如 A3F7Q9">
+                    <button class="menu-btn" id="mp-join-btn">加入</button>
+                </div>
+
+                <div class="mp-status" id="mp-status">未连接</div>
+                <div class="hint" id="mp-hint">房主创建后等待好友加入；连接建立后由房主点『开始游戏』。</div>
+            </div>
+            <div class="modal-footer">
+                <button id="mp-close">关闭</button>
+                <button id="mp-start" class="primary hidden">开始游戏 ▶</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 游戏画面 -->
+    <div id="game-screen" class="screen hidden">
+        <div id="game-container">
+            <div id="top-bar">
+                <button id="btn-quit-level" class="quit-btn">◀</button>
+                <span id="level-tag">1-1</span>
+                <span id="sun-display" class="sun-btn">阳 <b id="sun-value">50</b></span>
+                <span id="coin-display"><span style="color:#C0C0FF">银 <b id="coin-silver">0</b></span> <span style="color:#FFD700">金 <b id="coin-gold">0</b></span> <span style="color:#66FFFF">钻 <b id="coin-gem">0</b></span></span>
+                <span id="wave-display">波次 <b id="wave-value">1</b>/<b id="wave-max">10</b></span>
+                <div id="card-slots"></div>
+            </div>
+            <canvas id="game" width="960" height="540"></canvas>
+            <div id="bot-bar">
+                <span id="hero-display"><input id="hero-name" type="text" value="戴夫" maxlength="6" /></span>
+                <span id="hp-display">HP <span class="hp-mini-bar"><span class="hp-mini-fill" id="hp-mini-fill"></span></span><b id="hp-value">200</b></span>
+                <span id="stamina-display">体力 <span class="hp-mini-bar"><span class="st-mini-fill" id="st-mini-fill"></span></span><b id="st-value">100</b></span>
+                <span id="weapon-display"><span class="w-name" id="weapon-name"></span><span class="w-dur" id="weapon-dur"></span></span>
+                <span class="spacer"></span>
+                <span id="log-bar"><span id="log-text">WASD · Shift · Q/E · 空格 · 1-8 · F · 左键</span></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 训练营侧边栏（插件到game-screen） -->
+    <div id="tr-sidebar" class="tr-sidebar hidden"></div>
+
+    <!-- 难度设置面板 -->
+    <div id="settings-modal" class="hidden modal-overlay">
+        <div class="modal-box">
+            <div class="modal-title">关卡难度调整</div>
+            <div class="modal-body">
+                <div class="preset-row">
+                    <span class="preset-label">预设:</span>
+                    <button class="preset" data-preset="easy" onclick="event.stopPropagation()">简单</button>
+                    <button class="preset active" data-preset="normal" onclick="event.stopPropagation()">普通</button>
+                    <button class="preset" data-preset="hard" onclick="event.stopPropagation()">困难</button>
+                    <button class="preset" data-preset="hell" onclick="event.stopPropagation()">地狱</button>
+                </div>
+                <div class="sep"></div>
+                <div class="slider-row">
+                    <label>僵尸血量倍率</label>
+                    <input type="range" id="s-hp" min="0.2" max="3" step="0.1" value="1">
+                    <span class="val" id="v-hp">1.0×</span>
+                </div>
+                <div class="slider-row">
+                    <label>僵尸移动速度</label>
+                    <input type="range" id="s-speed" min="0.3" max="2.5" step="0.1" value="1">
+                    <span class="val" id="v-speed">1.0×</span>
+                </div>
+                <div class="slider-row">
+                    <label>每波僵尸数量</label>
+                    <input type="range" id="s-count" min="0.3" max="2.5" step="0.1" value="1">
+                    <span class="val" id="v-count">1.0×</span>
+                </div>
+                <div class="slider-row">
+                    <label>僵尸生成间隔</label>
+                    <input type="range" id="s-interval" min="0.5" max="3" step="0.1" value="1">
+                    <span class="val" id="v-interval">1.0×</span>
+                </div>
+                <div class="slider-row">
+                    <label>波次间休整</label>
+                    <input type="range" id="s-rest" min="0.3" max="3" step="0.1" value="1">
+                    <span class="val" id="v-rest">1.0×</span>
+                </div>
+                <div class="sep"></div>
+                <div class="slider-row">
+                    <label>初始阳光</label>
+                    <input type="range" id="s-sun" min="50" max="500" step="25" value="50">
+                    <span class="val" id="v-sun">50</span>
+                </div>
+                <div class="sep"></div>
+                <div class="audio-placeholder">
+                    <div class="hint" style="text-align:center;color:#888;">—— 音量调整 ——</div>
+                    <div class="slider-row">
+                        <label>背景音乐</label>
+                        <input type="range" id="s-bgm" min="0" max="100" step="5" value="35" data-always-on="1">
+                        <span class="val" id="v-bgm">35%</span>
+                    </div>
+                    <div class="slider-row">
+                        <label>音效</label>
+                        <input type="range" id="s-sfx" min="0" max="100" step="5" value="100" data-always-on="1">
+                        <span class="val" id="v-sfx">100%</span>
+                    </div>
+                </div>
+                <div class="sep"></div>
+                <div class="dev-row" id="dev-row" style="display:none">
+                    <input type="text" id="dev-code" placeholder="开发者码" maxlength="5" style="background:#0a0a0a;border:1px solid #333;color:#888;padding:4px 8px;font-family:Consolas,monospace;font-size:13px;width:80px;text-align:center;letter-spacing:4px;" />
+                </div>
+                <div id="dev-panel" style="display:none;margin-top:12px;padding:10px;border:1px solid #4488ff;border-radius:4px;background:rgba(68,136,255,0.05);">
+                    <div style="color:#4488ff;font-size:13px;margin-bottom:8px;text-align:center;">开发者面板</div>
+                    <button class="dev-btn" id="dev-unlock-all">解锁全部植物</button>
+                    <button class="dev-btn" id="dev-max-currency">货币无限</button>
+                    <button class="dev-btn" id="dev-frags-all">碎片无限</button>
+                    <button class="dev-btn danger" id="dev-restore">恢复出厂设置</button>
+                </div>
+                <div class="hint">阳光收益不受难度影响。<br>僵尸有概率掉落植物卡。<br>修改立即生效。</div>
+            </div>
+            <div class="modal-footer">
+                <button id="settings-reset">重置默认</button>
+                <button id="btn-pause-quit" class="hidden">返回主菜单</button>
+                <button id="settings-close">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 图鉴主界面 -->
+    <div id="almanac-screen" class="screen hidden">
+        <div class="level-header">
+            <button class="back-btn" id="btn-back-menu-almanac">◀ 返回</button>
+            <div class="level-title">图  鉴</div>
+            <span class="spacer" id="almanac-progress"></span>
+        </div>
+        <!-- 分类Tab -->
+        <div class="almanac-tabs-main" id="almanac-tabs">
+            <button class="almanac-tab-main active" data-tab="plants">植物</button>
+            <button class="almanac-tab-main" data-tab="zombies">僵尸</button>
+            <button class="almanac-tab-main" data-tab="weapons">武器</button>
+            <button class="almanac-tab-main" data-tab="armors">护甲</button>
+        </div>
+        <div class="almanac-body-main">
+            <!-- 左侧物品列表 -->
+            <div class="almanac-grid-main" id="almanac-grid-main">
+                <!-- JS 生成物品卡片 -->
+            </div>
+            <!-- 右侧详情窗口 -->
+            <div class="almanac-detail-main" id="almanac-detail-main">
+                <div class="detail-preview" id="detail-preview">
+                    <div class="preview-placeholder">选择物品查看预览</div>
+                </div>
+                <div class="detail-info">
+                    <div class="detail-title" id="almanac-detail-title">选择一个物品</div>
+                    <div class="detail-stats" id="detail-stats"></div>
+                    <div class="detail-desc" id="detail-desc"></div>
+                    <div class="detail-progress" id="detail-progress"></div>
+                    <div class="detail-actions" id="detail-actions"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+
+    <!-- 潘妮的小店 -->
+    <div id="shop-screen" class="screen hidden">
+        <div class="level-header">
+            <button class="back-btn" id="btn-back-menu-shop">◀ 返回</button>
+            <div class="level-title">潘 妮 的 小 店</div>
+            <span class="currency-bar" id="currency-shop">
+                <span class="cur-item"><span class="c-silver">银</span> <b id="cur-silver-shop">0</b></span>
+                <span class="cur-item"><span class="c-gold">金</span> <b id="cur-gold-shop">0</b></span>
+                <span class="cur-item"><span class="c-gem">钻</span> <b id="cur-gem-shop">0</b></span>
+            </span>
+        </div>
+        <div class="shop-npc">
+            <div class="npc-portrait">潘</div>
+            <div class="npc-speech" id="shop-speech">欢迎光临潘妮的小店，戴夫先生！今日有货新到，请随意挑选～</div>
+        </div>
+        <div class="shop-tabs">
+            <button class="shop-tab active" data-tab="items">消耗品</button>
+            <button class="shop-tab" data-tab="weapons">武器</button>
+            <button class="shop-tab" data-tab="ammo">弹药</button>
+            <button class="shop-tab" data-tab="gacha">抽奖</button>
+            <span class="spacer"></span>
+            <button class="shop-refresh-btn" id="shop-refresh">刷新 (1钻) 3/3</button>
+        </div>
+        <div class="shop-grid" id="shop-grid">
+            <!-- JS 生成 -->
+        </div>
+    </div>
+
+    <!-- 创意工坊 -->
+    <div id="workshop-screen" class="screen hidden">
+        <div class="level-header">
+            <button class="back-btn" id="btn-back-menu-workshop">◀ 返回</button>
+            <div class="level-title">创 意 工 坊</div>
+            <span class="spacer" id="ws-count"></span>
+        </div>
+        <div class="ws-body">
+            <!-- 左侧模组列表 -->
+            <div class="ws-list" id="ws-list">
+                <!-- JS 生成模组卡片 -->
+            </div>
+            <!-- 右侧模组详情 -->
+            <div class="ws-detail" id="ws-detail">
+                <!-- JS 生成模组详情 -->
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="net.js"></script>
+    <script type="module" src="game-init.js"></script>
+    <script type="module">
+        import { initGame } from './game-init.js';
+        window.addEventListener('DOMContentLoaded', () => {
+            // Wait a bit for net.js to initialize
+            setTimeout(() => initGame(), 50);
+        });
+    </script>
+</body>
+</html>
