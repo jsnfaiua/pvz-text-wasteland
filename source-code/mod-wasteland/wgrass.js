@@ -244,7 +244,10 @@ function clusterList(seed, tx, ty) {
   const list = [];
   for (let cy = ty - 1; cy <= ty + 1; cy++) {
     for (let cx = tx - 1; cx <= tx + 1; cx++) {
-      const v = grassNoise(seed ^ 0xDD, cx, cy, 1);
+      // 密度场 cell=2（连续）：相邻格草叶密度平滑过渡 → 无"空格/密格"跳变 = 无 36px 格子感。
+      // 旧版 cell=1 每格独立 → 70% 格有草 30% 格无 → 深色草叶密度格与格跳变 = 满屏草地"格子状"（用户 4 轮反馈的真凶）。
+      // cell=2 折中：连续（相邻格束数差 ≤1）+ 秃区短（1-2 格，不成片秃）。
+      const v = grassNoise(seed ^ 0xDD, cx, cy, 2);
       if (v <= DENS) continue;
       const cx2 = cx * TS + hash2(seed, cx, cy) * (TS - 24);
       const cy2 = cy * TS + hash2(seed, cx + 7, cy + 11) * (TS - 16);
