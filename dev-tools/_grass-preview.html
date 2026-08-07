@@ -338,8 +338,9 @@ function styleClusterList(seed, style, tx, ty) {
       // cell=2 值噪声：成片密区/秃区 → 大块格子更明显（用户 09:32 反馈）。
       // 独立 hash：70% 格有束（style.dens=0.30），空格随机分散 → 均匀无格子。
       if (hash2(seed ^ 0xDD, cx, cy) > (1 - style.dens)) continue;
-      const cx2 = cx * W * TS + hash2(seed, cx, cy) * (W * TS - SZ);
-      const cy2 = cy * W * TS + hash2(seed, cx + 7, cy + 11) * (W * TS - SY);
+      // 束中心全格均匀（hash*W*TS；旧版 hash*(W*TS-SZ) → 束中心偏格左 → 束右缘堆积格边界 = 36px 暗线）
+      const cx2 = cx * W * TS + hash2(seed, cx, cy) * (W * TS);
+      const cy2 = cy * W * TS + hash2(seed, cx + 7, cy + 11) * (W * TS);
       if (cx2 + SZ > tx * TS && cx2 < tx * TS + TS && cy2 + SY > ty * TS && cy2 < ty * TS + TS) {
         out.push({ cx2, cy2, kind: (hash2(seed, cx, cy) * 8) | 0 });
       }
