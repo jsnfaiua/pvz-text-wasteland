@@ -116,6 +116,9 @@ export function wxLevelAt(seed, day) {
     const r = wxHash(seed, day | 0, 0x2C1B);
     return Math.floor(r * arr.length);
 }
+// 天气粒子速度基准（px/s，§13.1 收口）：同一天气所有粒子同速（±6% 抖动防完全同步的整齐感）。
+// 用户反馈：原随机范围过大（雨 240-420）→ 快慢雨混行视觉奇怪；强度档只改疏密不改速度。
+export const WX_PART_SPEED = { rain: 330, snow: 60, sand: 380 };
 
 // ---------- 感染视觉（§13.1 收口）：屏幕覆盖层随阶段增强 ----------
 export const INF_VIS = [

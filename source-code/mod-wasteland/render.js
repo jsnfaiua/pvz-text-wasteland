@@ -13,7 +13,7 @@ import { drawMsg } from './wmsg.js';
 import { TS } from './wconst.js';
 import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H } from './windoor.js';
 import { districtAt, districtProfile, infectionAt } from './wdistrict.js';
-import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelAt } from './wbalance.js';
+import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelAt, WX_PART_SPEED } from './wbalance.js';
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
 export { TS };
 
@@ -616,37 +616,37 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
         if (hs === 1 && R(8, 11, 20, 12, 0, bob)) c = S.hairDark;
     } else {
         if (isSide) {
-            // 纯侧面剪影 1:1：脸仅占行进侧半边 + 后脑半边 = 头发覆盖后脑+脸侧 + 鼻凸出 1px + 单眼眉嘴耳下巴
+            // 侧视 3/4 脸(可见单眼+嘴,与正视图 y 对齐对应):脸占行进侧 x8-13(左)/x15-20(右)
             const backX0 = sign < 0 ? 12 : 8, backX1 = sign < 0 ? 20 : 16;
-            if (R(backX0, 4, backX1, 9, 0, bob)) c = S.hair;        // 后脑发(覆盖后脑半边+脸侧头发)
-            if (R(backX0, 4, backX1, 5, 0, bob)) c = S.hairLight;
+            if (R(backX0, 3, backX1, 11, 0, bob)) c = S.hair;        // 后脑发(留 bob 余量防露头皮)
+            if (R(backX0, 3, backX1, 4, 0, bob)) c = S.hairLight;
             if (hs === 1 && R(backX0, 9, backX1, 12, 0, bob)) c = S.hair;    // 长发披肩延颈
             if (hs === 1 && R(backX0, 10, backX1, 12, 0, bob)) c = S.hairDark; // 长发末梢暗
-            // 脸行进侧皮肤(占行进侧半边)= 朝左 x8-12 / 朝右 x16-20
+            // 脸皮肤(行进侧,6px 宽给五官空间)
             if (sign > 0) {
-                if (R(16, 3, 20, 11, 0, bob)) c = S.skin;
+                if (R(15, 3, 20, 11, 0, bob)) c = S.skin;
             } else {
-                if (R(8, 3, 12, 11, 0, bob)) c = S.skin;
+                if (R(8, 3, 13, 11, 0, bob)) c = S.skin;
             }
-            // 鼻梁凸出(行进侧最前 1px 深色)= 侧面剪影的关键标志
+            // 鼻梁凸出(行进侧最前 1px 深色)
             if (sign > 0) {
                 if (R(20, 4, 21, 10, 0, bob)) c = S.skinShade;
             } else {
                 if (R(7, 4, 8, 10, 0, bob)) c = S.skinShade;
             }
-            // 耳朵(后脑侧中部)= 小块深色
+            // 耳朵(脸后缘=后脑侧中部)
             if (sign > 0) {
-                if (R(13, 7, 14, 9, 0, bob)) c = S.skinShade;
+                if (R(14, 7, 15, 9, 0, bob)) c = S.skinShade;
             } else {
                 if (R(13, 7, 14, 9, 0, bob)) c = S.skinShade;
             }
-            // 单眉+单眼+眼高光(脸前侧,朝行进侧集中)
-            const eEye = sign > 0 ? 17 : 9;
+            // 单眉+单眼+眼高光(与正视图对应:朝左=左眼 x10-12/朝右=右眼 x16-18, y6-8 同高)
+            const eEye = sign > 0 ? 16 : 10;
             if (R(eEye, 5, eEye + 2, 6, 0, bob)) c = S.hairDark;
             if (R(eEye, 6, eEye + 2, 8, 0, bob)) c = L.eyes;
             if (R(eEye, 6, eEye + 1, 7, 0, bob)) c = S.eyeHighlight;
-            // 嘴(脸前侧下方)
-            const mx = sign > 0 ? 16 : 9;
+            // 嘴(与正视图 y8-9 对齐,偏行进侧)
+            const mx = sign > 0 ? 15 : 10;
             const mw = moving ? (a.run ? 4 : 3) : 3;
             const mh = moving && a.run ? 2 : 1;
             if (R(mx, 8, mx + mw, 8 + mh, 0, bob)) c = S.mouth;
@@ -654,7 +654,7 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
             if (sign > 0) {
                 if (R(17, 10, 20, 11, 0, bob)) c = S.skinShade;
             } else {
-                if (R(8, 10, 11, 11, 0, bob)) c = S.skinShade;
+                if (R(9, 10, 12, 11, 0, bob)) c = S.skinShade;
             }
         } else {
             // 正脸：双眉 + 双眼(眨眼) + 高光 + 腮红 + 嘴(随状态)；发型 1 刘海遮额
@@ -932,15 +932,23 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
     sv._wxPartT = nowMs;
     ctx.save();
     ctx.lineCap = 'round';
-    if (wx.particles === 1) {   // 雨：斜线下落（侧风），世界坐标
+    // 重生用「网格铺满全屏 + 小抖动」（确定性列行 → 分布均匀稳定，无随机聚集/疏密跳变；
+    // 速度统一 ±6% → 下落中相对保持均匀 → 用户反馈的"强度随机/快慢混行"消除）
+    const gridOf = (i, n, W2, H2) => {
+        const cols = Math.max(6, Math.ceil(Math.sqrt(n * W2 / Math.max(1, H2))));
+        const rows = Math.ceil(n / cols);
+        return { gx: i % cols, gy: Math.floor(i / cols), cols, rows };
+    };
+    if (wx.particles === 1) {   // 雨：斜线下落（侧风），世界坐标，同速
         ctx.strokeStyle = 'rgba(140,180,220,0.55)';
         ctx.lineWidth = 1;
         for (let i = 0; i < n; i++) {
             const p = parts[i];
             if (!p.spd || p.y > camY + H + 30 || p.y < camY - 80 || p.x < camX - 60 || p.x > camX + W + 60) {
-                p.x = camX + Math.random() * (W + 60) - 30;
-                p.y = camY + Math.random() * (H + 100) - 60;   // 撒全屏高度 → 屏幕均匀分布（连续感）
-                p.spd = 240 + Math.random() * 180;
+                const g = gridOf(i, n, W, H);
+                p.x = camX + (g.gx + 0.5) * (W / g.cols) + (Math.random() - 0.5) * 20;
+                p.y = camY - 60 + (g.gy + 0.5) * ((H + 120) / g.rows) + (Math.random() - 0.5) * 20;
+                p.spd = WX_PART_SPEED.rain * (0.94 + Math.random() * 0.12);   // 统一基准 ±6%
                 p.len = 7 + Math.random() * 8;
             }
             p.y += p.spd * fdt;
@@ -951,29 +959,31 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
             ctx.lineTo(sx - p.len * 0.28, sy - p.len);
             ctx.stroke();
         }
-    } else if (wx.particles === 2) {   // 雪：慢速飘落小点 + 左右摇摆，世界坐标
+    } else if (wx.particles === 2) {   // 雪：慢速飘落小点 + 左右摇摆，世界坐标，同速
         ctx.fillStyle = 'rgba(238,246,255,0.85)';
         for (let i = 0; i < n; i++) {
             const p = parts[i];
             if (!p.spd || p.y > camY + H + 30 || p.y < camY - 80 || p.x < camX - 40 || p.x > camX + W + 40) {
-                p.x = camX + Math.random() * (W + 40) - 20;
-                p.y = camY + Math.random() * (H + 80) - 40;
-                p.spd = 45 + Math.random() * 45;
+                const g = gridOf(i, n, W, H);
+                p.x = camX + (g.gx + 0.5) * (W / g.cols) + (Math.random() - 0.5) * 20;
+                p.y = camY - 40 + (g.gy + 0.5) * ((H + 80) / g.rows) + (Math.random() - 0.5) * 20;
+                p.spd = WX_PART_SPEED.snow * (0.94 + Math.random() * 0.12);
                 p.seed = Math.random() * 6.28;
             }
             p.y += p.spd * fdt;
             p.x += Math.sin(sv.now * 1.2 + p.seed) * 16 * fdt;
             ctx.fillRect(p.x - camX, p.y - camY, 2, 2);
         }
-    } else if (wx.particles === 4) {   // 沙尘：横向快速飞沙（沙尘暴），世界坐标
+    } else if (wx.particles === 4) {   // 沙尘：横向快速飞沙（沙尘暴），世界坐标，同速
         ctx.strokeStyle = 'rgba(205,175,115,0.5)';
         ctx.lineWidth = 1;
         for (let i = 0; i < n; i++) {
             const p = parts[i];
             if (!p.spd || p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {
+                const g = gridOf(i, n, W, H);
                 p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
-                p.y = camY + Math.random() * H;
-                p.spd = 260 + Math.random() * 220;
+                p.y = camY + (g.gy + 0.5) * (H / g.rows) + (Math.random() - 0.5) * 16;
+                p.spd = WX_PART_SPEED.sand * (0.94 + Math.random() * 0.12);
                 p.len = 4 + Math.random() * 7;
             }
             p.x += (Math.random() < 0.5 ? 1 : -1) * p.spd * fdt;
