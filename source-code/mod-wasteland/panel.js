@@ -598,10 +598,20 @@ export function refresh(sv) {
 
 // ---------- 死亡界面 ----------
 export function showDeath(html, onExit) {
+    showDeathChoices(html, [{ label: '返回主菜单', onClick: onExit }]);
+}
+// 死亡界面多按钮版：actions = [{ label, onClick, cls }]（cls 可选 'primary'/'danger'）
+export function showDeathChoices(html, actions) {
     if (!deathEl) return;
-    deathEl.innerHTML = '<div class="wsl-scaler">' + html + '<button class="menu-btn" id="wsl-death-exit">返回主菜单</button></div>';
+    const btns = (actions || []).map(a =>
+        `<button class="menu-btn${a.cls ? ' ' + a.cls : ''}" id="wsl-death-opt">${a.label}</button>`).join('');
+    deathEl.innerHTML = '<div class="wsl-scaler">' + html + btns + '</div>';
     deathEl.classList.remove('hidden');
-    deathEl.querySelector('#wsl-death-exit').addEventListener('click', onExit);
+    const els = deathEl.querySelectorAll('#wsl-death-opt');
+    els.forEach((el, i) => {
+        const a = (actions || [])[i];
+        if (a) el.addEventListener('click', a.onClick);
+    });
 }
 export function hideDeath() { if (deathEl) deathEl.classList.add('hidden'); }
 

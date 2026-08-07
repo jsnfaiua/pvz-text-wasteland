@@ -3,7 +3,7 @@
 // 从 survival.js 拆出，数值引用 wbalance.js
 // ============================================================
 
-import { ZOMBIES } from '../core/constants.js';
+import { ZOMBIES, WEAPONS } from '../core/constants.js';
 import AudioSystem from '../systems/audio.js';
 import { T, getTile, isWalk, builtAt, CHUNK } from './world.js';
 import { TS } from './wconst.js';
@@ -131,6 +131,103 @@ export function spawnZombie(sv, type, x, y, horde) {
     sv._zombiePathNeedsRebuild = true;
     AudioSystem.playZombieSpawn();
     return z;
+}
+
+// 玩家尸化精英僵尸：玩家死亡后，原角色变成一只留在当前世界的精英僵尸——
+// 继承玩家名字/外观（肤色/上衣）/全部装备与背包，会用背包里的远程武器射击玩家，
+// 近战伤害与血量按精英系数强化。死亡播报「XXX已尸化」由 survival.onDeath 负责。
+export function spawnPlayerZombie(sv, opts) {
+    const seed = sv.world.seed;
+    const look = (sv.character && sv.character.look) || sv.character || {};
+    const x = opts && opts.x != null ? opts.x : sv.px;
+    const y = opts && opts.y != null ? opts.y : sv.py;
+    // 生成点安全化：落在不可走格（建筑/障碍内）时就近找可走格，防卡墙
+    const gx0 = Math.floor(x / TS), gy0 = Math.floor(y / TS);
+    let px = x, py = y;
+    if (!isWalk(getTile(sv, gx0, gy0))) {
+        for (let r = 1; r <= 8 && px === x; r++) {
+            for (let dy = -r; dy <= r && px === x; dy++) for (let dx = -r; dx <= r && px === x; dx++) {
+                if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                if (isWalk(getTile(sv, gx0 + dx, gy0 + dy))) { px = (gx0 + dx + 0.5) * TS; py = (gy0 + dy + 0.5) * TS; }
+            }
+        }
+    }
+    // 精英强度：随天数成长（复用普通僵尸成长公式，再 ×1.8 精英系数）
+    const cx = Math.floor((px / TS) / CHUNK), cy = Math.floor((py / TS) / CHUNK);
+    const ringMul = zombieStrengthAt(seed, cx, cy);
+    const mul = (1 + (sv.day - 1) * B.Z_DAY_SCALE) * (B.DIFF_TABLE[sv.diffKey] || B.DIFF_TABLE.normal).mul * ringMul;
+    const baseHp = Math.round(70 * mul * 1.8);
+    const z = {
+        id: 'z' + ((sv._zIdSeq = (sv._zIdSeq || 0) + 1)),
+        type: 'playerzombie', char: look.skin ? '亡' : '尸', color: look.shirt || '#58656d',
+        x: px, y: py, name: sv.characterName || '幸存者',
+        hp: baseHp, maxHp: baseHp,
+        speed: 0.22 * B.Z_SPEED_MUL, damage: 22,
+        wt: 0, tx: px, ty: py, wDir: null, biteT: 0, hurt: 0, stunT: 0,
+        biteCd: 0, lungeCd: 0, lungeT: 0, plantBiteCd: 0,
+        horde: false,
+        infection: 0.15 + Math.random() * 0.2,   // 刚尸化：轻度腐烂
+        textAbility: null,
+        atkState: null, atkT: 0, atkCd: 0, atkAngle: 0, atkWindup: 0, hasHit: false, auraT: 0, comboLeft: 0,
+        // ---- 尸化玩家专属 ----
+        isPlayerZombie: true,
+        playerName: sv.characterName || '幸存者',
+        skin: look.skin || '#78936b',          // 玩家肤色（渲染肤色用）
+        inv: (sv.inv || []).map(s => s ? { ...s } : null),        // 继承全部背包
+        hotbar: (sv.hotbar || []).slice(),                         // 继承快捷栏
+        wpnKey: null, shootT: 0,                                  // 远程武器键 + 射击计时
+    };
+    // 从背包/快捷栏找装备的远程武器（尸化后会用它射击）
+    const wpnId = findEquippedRangedWpn(sv);
+    if (wpnId) {
+        const key = wpnId.replace('wpn:', '');
+        z.wpnKey = WEAPONS[key] ? key : null;
+    }
+    sv.zombies.push(z);
+    sv._zombiePathNeedsRebuild = true;
+    return z;
+}
+
+// 找玩家当前装备的远程武器（背包 eq==='ranged' 或快捷栏 wpn: 前缀）
+function findEquippedRangedWpn(sv) {
+    for (const s of sv.inv || []) {
+        if (s && s.id && s.id.startsWith('wpn:') && s.eq === 'ranged') return s.id;
+    }
+    for (const id of sv.hotbar || []) {
+        if (id && id.startsWith('wpn:')) return id;
+    }
+    return null;
+}
+
+// 尸化精英僵尸远程射击（由 updateZombies 内对 isPlayerZombie 调用）：用背包继承的武器向玩家开火
+function playerZombieShoot(sv, z, dt) {
+    if (!z.wpnKey || !WEAPONS[z.wpnKey]) return;
+    const w = WEAPONS[z.wpnKey];
+    if (w.kind !== 'ranged') return;
+    z.shootT = (z.shootT || 0) - dt;
+    if (z.shootT > 0) return;
+    const dx = sv.px - z.x, dy = sv.py - z.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > (w.range || 320) + TS) return;   // 超出射程不开火
+    z.shootT = (w.fireInterval || 0.4) * 1.6;    // 尸化版射速略慢
+    const baseAng = Math.atan2(dy, dx);
+    const pellets = w.pellets || 1;
+    const spread = w.spread || 0;
+    for (let i = 0; i < pellets; i++) {
+        const off = pellets === 1 ? 0 : (i - (pellets - 1) / 2) * (spread || 0.2);
+        const ang = baseAng + off;
+        if (!sv.npcBullets) sv.npcBullets = [];
+        sv.npcBullets.push({
+            x: z.x, y: z.y - 8,
+            vx: Math.cos(ang) * (w.bulletSpeed || 460),
+            vy: Math.sin(ang) * (w.bulletSpeed || 460),
+            dmg: Math.max(4, Math.round(w.damage * 0.7)),   // 尸化版伤害略降（毕竟是僵尸在用）
+            color: w.color, label: w.bulletLabel || '·', life: 0.9, traveled: 0,
+            range: w.range || 9999, pierce: w.pierce || 0, pierced: 0, hitList: null,
+            hostile: true, src: z.id, srcName: z.name,   // hostile：可命中玩家
+        });
+    }
+    sv.effects.push({ kind: 'zswing', x: z.x, y: z.y - 8, angle: baseAng, life: 0.2, maxLife: 0.2, style: 'thrust' });
 }
 
 // 按僵尸强度掷品质（越强越好）
@@ -420,6 +517,9 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
                 WA.resolvePlayerHit(sv, z, dmgTo, zCanStand);
             }
         }
+        // 尸化玩家精英：用背包继承的武器远程射击玩家（hostile 子弹由 npcBullets 系统命中结算）
+        if (z.isPlayerZombie && z.wpnKey) playerZombieShoot(sv, z, dt);
+
         // 僵尸啃咬附近的角色/NPC（含恶意 NPC：僵尸攻击除同类外的一切生物；受击原则与主角一致）
         // 性能：NPC 咬扫每 0.2s 一跳（僵尸 × NPC 数量多时不卡）
         z._npcScanT = (z._npcScanT || 0) - dt;

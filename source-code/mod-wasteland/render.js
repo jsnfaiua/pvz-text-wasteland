@@ -372,7 +372,9 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
     const width = 28, height = 36;
     const skinState = z.stunT > 0 ? 2 : (z.hurt > 0 ? 1 : 0);
     const lvQ = Math.round(level * 8);
-    const cacheKey = (z.type.charCodeAt(0) * 1000 + lvQ * 10 + skinState) | 0;
+    // 尸化玩家精英：肤色混入缓存 key（否则不同肤色共用缓存 → 颜色串用）
+    const skinHash = z.skin ? ((parseInt(z.skin.slice(1), 16) || 0) & 0x3FF) : 0;
+    const cacheKey = (z.type.charCodeAt(0) * 1000 + lvQ * 10 + skinState + skinHash * 64) | 0;
     let cached = cacheGet(_zombieCache, cacheKey);
     if (!cached) {
         cached = makeOffscreen(width, height);
@@ -380,7 +382,7 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
         octx.imageSmoothingEnabled = false;
         const textPixels = getTextSet('尸', width, height, 1, 0);
         const transitionColor = '#5a4a48', textColor = '#a87980';
-        const skin = skinState === 2 ? '#858585' : (skinState === 1 ? '#b65454' : '#78936b');
+        const skin = skinState === 2 ? '#858585' : (skinState === 1 ? '#b65454' : (z.skin || '#78936b'));
         const coat = color || '#58656d';
         const seed = z.type.charCodeAt(0) * 7919;
         for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
@@ -2606,6 +2608,10 @@ function drawZombies(ctx, sv, camX, camY) {
         else if (z.slowT > 0 && z.stunT <= 0 && z.hurt <= 0) zColor = '#66BBEE';
         else zColor = z.stunT > 0 ? '#999999' : (z.hurt > 0 ? '#FF5555' : z.color);
         drawPixelZombie(ctx, z, sx, sy, zColor);
+        // 尸化玩家精英：头顶显示原玩家名字牌（继承的名字，一眼认出"曾经的我"）
+        if (z.isPlayerZombie && z.playerName) {
+            drawNameplate(ctx, sx, sy - TS / 2 - 10, z.playerName, '#FF8855');
+        }
         // 血条（名字上方）
         const bw = TS + 4;
         ctx.fillStyle = 'rgba(60,0,0,0.85)';

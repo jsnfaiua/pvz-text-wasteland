@@ -2455,6 +2455,13 @@ function onDeath() {
         return;
     }
     const dk = B.DIFF_TABLE[sv.diffKey] || B.DIFF_TABLE.normal;
+    // 玩家死亡 → 原角色尸化为当前世界的一只精英僵尸（继承名字/外观/装备/背包，
+    // 会用背包远程武器射击玩家）。所有难度统一：死去的你会留在世界上。
+    const deadName = sv.characterName || '幸存者';
+    const pz = WZ.spawnPlayerZombie(sv);
+    log(`☠ ${deadName} 已尸化……`, '#FF5544');
+    sv._pzId = pz.id;   // 记录尸化僵尸 id（世界档保留/重进世界可见）
+    AudioSystem.playZombieSpawn && AudioSystem.playZombieSpawn();
     if (dk.soft) {
         if (WSearch.isOpen()) WSearch.closeSearch(sv, true);   // 搜索中被杀：关闭界面
         sv.interior = null;   // 室内死亡：离开房间，回到室外重生点
@@ -2464,7 +2471,8 @@ function onDeath() {
         }
         sv.hp = sv.maxHp;
         sv.hurtT = 0;
-        sv.zombies = [];
+        // 清场但保留刚尸化的自己（死去的玩家留在世界上，装备/背包已被它继承）
+        sv.zombies = pz && pz.id ? sv.zombies.filter(z => z.id === pz.id) : [];
         sv.horde = null;
         WA.resetActions(sv);
         sv.stamina = sv.maxStamina;
@@ -2495,18 +2503,64 @@ function onDeath() {
         AudioSystem.playDefeat();
         saveNow();
     } else {
-        sv.dead = true;
-        setStorage(SAVE_KEY, null);
-        // 联机：广播死亡 → 对方结算退出（R7：任一玩家死亡 → 双端结束）
+        // 一条命难度：死亡 → 手动选择「保存世界」或「不保存」
+        // 保存：世界档保留（含尸化僵尸/全部玩家修改）→ 重新捏脸建角色 → 导入旧世界继续玩，能见到死去的自己
+        // 不保存：放弃世界 → 彻底离开（返回主菜单）
+        const saveSeed = sv.world.seed;
+        const saveOpts = { ...sv.opts };
         if (sv.mp && !sv._mpDeadSent) {
             sv._mpDeadSent = true;
             (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'dead', who: sv.mp.role });
         }
         AudioSystem.playDefeat();
-        Panel.showDeath(
+        Panel.showDeathChoices(
             '<div class="wsl-death-title">你 倒 下 了</div>' +
-            `<div class="wsl-death-sub">荒原吞噬了这位幸存者……（${dk.name}难度：荒原存档已清空）</div>`,
-            () => { Panel.hideDeath(); exitWasteland(true); });
+            `<div class="wsl-death-sub">${deadName} 已尸化……<br>它继承了你的装备与背包，徘徊在 ${deadName} 倒下的地方。<br>（${dk.name}难度 · 一条命）</div>` +
+            '<div class="wsl-death-hint">保存世界后，可重新捏脸创建新角色，回到这个世界继续探索，并寻回曾经的自己。</div>',
+            [
+                {
+                    label: '保存世界 · 重新捏脸归来',
+                    cls: 'primary',
+                    onClick: () => {
+                        Panel.hideDeath();
+                        // 先把包含尸化僵尸的世界档完整落盘（含玩家所有修改）
+                        sv.dead = true;
+                        if (sv.mp && sv.mp.role === 'guest') { exitWasteland(true); return; }   // 联机 guest：世界归 host，直接退出
+                        const worldData = serializeWorld(sv, STATE_DEPS);
+                        setStorage(worldKey(saveSeed), worldData);
+                        setStorage(PROFILE_KEY, { characterName: sv.characterName, worldSeed: saveSeed });
+                        // 退出 → 进新建角色流程（命名+捏脸），完成后以新角色导入旧世界
+                        const diffKey = sv.diffKey || 'hard';
+                        exitWasteland(true);
+                        showCreateCharacter((name, look) => {
+                            const cd = {
+                                name,
+                                character: look,
+                                inv: Array(Panel.BAG_SIZE).fill(null),
+                                hotbar: Array(HOTBAR_SIZE).fill(null),
+                                curSlot: 'ranged',
+                                hp: B.MAX_HP, maxHp: B.MAX_HP,
+                                food: B.HUNGER_MAX, water: B.WATER_MAX, infection: 0,
+                                stamina: 100, maxStamina: 100, wpnMag: {}, _devInfBag: false,
+                            };
+                            setStorage(charKey(name), cd);
+                            updateCharList(name);
+                            // 导入旧世界：seed 指回存档世界，forceNew 保持 false → 读到存档世界档（含尸化僵尸）
+                            enterWasteland({ ...saveOpts, seed: saveSeed, characterName: name, character: look, difficulty: diffKey });
+                        });
+                    },
+                },
+                {
+                    label: '不保存 · 彻底离开',
+                    cls: 'danger',
+                    onClick: () => {
+                        Panel.hideDeath();
+                        sv.dead = true;
+                        setStorage(SAVE_KEY, null);
+                        exitWasteland(true);
+                    },
+                },
+            ]);
     }
 }
 

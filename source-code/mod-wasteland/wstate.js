@@ -67,6 +67,10 @@ export function serializeSV(sv, deps) {
             x: z.x, y: z.y, tx: z.tx, ty: z.ty,
             hp: z.hp, maxHp: z.maxHp, speed: z.speed, damage: z.damage,
             horde: !!z.horde, vaulted: !!z.vaulted, _nightStrengthActive: !!z._nightStrengthActive,
+            // 尸化玩家精英僵尸（死亡后留在世界）：继承名字/外观/装备/背包，重进世界可见可寻回
+            isPlayerZombie: !!z.isPlayerZombie,
+            playerName: z.playerName || null, skin: z.skin || null,
+            inv: z.inv || null, hotbar: z.hotbar || null, wpnKey: z.wpnKey || null,
         })),
     };
 }
@@ -263,6 +267,10 @@ export function serializeWorld(sv, deps) {
             x: z.x, y: z.y, tx: z.tx, ty: z.ty,
             hp: z.hp, maxHp: z.maxHp, speed: z.speed, damage: z.damage,
             horde: !!z.horde, vaulted: !!z.vaulted, _nightStrengthActive: !!z._nightStrengthActive,
+            // 尸化玩家精英僵尸（死亡后留在世界）：继承名字/外观/装备/背包，重进世界可见可寻回
+            isPlayerZombie: !!z.isPlayerZombie,
+            playerName: z.playerName || null, skin: z.skin || null,
+            inv: z.inv || null, hotbar: z.hotbar || null, wpnKey: z.wpnKey || null,
         })),
         npcs: deps.WNPC.serializeNpcs(sv),
         px: sv.px, py: sv.py, faceX: sv.faceX, faceY: sv.faceY,
@@ -360,6 +368,7 @@ export function serializeMpSnapshot(sv, deps, zombieList, cull) {
             textAbility: z.textAbility || null,
             slowT: z.slowT || 0, slowMul: z.slowMul || 0,   // 冰冻（视觉蓝 + 减速）
             packKingId: z.packKingId || null,   // 尸群跟随王（存 id，guest 端按 id 查回恢复跟随）
+            isPlayerZombie: !!z.isPlayerZombie, playerName: z.playerName || null, skin: z.skin || null,
         })),
         effects: effects.map(e => ({
             kind: e.kind, x: e.x, y: e.y, life: e.life, maxLife: e.maxLife,
