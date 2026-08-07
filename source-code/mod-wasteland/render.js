@@ -931,28 +931,38 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
     const fdt = Math.min(0.05, (nowMs - (sv._wxPartT || nowMs)) / 1000);
     sv._wxPartT = nowMs;
     ctx.save();
-    ctx.lineCap = 'round';
-    // 重生用「网格铺满全屏 + 小抖动」（确定性列行 → 分布均匀稳定，无随机聚集/疏密跳变；
-    // 速度统一 ±6% → 下落中相对保持均匀 → 用户反馈的"强度随机/快慢混行"消除）
-    const gridOf = (i, n, W2, H2) => {
+    // 重生策略（双轨）：
+    // ① 切换天气/初始化（kind 变）→ 撒全屏：切换瞬间立即全屏均匀（无"只有顶部"）；
+    // ② 越界（稳态）→ 顶部边界进入：持续从顶部补充 → 稳态各高度密度 = 流量/速度恒定，
+    //    顶部永远有雨（修复"全屏随机重生"稳态密度 ∝ y 线性递增 → 顶部空/底部密）。
+    const colsOf = (i, n, W2, H2) => {
         const cols = Math.max(6, Math.ceil(Math.sqrt(n * W2 / Math.max(1, H2))));
-        const rows = Math.ceil(n / cols);
-        return { gx: i % cols, gy: Math.floor(i / cols), cols, rows };
+        return { gx: i % cols, cols };
+    };
+    const spawnFull = (p, c, i, n, W, H, camX, camY) => {
+        p.x = camX + (c.gx + 0.5) * (W / c.cols) + (Math.random() - 0.5) * 20;
+        p.y = camY + Math.random() * H;
+    };
+    const spawnTop = (p, c, i, n, W, H, camX, camY) => {
+        p.x = camX + (c.gx + 0.5) * (W / c.cols) + (Math.random() - 0.5) * 20;
+        p.y = camY - 30 - Math.random() * 50;   // 顶部边界上方进入
     };
     if (wx.particles === 1) {   // 雨：斜线下落（侧风），世界坐标，同速
         ctx.strokeStyle = 'rgba(140,180,220,0.55)';
         ctx.lineWidth = 1;
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            // kind 标记：切换天气（rain→snow 等）时旧天气粒子立即重置，防速度/参数残留
-            // （旧版：池复用导致切换后先飘一阵"用旧天气速度的粒子"，越界才纠正）
-            if (p.kind !== wx.particles || !p.spd || p.y > camY + H + 30 || p.y < camY - 80 || p.x < camX - 60 || p.x > camX + W + 60) {
-                const g = gridOf(i, n, W, H);
-                p.x = camX + (g.gx + 0.5) * (W / g.cols) + (Math.random() - 0.5) * 20;
-                p.y = camY - 60 + (g.gy + 0.5) * ((H + 120) / g.rows) + (Math.random() - 0.5) * 20;
+            if (p.kind !== wx.particles || !p.spd) {
+                // ① 切换/初始化：撒全屏（立即均匀）
+                const c = colsOf(i, n, W, H);
+                spawnFull(p, c, i, n, W, H, camX, camY);
                 p.spd = WX_PART_SPEED.rain * (0.94 + Math.random() * 0.12);   // 统一基准 ±6%
                 p.len = 7 + Math.random() * 8;
                 p.kind = wx.particles;
+            } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 60 || p.x > camX + W + 60) {
+                // ② 越界：顶部边界进入（稳定流）
+                const c = colsOf(i, n, W, H);
+                spawnTop(p, c, i, n, W, H, camX, camY);
             }
             p.y += p.spd * fdt;
             p.x -= p.spd * 0.28 * fdt;
@@ -966,13 +976,15 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
         ctx.fillStyle = 'rgba(238,246,255,0.85)';
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            if (p.kind !== wx.particles || !p.spd || p.y > camY + H + 30 || p.y < camY - 80 || p.x < camX - 40 || p.x > camX + W + 40) {
-                const g = gridOf(i, n, W, H);
-                p.x = camX + (g.gx + 0.5) * (W / g.cols) + (Math.random() - 0.5) * 20;
-                p.y = camY - 40 + (g.gy + 0.5) * ((H + 80) / g.rows) + (Math.random() - 0.5) * 20;
+            if (p.kind !== wx.particles || !p.spd) {
+                const c = colsOf(i, n, W, H);
+                spawnFull(p, c, i, n, W, H, camX, camY);
                 p.spd = WX_PART_SPEED.snow * (0.94 + Math.random() * 0.12);
                 p.seed = Math.random() * 6.28;
                 p.kind = wx.particles;
+            } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 40 || p.x > camX + W + 40) {
+                const c = colsOf(i, n, W, H);
+                spawnTop(p, c, i, n, W, H, camX, camY);
             }
             p.y += p.spd * fdt;
             p.x += Math.sin(sv.now * 1.2 + p.seed) * 16 * fdt;
@@ -983,13 +995,17 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
         ctx.lineWidth = 1;
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            if (p.kind !== wx.particles || !p.spd || p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {
-                const g = gridOf(i, n, W, H);
+            if (p.kind !== wx.particles || !p.spd) {
+                const c = colsOf(i, n, W, H);
                 p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
-                p.y = camY + (g.gy + 0.5) * (H / g.rows) + (Math.random() - 0.5) * 16;
+                p.y = camY + Math.random() * H;
                 p.spd = WX_PART_SPEED.sand * (0.94 + Math.random() * 0.12);
                 p.len = 4 + Math.random() * 7;
                 p.kind = wx.particles;
+            } else if (p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {
+                const c = colsOf(i, n, W, H);
+                p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
+                p.y = camY + (c.gx + 0.5) * (H / c.cols) + (Math.random() - 0.5) * 16;
             }
             p.x += (Math.random() < 0.5 ? 1 : -1) * p.spd * fdt;
             p.y += (Math.random() - 0.5) * 50 * fdt;
