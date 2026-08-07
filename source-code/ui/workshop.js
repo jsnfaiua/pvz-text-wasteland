@@ -154,11 +154,14 @@ function renderDetail() {
                     <option value="0"${curOpts.gfx === 0 ? ' selected' : ''}>画质：低（最流畅）</option>
                 </select>
             </div>
-            <div class="ws-section-title">存档备份（防 localStorage 满/清缓存丢档）</div>
-            <div class="wsl-mp-row">
-                <button class="menu-btn ws-enter-btn" id="ws-save-export">导出存档 ↓</button>
-                <button class="menu-btn ws-enter-btn" id="ws-save-import">导入存档 ↑</button>
-                <input type="file" id="ws-save-file" accept=".json,application/json" style="display:none">
+            <div class="ws-section-title">存档管理（角色 / 世界 · 导出 / 删除）</div>
+            <div class="wsl-save-mgr">
+                <div class="wsl-save-ops">
+                    <button class="menu-btn ws-enter-btn" id="ws-save-export">导出全部存档 ↓</button>
+                    <button class="menu-btn ws-enter-btn" id="ws-save-import">导入存档 ↑</button>
+                    <input type="file" id="ws-save-file" accept=".json,application/json" style="display:none">
+                </div>
+                <div id="ws-save-list" class="wsl-save-list"></div>
             </div>`;
         const saved = getStorage('wasteland_world_' + (worldSeed != null ? worldSeed : 'none'), null);
         const hasSave = !!saved;
@@ -392,6 +395,9 @@ function renderDetail() {
         reader.readAsText(file);
     });
 
+    // —— 存档管理列表：枚举角色档/世界档，每项「导出」「删除」 ——
+    if (mod.id === 'wasteland') renderSaveList(mod);
+
     // 显示设置：帧率开关 / 画质档（普通玩家可用，无需开发者模式；存 mod state）
     document.getElementById('ws-opt-fps')?.addEventListener('click', () => {
         if (mod.id !== 'wasteland') return;
@@ -411,6 +417,126 @@ function renderDetail() {
             renderDetail();
         });
     });
+}
+
+// 存档管理列表：枚举当前账户所有角色档/世界档，每项支持单档导出 / 删除
+function renderSaveList(mod) {
+    const user = (getSession() && getSession().username) || '__guest__';
+    const prefix = `u:${user}:wasteland_`;
+    const chars = getStorage('wasteland_characters', { names: [] });
+    const charNames = new Set(chars.names || []);
+    const roles = [], worlds = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const full = localStorage.key(i);
+        if (!full || !full.startsWith(prefix)) continue;
+        const base = full.slice(prefix.length);   // 如 character_阿远 / world_123
+        try {
+            const raw = localStorage.getItem(full);
+            if (raw == null) continue;
+            const data = JSON.parse(raw);
+            if (!data || typeof data !== 'object') continue;
+            if (base.startsWith('character_')) {
+                const name = base.slice('character_'.length);
+                const invN = (data.inv || []).filter(Boolean).length;
+                const hp = data.hp != null ? data.hp : (data.maxHp != null ? data.maxHp : '?');
+                const isCur = name === (getStorage('wasteland_profile', null) || {}).characterName;
+                roles.push({ name, invN, hp, isCur });
+            } else if (base.startsWith('world_')) {
+                const seed = base.slice('world_'.length);
+                const day = data.day || 1;
+                const mins = Math.floor((data.playT || 0) / 60);
+                const zN = (data.zombies || []).filter(z => z && z.isPlayerZombie).length;
+                const isCur = String(seed) === String((getStorage('wasteland_profile', null) || {}).worldSeed);
+                worlds.push({ seed, day, mins, zN, isCur });
+            }
+        } catch { /* 单键损坏跳过 */ }
+    }
+    // 角色排序：当前角色优先，其余按名字
+    roles.sort((a, b) => (b.isCur ? 1 : 0) - (a.isCur ? 1 : 0) || a.name.localeCompare(b.name));
+    worlds.sort((a, b) => (b.isCur ? 1 : 0) - (a.isCur ? 1 : 0) || (Number(b.seed) - Number(a.seed)));
+    const el = document.getElementById('ws-save-list');
+    if (!el) return;
+    if (!roles.length && !worlds.length) {
+        el.innerHTML = '<div class="wsl-save-empty">暂无存档 —— 创建角色并游玩后自动生成（角色档 + 世界档）</div>';
+        return;
+    }
+    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const roleHtml = roles.map(r => `
+        <div class="wsl-save-item${r.isCur ? ' cur' : ''}">
+            <div class="wsl-save-meta">
+                <span class="wsl-save-name">${esc(r.name)}${r.isCur ? ' · 当前' : ''}</span>
+                <span class="wsl-save-sub">背包 ${r.invN} 件 · HP ${r.hp}</span>
+            </div>
+            <div class="wsl-save-btns">
+                <button class="menu-btn wsl-save-btn" data-act="export" data-kind="character" data-name="${esc(r.name)}">导出</button>
+                <button class="menu-btn wsl-save-btn danger" data-act="del" data-kind="character" data-name="${esc(r.name)}">删除</button>
+            </div>
+        </div>`).join('');
+    const worldHtml = worlds.map(w => `
+        <div class="wsl-save-item${w.isCur ? ' cur' : ''}">
+            <div class="wsl-save-meta">
+                <span class="wsl-save-name">世界 #${esc(w.seed)}${w.isCur ? ' · 当前' : ''}</span>
+                <span class="wsl-save-sub">第 ${w.day} 天 · 存活 ${w.mins} 分钟${w.zN ? ` · 尸化的自己 ×${w.zN}` : ''}</span>
+            </div>
+            <div class="wsl-save-btns">
+                <button class="menu-btn wsl-save-btn" data-act="export" data-kind="world" data-seed="${esc(w.seed)}">导出</button>
+                <button class="menu-btn wsl-save-btn danger" data-act="del" data-kind="world" data-seed="${esc(w.seed)}">删除</button>
+            </div>
+        </div>`).join('');
+    el.innerHTML = (roles.length ? `<div class="wsl-save-group">角色（${roles.length}）</div>${roleHtml}` : '') +
+        (worlds.length ? `<div class="wsl-save-group">世界（${worlds.length}）</div>${worldHtml}` : '');
+
+    // 绑定：导出单档（与全量备份同格式 __wslBackup，仅含该键） / 删除单档
+    el.querySelectorAll('.wsl-save-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const act = btn.dataset.act;
+            const kind = btn.dataset.kind;
+            const fullKey = kind === 'character'
+                ? `${prefix}character_${btn.dataset.name}`
+                : `${prefix}world_${btn.dataset.seed}`;
+            const base = fullKey.slice(prefix.length);
+            if (act === 'export') {
+                let raw = null;
+                try { raw = JSON.parse(localStorage.getItem(fullKey)); } catch { raw = null; }
+                if (!raw) { hintMsg('该存档已损坏或不存在'); return; }
+                const data = { __wslBackup: 1, exportedAt: Date.now(), username: user, entries: { [base]: raw } };
+                const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `wasteland-${kind === 'character' ? 'char-' + btn.dataset.name : 'world-' + btn.dataset.seed}.json`;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
+                hintMsg(`已导出 ${kind === 'character' ? '角色「' + btn.dataset.name + '」' : '世界 #' + btn.dataset.seed}（可导入回任意浏览器）`);
+                return;
+            }
+            // 删除
+            const label = kind === 'character' ? `角色「${btn.dataset.name}」` : `世界 #${btn.dataset.seed}`;
+            if (!confirm(`⚠ 删除${label}存档？此操作不可恢复。\n\n（角色档：背包/属性；世界档：该世界全部地形/箱子/尸化自己）`)) return;
+            localStorage.removeItem(fullKey);
+            // 清理角色索引（character 时）
+            if (kind === 'character') {
+                const cl = getStorage('wasteland_characters', { names: [] });
+                cl.names = (cl.names || []).filter(n => n !== btn.dataset.name);
+                setStorage('wasteland_characters', cl);
+            }
+            // 若删除的是当前 profile 指向的档 → 重置 profile 防读到已删档
+            const prof = getStorage('wasteland_profile', null);
+            if (prof && kind === 'character' && prof.characterName === btn.dataset.name) {
+                setStorage('wasteland_profile', { ...prof, characterName: null });
+            } else if (prof && kind === 'world' && String(prof.worldSeed) === btn.dataset.seed) {
+                setStorage('wasteland_profile', { ...prof, worldSeed: null });
+            }
+            hintMsg(`已删除${label}`);
+            renderDetail();   // 重渲染列表
+        });
+    });
+}
+
+function hintMsg(text) {
+    const hint = document.getElementById('ws-hint');
+    if (hint) { hint.textContent = text; hint.classList.add('show'); }
 }
 
 export function refresh() {

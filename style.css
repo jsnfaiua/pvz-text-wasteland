@@ -2325,6 +2325,24 @@ body {
 .ws-new-btn { opacity: 0.9; }
 .ws-new-btn:hover { border-color: #c88a46 !important; }
 
+/* —— 荒原 · 存档管理（角色/世界 · 导出/删除） —— */
+.wsl-save-mgr { margin-bottom: 4px; }
+.wsl-save-ops { display: flex; gap: 8px; margin-bottom: 8px; }
+.wsl-save-ops .ws-enter-btn { flex: 1; }
+.wsl-save-list { max-height: 260px; overflow-y: auto; border: 1px solid #2a3d2a; background: #0a120a; border-radius: 4px; padding: 4px; }
+.wsl-save-group { color: #6d8a6d; font-size: 11px; letter-spacing: 2px; padding: 6px 6px 2px; }
+.wsl-save-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid #1d2d1d; background: #0e180e; border-radius: 4px; margin: 3px 2px; }
+.wsl-save-item.cur { border-color: #46c846; background: #12240f; box-shadow: 0 0 6px rgba(70,200,70,0.18); }
+.wsl-save-meta { display: flex; flex-direction: column; min-width: 0; }
+.wsl-save-name { color: #cfe8cf; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wsl-save-sub { color: #7d9a7d; font-size: 11px; }
+.wsl-save-btns { display: flex; gap: 6px; flex-shrink: 0; }
+.wsl-save-btn { padding: 4px 10px; font-size: 12px; background: #12241a; color: #8fd08f; border: 1px solid #2d5c2d; border-radius: 4px; cursor: pointer; letter-spacing: 1px; }
+.wsl-save-btn:hover { border-color: #46c846; color: #c8f0c8; }
+.wsl-save-btn.danger { background: #241210; color: #d08f8f; border-color: #5c2d2d; }
+.wsl-save-btn.danger:hover { border-color: #e04646; color: #f0c8c8; }
+.wsl-save-empty { color: #5a6a5a; font-size: 12px; text-align: center; padding: 18px 10px; letter-spacing: 1px; }
+
 /* ================= 荒原模组 · 开发者调试台（F9） ================= */
 .wsl-dev {
     position: absolute;
