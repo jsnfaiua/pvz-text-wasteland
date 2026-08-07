@@ -249,8 +249,10 @@ function clusterList(seed, tx, ty) {
       // cell=2 折中：连续（相邻格束数差 ≤1）+ 秃区短（1-2 格，不成片秃）。
       const v = grassNoise(seed ^ 0xDD, cx, cy, 2);
       if (v <= DENS) continue;
-      const cx2 = cx * TS + hash2(seed, cx, cy) * (TS - 24);
-      const cy2 = cy * TS + hash2(seed, cx + 7, cy + 11) * (TS - 16);
+      // 束中心【全格均匀】hash*TS（旧版 hash*(TS-24) → 束中心只在格前 12px → 束右边缘堆积在
+      // 格边界 → 每 36px 右边缘草叶密集 = "基底格子状线条"。全格均匀 + 跨格溢出由相交判断处理）
+      const cx2 = cx * TS + hash2(seed, cx, cy) * TS;
+      const cy2 = cy * TS + hash2(seed, cx + 7, cy + 11) * TS;
       if (cx2 + 24 > tx * TS && cx2 < tx * TS + TS && cy2 + 16 > ty * TS && cy2 < ty * TS + TS) {
         list.push({ cx2, cy2, gx: cx, gy: cy, kind: (hash2(seed, cx, cy) * 8) | 0 });
       }
@@ -288,9 +290,10 @@ export function grassRenderGround(ctx, sv, tx, ty, x0, y0) {
     const r = Math.max(0, Math.min(255, bc[0] + st.bg[0] + vary + dens));
     const g = Math.max(0, Math.min(255, bc[1] + st.bg[1] + vary + dens));
     const b = Math.max(0, Math.min(255, bc[2] + st.bg[2] + vary + dens));
-    const cw = sx === 5 ? 7 : 6, ch = sy === 5 ? 7 : 6;
+    // 子块正好 6px（去掉 +1px 防缝：坐标取整已保证格间整数对齐无缝；cw=7 覆盖到相邻格第一子块，
+    // 与本格最后子块色差 → 每 36px 一条 1px 色差线 = "基底格子状线条"）
     ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(ox + sx * 6, oy + sy * 6, cw, ch);
+    ctx.fillRect(ox + sx * 6, oy + sy * 6, 6, 6);
   }
   // 四方连续像素颗粒 overlay（±7 受控色差，无缝平铺主纹理）+ 大尺度明暗（低对比防条纹）
   ctx.globalCompositeOperation = 'overlay';
