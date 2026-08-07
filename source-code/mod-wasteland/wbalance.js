@@ -25,12 +25,11 @@ export const DISTRICTS = {
     ruins:  { name: '废墟', biome: 2, resMul: 1.2, zombieMul: 1.4, buildDensity: 0.5, danger: 3, crops: false },
 };
 
-// ---------- 难度 ----------
+// ---------- 难度（两档：正常 / 硬核·一条命） ----------
+// normal：软死亡（丢部分背包重生）；hardcore：一条命（死亡即永久，怪物属性更高）
 export const DIFF_TABLE = {
-    easy:   { name: '简单', mul: 0.8,  soft: true },
-    normal: { name: '普通', mul: 1.0,  soft: true },
-    hard:   { name: '困难', mul: 1.25, soft: false },
-    hell:   { name: '地狱', mul: 1.5,  soft: false },
+    normal:   { name: '正常', mul: 1.0,  soft: true },
+    hardcore: { name: '硬核', mul: 1.5,  soft: false },
 };
 
 // ---------- 僵尸 ----------

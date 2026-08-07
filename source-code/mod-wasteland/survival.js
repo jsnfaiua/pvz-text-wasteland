@@ -2530,7 +2530,7 @@ function onDeath() {
                         setStorage(worldKey(saveSeed), worldData);
                         setStorage(PROFILE_KEY, { characterName: sv.characterName, worldSeed: saveSeed });
                         // 退出 → 进新建角色流程（命名+捏脸），完成后以新角色导入旧世界
-                        const diffKey = sv.diffKey || 'hard';
+                        const diffKey = sv.diffKey || 'hardcore';
                         exitWasteland(true);
                         showCreateCharacter((name, look) => {
                             const cd = {
@@ -3677,7 +3677,10 @@ function startRun(opts) {
     // 普通玩家设置（workshop 荒原面板，无需开发者模式）：帧率显示 + 画质档
     if (opts.gfx != null) sv._devGfx = opts.gfx;
     sv._showFps = !!opts.showFps;
-    sv.diffKey = B.DIFF_TABLE[opts.difficulty] ? opts.difficulty : 'normal';
+    // 难度两档归一：旧档（easy/hard/hell 四档时代）读档自动映射——
+    // easy→normal（软）、hard/hell→hardcore（硬核一条命）
+    const DIFF_LEGACY = { easy: 'normal', normal: 'normal', hard: 'hardcore', hell: 'hardcore' };
+    sv.diffKey = B.DIFF_TABLE[opts.difficulty] ? opts.difficulty : (DIFF_LEGACY[opts.difficulty] || 'normal');
     WG.initWpn(sv, sv._savedMag);
 
     Panel.initPanel({ onUse: useItem, onDrop: dropItem, onChestDrop: dropChestItem, onBatchOpen: batchOpenLoot });

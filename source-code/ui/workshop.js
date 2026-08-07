@@ -108,13 +108,13 @@ function renderDetail() {
     let wastelandExtra = '';
     let enterBtnsHtml = '';
     if (mod.id === 'wasteland') {
-        const diff = st.opts.difficulty || 'normal';
+        // 难度两档归一（旧档 easy/hard/hell 四档时代 → 新两档）
+        const LEGACY_DIFF = { easy: 'normal', hard: 'hardcore', hell: 'hardcore' };
+        const diff = LEGACY_DIFF[st.opts.difficulty] || st.opts.difficulty || 'normal';
         const curOpts = st.opts || {};   // 显示设置（帧率/画质）读取
         const DIFFS = [
-            { key: 'easy', name: '简单', desc: '敌人强度 ×0.8，死亡仅丢失部分背包' },
-            { key: 'normal', name: '普通', desc: '敌人强度 ×1.0，死亡仅丢失部分背包' },
-            { key: 'hard', name: '困难', desc: '敌人强度 ×1.25，死亡删除存档' },
-            { key: 'hell', name: '地狱', desc: '敌人强度 ×1.5，死亡删除存档' },
+            { key: 'normal', name: '正常', desc: '敌人强度 ×1.0，死亡仅丢失部分背包（醒来重生）' },
+            { key: 'hardcore', name: '硬核', desc: '敌人强度 ×1.5，一条命：死亡即永久（可保存世界重新捏脸归来）' },
         ];
         // 角色列表 + 当前组合（泰拉瑞亚式：角色跨世界保留物品/属性）
         const chars = getStorage('wasteland_characters', { names: [] });
