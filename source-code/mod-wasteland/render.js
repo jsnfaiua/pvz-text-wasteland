@@ -735,16 +735,21 @@ function drawStarveVignette(ctx, sv, W, H) {
     if (!sv || sv.food == null) return;
     if (sv.food > 0 && (sv.water == null || sv.water > 0) && sv.hp > (sv.maxHp || 100) * 0.2) return;
     const breathe = 0.5 + 0.5 * Math.sin(sv.now * 1.8);
+    // 室内背景已被 drawDayNight 压暗一层 + 暗角叠加会把棕色光晕完全掩盖成纯黑
+    // → 室内减弱暗角、提亮棕色光晕，让低状态警示在室内也清晰可见（与室外"同步"）
+    const isIn = !!sv.interior;
+    const ringA = isIn ? 0.50 + 0.30 * breathe : 0.30 + 0.22 * breathe;
+    const darkA = isIn ? 0.12 + 0.10 * breathe : 0.32 + 0.20 * breathe;
     // 昏黄光晕（低血糖/失血发晕感）：中心稍透，向四周变浓，随呼吸脉动
     const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.78);
     g.addColorStop(0, 'rgba(130,66,22,0)');
-    g.addColorStop(1, `rgba(70,32,10,${0.30 + 0.22 * breathe})`);
+    g.addColorStop(1, `rgba(70,32,10,${ringA.toFixed(3)})`);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
     // 边缘暗角（视野收窄）：呼吸脉动
     const v = ctx.createRadialGradient(W / 2, H / 2, H * 0.30, W / 2, H / 2, H * 0.82);
     v.addColorStop(0, 'rgba(0,0,0,0)');
-    v.addColorStop(1, `rgba(0,0,0,${0.32 + 0.20 * breathe})`);
+    v.addColorStop(1, `rgba(0,0,0,${darkA.toFixed(3)})`);
     ctx.fillStyle = v;
     ctx.fillRect(0, 0, W, H);
 }

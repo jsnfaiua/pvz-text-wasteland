@@ -2469,6 +2469,12 @@ function onDeath() {
         WA.resetActions(sv);
         sv.stamina = sv.maxStamina;
         sv.exhausted = false;
+        // 重生恢复全部状态（用户反馈：之前只重置 HP/体力，饱食/水分/感染/疾病等 debuff 残留
+        // → "重生后状态不会恢复"）。与初始出生一致：满饱食满水分、清感染、清疾病。
+        sv.food = B.HUNGER_MAX;
+        sv.water = B.WATER_MAX;
+        sv.infection = 0;
+        sv._sick = null;
         let rx, ry;
         if (sv.homeBed) {
             for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
