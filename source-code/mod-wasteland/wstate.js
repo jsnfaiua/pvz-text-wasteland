@@ -274,6 +274,11 @@ export function serializeWorld(sv, deps) {
         })),
         npcs: deps.WNPC.serializeNpcs(sv),
         px: sv.px, py: sv.py, faceX: sv.faceX, faceY: sv.faceY,
+        // 遗物包裹（正常模式死亡后原地包裹：位置 + 内容；重进世界恢复，拾取后清除）
+        legacyDrop: sv._legacyDrop ? {
+            x: sv._legacyDrop.x, y: sv._legacyDrop.y,
+            contents: (sv.drops.find(d => d.id === 'loot:legacy') || {}).contents || null,
+        } : null,
     };
 }
 
@@ -319,6 +324,13 @@ export function applyWorld(run, data, deps) {
         if (typeof data.py === 'number') run.py = data.py;
         if (typeof data.faceX === 'number') run.faceX = data.faceX;
         if (typeof data.faceY === 'number') run.faceY = data.faceY;
+        if (data.legacyDrop && typeof data.legacyDrop.x === 'number') {
+            run._legacyDrop = { x: data.legacyDrop.x, y: data.legacyDrop.y };
+            // 恢复遗物包裹（drops 不随世界档保存，这里重建）
+            if (Array.isArray(data.legacyDrop.contents) && data.legacyDrop.contents.length) {
+                run.drops.push({ x: data.legacyDrop.x, y: data.legacyDrop.y, id: 'loot:legacy', n: 1, contents: data.legacyDrop.contents });
+            }
+        }
         out.loaded = true;
     } catch {
         run.world = null;

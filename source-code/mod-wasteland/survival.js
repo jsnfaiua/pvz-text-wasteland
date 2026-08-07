@@ -2455,24 +2455,38 @@ function onDeath() {
         return;
     }
     const dk = B.DIFF_TABLE[sv.diffKey] || B.DIFF_TABLE.normal;
-    // 玩家死亡 → 原角色尸化为当前世界的一只精英僵尸（继承名字/外观/装备/背包，
-    // 会用背包远程武器射击玩家）。所有难度统一：死去的你会留在世界上。
     const deadName = sv.characterName || '幸存者';
-    const pz = WZ.spawnPlayerZombie(sv);
-    log(`☠ ${deadName} 已尸化……`, '#FF5544');
-    sv._pzId = pz.id;   // 记录尸化僵尸 id（世界档保留/重进世界可见）
-    AudioSystem.playZombieSpawn && AudioSystem.playZombieSpawn();
+    let pz = null;
+    if (!dk.soft) {
+        // 硬核一条命：死亡 → 原角色尸化为当前世界的一只精英僵尸
+        // （继承名字/外观/装备/背包，会用背包远程武器射击玩家）
+        pz = WZ.spawnPlayerZombie(sv);
+        log(`☠ ${deadName} 已尸化……`, '#FF5544');
+        sv._pzId = pz.id;
+        AudioSystem.playZombieSpawn && AudioSystem.playZombieSpawn();
+    }
     if (dk.soft) {
         if (WSearch.isOpen()) WSearch.closeSearch(sv, true);   // 搜索中被杀：关闭界面
         sv.interior = null;   // 室内死亡：离开房间，回到室外重生点
-        let lost = 0;
-        for (let i = 0; i < sv.inv.length; i++) {
-            if (sv.inv[i] && Math.random() < B.SOFT_DEATH_LOSS) { sv.inv[i] = null; lost++; }
+        // 正常模式死亡 v2：不尸变——被队友救回，但掉落【所有】随身物品，
+        // 原地留下「遗物包裹」（有指引可前往拾取）；部分物品因不可抗力永久消失，
+        // 死亡次数越多代价越大（首次丢 30%，每多死一次 +10%，封顶 60%）。
+        sv._deathCount = (sv._deathCount || 0) + 1;
+        const vanishRate = Math.min(0.2 + sv._deathCount * 0.1, 0.6);
+        const kept = [], vanished = [];
+        for (const s of sv.inv) {
+            if (!s) continue;
+            if (Math.random() < vanishRate) vanished.push(s.id);
+            else kept.push({ id: s.id, n: s.n });
+        }
+        sv.inv = Array(Panel.BAG_SIZE).fill(null);   // 全掉落
+        if (kept.length) {
+            sv.drops.push({ x: sv.px, y: sv.py, id: 'loot:legacy', n: 1, contents: kept });
+            sv._legacyDrop = { x: sv.px, y: sv.py };   // 指引标记（重进世界也能定位）
         }
         sv.hp = sv.maxHp;
         sv.hurtT = 0;
-        // 清场但保留刚尸化的自己（死去的玩家留在世界上，装备/背包已被它继承）
-        sv.zombies = pz && pz.id ? sv.zombies.filter(z => z.id === pz.id) : [];
+        sv.zombies = [];
         sv.horde = null;
         WA.resetActions(sv);
         sv.stamina = sv.maxStamina;
@@ -2498,8 +2512,10 @@ function onDeath() {
             ry = Math.round(Math.sin(ang) * dist + 0.5) * TS;
         }
         sv.px = rx; sv.py = ry;
-        if (lost > 0) log(`你醒了过来…… ${lost} 格随身物品遗失了`);
-        else log(sv.homeBed ? '你在床边醒来……' : '你在荒原某处醒来……');
+        // 队友救回播报
+        const vanishTxt = vanished.length ? `（${vanished.length} 件物品因不可抗力永久消失）` : '';
+        const keptTxt = kept.length ? `，遗物包裹留在原地（可前往拾取）` : '，随身物品全部遗失';
+        log(`队友将濒死的你救了回来……${keptTxt}${vanishTxt}`, '#7fd6ff');
         AudioSystem.playDefeat();
         saveNow();
     } else {

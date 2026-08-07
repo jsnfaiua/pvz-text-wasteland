@@ -16,7 +16,15 @@ const HEX_RE = /^#[0-9a-f]{6}$/i;
 export const LOOK_DEFAULTS = {
     skin: '#c49470', hair: '#34302d', shirt: '#39d98a',
     pants: '#314c58', shoes: '#20282b', eyes: '#232323',
+    hairStyle: 0, // 0 短发 / 1 齐刘海长发 / 2 双马尾
 };
+
+// 发型选项：渲染层 playerBodyColorAt 按 hairStyle 切换像素布局
+export const HAIR_STYLES = [
+    { id: 0, label: '短发' },
+    { id: 1, label: '长发' },
+    { id: 2, label: '双马尾' },
+];
 
 export const LOOK_PALETTES = {
     skin:  { label: '肤色', colors: ['#c49470', '#e8b98a', '#8d5a3a', '#f0d0b0', '#5e3d28'] },
@@ -31,6 +39,7 @@ export function randomLook() {
     const pick = arr => arr[Math.floor(Math.random() * arr.length)];
     const out = {};
     for (const key of Object.keys(LOOK_PALETTES)) out[key] = pick(LOOK_PALETTES[key].colors);
+    out.hairStyle = Math.floor(Math.random() * HAIR_STYLES.length);
     return out;
 }
 
@@ -39,12 +48,17 @@ export function mergeLook(a, b) {
 }
 
 // 规范化存档外观：缺项补默认、剔除非法值；
-// 旧档只有 肤色/发色/上衣/裤子 四项时自动补齐鞋子/瞳色。
+// 旧档只有 肤色/发色/上衣/裤子 四项时自动补齐鞋子/瞳色/发型。
 export function normalizeLook(look) {
     if (!look || typeof look !== 'object') return null;
     const out = {};
     for (const key of Object.keys(LOOK_DEFAULTS)) {
-        out[key] = HEX_RE.test(look[key]) ? look[key].toLowerCase() : LOOK_DEFAULTS[key];
+        if (key === 'hairStyle') {
+            const v = Number(look[key]);
+            out[key] = (v === 1 || v === 2) ? v : 0; // 发型只认 0/1/2，非法回短发
+        } else {
+            out[key] = HEX_RE.test(look[key]) ? look[key].toLowerCase() : LOOK_DEFAULTS[key];
+        }
     }
     return out;
 }
@@ -55,34 +69,54 @@ function saveLastLook(look) { setStorage(LAST_LOOK_KEY, look); }
 
 let lookEl = null;
 let lookAnimRaf = 0;
+// 预览离屏缓存：每个外观只生成 2 帧位图（站立/呼吸），RAF 循环仅 drawImage，不再逐像素重绘。
+const _previewCache = new Map();
+function previewCacheKey(look) {
+    return [look.skin, look.hair, look.shirt, look.pants, look.shoes, look.eyes, look.hairStyle].join('|');
+}
+function buildPreviewFrames(look) {
+    return [0, 1].map(frame => {
+        const cv = document.createElement('canvas');
+        cv.width = 28; cv.height = 33;
+        const octx = cv.getContext('2d');
+        const anim = { dir: 'down', frame, moving: false };
+        for (let py = 0; py < 33; py++) for (let px = 0; px < 28; px++) {
+            const c = playerBodyColorAt(px, py, look.shirt, look, anim);
+            if (c) { octx.fillStyle = c; octx.fillRect(px, py, 1, 1); }
+        }
+        return cv;
+    });
+}
 
-// 预览画布：直接用与游戏一致的像素取色循环绘制 28×33 小人；
-// 带轻微呼吸动画（站立帧 0↔1 交替上浮），捏脸所见即游戏所现。
+// 预览画布：直接用与游戏一致的像素取色绘制 28×33 小人；
+// 带轻微呼吸动画（站立帧 0↔1 交替上浮，约 0.3s 一拍），捏脸所见即游戏所现。
 function drawPreview(look) {
     const canvas = lookEl && lookEl.querySelector('.wsl-look-preview');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const paint = frame => {
-        ctx.clearRect(0, 0, 28, 33);
-        const anim = { dir: 'down', frame, moving: false };
-        for (let py = 0; py < 33; py++) for (let px = 0; px < 28; px++) {
-            const c = playerBodyColorAt(px, py, look.shirt, look, anim);
-            if (c) { ctx.fillStyle = c; ctx.fillRect(px, py, 1, 1); }
-        }
-    };
+    const key = previewCacheKey(look);
+    let frames = _previewCache.get(key);
+    if (!frames) {
+        frames = buildPreviewFrames(look);
+        if (_previewCache.size < 60) _previewCache.set(key, frames);
+    }
     cancelAnimationFrame(lookAnimRaf);
-    let t = 0;
+    let t = 0, acc = 0;
     const loop = () => {
-        t = (t + 1) % 4;
-        paint(t < 2 ? 0 : 1);
+        acc++;
+        if (acc >= 10) { acc = 0; t = (t + 1) % 2; } // 约 0.33s 一拍呼吸
+        ctx.clearRect(0, 0, 28, 33);
+        ctx.drawImage(frames[t], 0, 0);
         lookAnimRaf = requestAnimationFrame(loop);
     };
     lookAnimRaf = requestAnimationFrame(loop);
 }
 
-// 一次性构建所有色板行（色块按钮 + 自定义取色入口），之后只切换选中态
+// 一次性构建所有色板行（色块按钮 + 自定义取色入口 + 发型选择行），之后只切换选中态
 function buildRowsHtml() {
-    return Object.keys(LOOK_PALETTES).map(key => {
+    const hairBtns = HAIR_STYLES.map(h =>
+        `<button class="wsl-look-hair" data-hair="${h.id}" title="${h.label}">${h.label}</button>`).join('');
+    const colorRows = Object.keys(LOOK_PALETTES).map(key => {
         const p = LOOK_PALETTES[key];
         const swatches = p.colors.map(c =>
             `<button class="wsl-look-swatch" data-key="${key}" data-color="${c}" style="background:${c};" title="${c}"></button>`).join('');
@@ -96,6 +130,10 @@ function buildRowsHtml() {
             </div>
         </div>`;
     }).join('');
+    return `<div class="wsl-look-row">
+            <div class="wsl-look-label">发型</div>
+            <div class="wsl-look-hairs">${hairBtns}</div>
+        </div>${colorRows}`;
 }
 
 // 选中态同步：只切换 .on 与自定义色块底色，不重建行
@@ -112,6 +150,9 @@ function syncRows(look) {
             el.classList.toggle('on', look[key] === el.dataset.color);
         }
     });
+    lookEl.querySelectorAll('.wsl-look-hair').forEach(el => {
+        el.classList.toggle('on', Number(el.dataset.hair) === (look.hairStyle || 0));
+    });
 }
 
 function clickSound() {
@@ -126,22 +167,27 @@ export function showLookCreator(onConfirm, initialLook) {
     const hasLast = !!loadLastLook();
     lookEl = document.createElement('div');
     lookEl.className = 'wsl-look';
-    lookEl.style.cssText = 'position:fixed;inset:0;z-index:1200;background:rgba(5,8,12,0.92);display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei",monospace;';
     lookEl.innerHTML = `
-        <div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:24px 28px;width:560px;box-shadow:0 0 40px rgba(57,217,138,0.25);">
-            <div style="text-align:center;color:#39d98a;font-size:22px;letter-spacing:6px;margin-bottom:4px;">◈ 角色定制 ◈</div>
-            <div style="text-align:center;color:#7a8a92;font-size:12px;margin-bottom:16px;">像素幸存者 · 外观只影响形象，不影响属性 · 彩虹块可自定义任意颜色</div>
-            <div style="display:flex;gap:26px;align-items:center;">
-                <canvas class="wsl-look-preview" width="28" height="33"
-                    style="width:196px;height:231px;image-rendering:pixelated;background:#0a0f14;border:2px solid #2a3540;border-radius:6px;flex:none;"></canvas>
-                <div class="wsl-look-rows" style="flex:1;">${buildRowsHtml()}</div>
+        <div class="wsl-look-panel">
+            <div class="wsl-look-title">◈ 角色定制 ◈</div>
+            <div class="wsl-look-sub">像素幸存者 · 外观只影响形象，不影响属性 · 彩虹块可自定义任意颜色</div>
+            <div class="wsl-look-body">
+                <div class="wsl-look-stage">
+                    <canvas class="wsl-look-preview" width="28" height="33"></canvas>
+                    <div class="wsl-look-info">
+                        <div class="wsl-look-info-row"><i style="background:${look.skin};"></i><span>肤色</span></div>
+                        <div class="wsl-look-info-row"><i style="background:${look.hair};"></i><span>发色</span></div>
+                        <div class="wsl-look-info-row"><i style="background:${look.shirt};"></i><span>上衣</span></div>
+                    </div>
+                </div>
+                <div class="wsl-look-rows">${buildRowsHtml()}</div>
             </div>
-            <div style="display:flex;gap:10px;justify-content:center;margin-top:18px;">
-                <button id="wsl-look-random" style="background:#232c34;border:1px solid #4a5a66;color:#ccd;padding:9px 22px;border-radius:6px;cursor:pointer;font-size:14px;">🎲 随机</button>
-                <button id="wsl-look-last" style="background:#232c34;border:1px solid #4a5a66;color:#ccd;padding:9px 22px;border-radius:6px;cursor:pointer;font-size:14px;${hasLast ? '' : 'display:none;'}">↩ 上次</button>
-                <button id="wsl-look-ok" style="background:#1d5c3f;border:1px solid #39d98a;color:#bff5d8;padding:9px 26px;border-radius:6px;cursor:pointer;font-size:15px;font-weight:bold;">确认，进入荒原 ▶</button>
+            <div class="wsl-look-actions">
+                <button class="wsl-look-btn" id="wsl-look-random">🎲 随机</button>
+                <button class="wsl-look-btn" id="wsl-look-last" style="${hasLast ? '' : 'display:none;'}">↩ 上次</button>
+                <button class="wsl-look-btn wsl-look-ok" id="wsl-look-ok">确认，进入荒原 ▶</button>
             </div>
-            <div style="text-align:center;color:#5a6a72;font-size:11px;margin-top:10px;">Enter 确认 · ESC 取消返回</div>
+            <div class="wsl-look-keys">Enter 确认 · ESC 取消返回</div>
         </div>`;
     document.body.appendChild(lookEl);
     syncRows(look);
@@ -161,6 +207,14 @@ export function showLookCreator(onConfirm, initialLook) {
 
     const rows = lookEl.querySelector('.wsl-look-rows');
     rows.addEventListener('click', e => {
+        const hair = e.target.closest('.wsl-look-hair');
+        if (hair) {
+            look.hairStyle = Number(hair.dataset.hair);
+            syncRows(look);
+            drawPreview(look);
+            clickSound();
+            return;
+        }
         const btn = e.target.closest('.wsl-look-swatch');
         if (!btn || btn.classList.contains('wsl-look-custom')) return;
         applyColor(btn.dataset.key, btn.dataset.color);

@@ -436,6 +436,7 @@ function lookShades(bodyColor, L) {
         mouth: '#7a4434',                                  // 嘴
         hair: L.hair || '#34302d',
         hairLight: mixHexColor(L.hair || '#34302d', '#ffffff', 0.24), // 发丝高光
+        hairDark: mixHexColor(L.hair || '#34302d', '#000000', 0.3),  // 发阴影（眉毛/马尾暗部）
         shirt: bodyColor,
         shirtLight: mixHexColor(bodyColor, '#ffffff', 0.22),          // 肩/胸高光
         shirtDark: mixHexColor(bodyColor, '#0a0c0a', 0.32),           // 腰带/下摆/侧影
@@ -443,14 +444,17 @@ function lookShades(bodyColor, L) {
         pantsDark: mixHexColor(L.pants || '#314c58', '#000000', 0.28), // 裤脚暗部
         shoes: L.shoes || '#20282b',
         shoesDark: mixHexColor(L.shoes || '#20282b', '#000000', 0.35), // 鞋底
+        eyeHighlight: mixHexColor(L.eyes || '#232323', '#ffffff', 0.62), // 眼睛高光点
     };
     if (_shadeCache.size < 800) _shadeCache.set(key, s);
     return s;
 }
 
-// 像素小人取色：外观参数化（肤色/发色/上衣/裤子/鞋子/瞳色）+ 可选逐帧动画。
-// 动画参数 anim = { dir:'up'|'down'|'left'|'right', frame:0|1|2, moving, run }，
+// 像素小人取色：外观参数化（肤色/发色/上衣/裤子/鞋子/瞳色/发型）+ 可选逐帧动画。
+// 动画参数 anim = { dir:'up'|'down'|'left'|'right', frame:0|1|2, moving, run, atk }，
 // 不传 anim 或 moving=false 时为静态站立。28×33 网格，供世界渲染与捏脸预览共用。
+// 形象增强（技术美术版）：hairStyle 0=短发 1=齐刘海长发 2=双马尾；
+// 表情（眉毛/眼睛高光/眨眼/嘴型随状态）；姿态（奔跑发丝后飘+弹跳、挥击手臂前伸/上举）。
 export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     const L = look || {};
     const S = lookShades(bodyColor || L.shirt || '#39d98a', L);
@@ -461,11 +465,20 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     const isSide = !!(moving && (a.dir === 'left' || a.dir === 'right'));
     const isUp = !!(a && a.dir === 'up');                            // 直行=背面
     const sign = a && a.dir === 'right' ? 1 : -1;                    // 右向镜像
-    const bob = !moving && a && a.frame === 1 ? 1 : (moving && a.frame !== 1 ? -1 : 0); // 迈步上浮 / 站立呼吸
+    const bob = !moving && a && a.frame === 1 ? 1 : (moving && a.frame !== 1 ? -(a && a.run ? 2 : 1) : 0); // 迈步上浮(跑更弹) / 站立呼吸
+    const hs = L.hairStyle === 1 || L.hairStyle === 2 ? L.hairStyle : 0; // 发型 0短发/1长发/2双马尾
+    const atk = !!(a && a.atk);                                      // 挥击姿态
     // 腿：正面/背面垂直交错，侧面水平交错
     const ldx = isSide ? f * amp * sign : 0, ldy = isSide ? 0 : f * amp;
     const rdx = isSide ? -f * amp * sign : 0, rdy = isSide ? 0 : -f * amp;
     const adx = isSide ? f * amp * sign : 0, ady = isSide ? 0 : f * amp; // 臂
+    // 奔跑时发丝后飘（左右跑朝身后偏 1px）；马尾随步伐摆动
+    const hairSweep = moving && a.run && isSide ? -sign : 0;
+    const tailSway = isSide ? 0 : f * amp;
+    // 挥击手臂：侧面朝前伸出，正/背面双手上举
+    const armFwd = atk && isSide ? sign : 0;
+    const armY0 = atk ? (isSide ? 14 : 10) : 13;
+    const armY1 = atk ? (isSide ? 18 : 16) : 20;
     const R = (x0, y0, x1, y1, dx = 0, dy = 0) =>
         px - dx >= x0 && px - dx < x1 && py - dy >= y0 && py - dy < y1;
 
@@ -487,20 +500,20 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     if (R(7, 17, 21, 19, 0, bob)) c = S.shirtDark;
     if (R(6, 19, 22, 20, 0, bob)) c = S.shirtDark;
     if ((R(6, 13, 8, 19, 0, bob) || R(20, 13, 22, 19, 0, bob))) c = S.shirtDark;
-    // 手臂（袖口 + 手；侧面只画朝向侧的单臂）
+    // 手臂（袖口 + 手；侧面只画朝向侧的单臂；挥击时前伸/上举）
     if (isSide) {
         if (sign < 0) {
-            if (R(2, 13, 5, 20, adx, bob)) c = S.skin;
-            if (R(2, 13, 5, 15, adx, bob)) c = S.shirtDark;
+            if (R(2 + armFwd, armY0, 5 + armFwd, armY1, adx, bob)) c = S.skin;
+            if (R(2 + armFwd, armY0, 5 + armFwd, armY0 + 2, adx, bob)) c = S.shirtDark;
         } else {
-            if (R(23, 13, 26, 20, adx, bob)) c = S.skin;
-            if (R(23, 13, 26, 15, adx, bob)) c = S.shirtDark;
+            if (R(23 + armFwd, armY0, 26 + armFwd, armY1, adx, bob)) c = S.skin;
+            if (R(23 + armFwd, armY0, 26 + armFwd, armY0 + 2, adx, bob)) c = S.shirtDark;
         }
     } else {
-        if (R(2, 13, 5, 20, adx, bob)) c = S.skin;
-        if (R(23, 13, 26, 20, -adx, bob)) c = S.skin;
-        if (R(2, 13, 5, 15, adx, bob)) c = S.shirtDark;
-        if (R(23, 13, 26, 15, -adx, bob)) c = S.shirtDark;
+        if (R(2, armY0, 5, armY1, adx, bob)) c = S.skin;
+        if (R(23, armY0, 26, armY1, -adx, bob)) c = S.skin;
+        if (R(2, armY0, 5, armY0 + 2, adx, bob)) c = S.shirtDark;
+        if (R(23, armY0, 26, armY0 + 2, -adx, bob)) c = S.shirtDark;
     }
     // 脖子阴影
     if (R(12, 10, 16, 12, 0, bob)) c = S.skinShade;
@@ -508,28 +521,76 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     if (R(8, 1, 20, 11, 0, bob)) c = S.skin;
     if (R(7, 6, 9, 10, 0, bob)) c = S.skinShade;
     if (R(19, 6, 21, 10, 0, bob)) c = S.skinShade;
-    // 头发（顶 + 鬓角；直行背面整个后脑）
-    if (R(8, 0, 20, 4, 0, bob)) c = S.hair;
-    if (R(8, 1, 20, 2, 0, bob)) c = S.hairLight;
-    if (R(8, 4, 10, 8, 0, bob)) c = S.hair;
-    if (R(18, 4, 20, 8, 0, bob)) c = S.hair;
+    // 头发（顶 + 鬓角；直行背面整个后脑；奔跑发丝后飘）
+    if (R(8, 0, 20, 4, hairSweep, bob)) c = S.hair;
+    if (R(8, 1, 20, 2, hairSweep, bob)) c = S.hairLight;
+    if (R(8, 4, 10, 8, hairSweep, bob)) c = S.hair;
+    if (R(18, 4, 20, 8, hairSweep, bob)) c = S.hair;
+    // 发型 1 齐刘海：盖额头的刘海层（止于眉毛上方）+ 两侧披肩长发
+    if (hs === 1) {
+        if (R(9, 3, 19, 5, hairSweep, bob)) c = S.hair;
+        if (R(10, 3, 18, 4, hairSweep, bob)) c = S.hairLight;
+        if (!isUp && R(7, 11, 9, 17, 0, bob)) c = S.hair;
+        if (!isUp && R(19, 11, 21, 17, 0, bob)) c = S.hair;
+        if (!isUp && R(7, 14, 9, 17, 0, bob)) c = S.hairDark;
+        if (!isUp && R(19, 14, 21, 17, 0, bob)) c = S.hairDark;
+    }
+    // 发型 2 双马尾：两侧马尾随步伐摆动（侧面只画朝向侧）
+    if (hs === 2) {
+        if (!isSide) {
+            if (R(3, 3, 7, 12, 0, tailSway + bob)) c = S.hair;
+            if (R(21, 3, 25, 12, 0, -tailSway + bob)) c = S.hair;
+            if (R(3, 10, 7, 12, 0, tailSway + bob)) c = S.hairDark;
+            if (R(21, 10, 25, 12, 0, -tailSway + bob)) c = S.hairDark;
+        } else if (sign < 0) {
+            if (R(3, 3, 7, 12, 0, tailSway + bob)) c = S.hair;
+            if (R(3, 10, 7, 12, 0, tailSway + bob)) c = S.hairDark;
+        } else {
+            if (R(21, 3, 25, 12, 0, -tailSway + bob)) c = S.hair;
+            if (R(21, 10, 25, 12, 0, -tailSway + bob)) c = S.hairDark;
+        }
+    }
     if (isUp) {
         if (R(8, 4, 20, 10, 0, bob)) c = S.hair;
         if (R(8, 4, 20, 5, 0, bob)) c = S.hairLight;
+        // 长发直行：后脑发梢延长至颈
+        if (hs === 1 && R(8, 10, 20, 12, 0, bob)) c = S.hair;
+        if (hs === 1 && R(8, 11, 20, 12, 0, bob)) c = S.hairDark;
     } else {
+        // 眉毛（深发色，刘海 1 型时露在刘海下沿）
+        if (R(9, 5, 11, 6, 0, bob)) c = S.hairDark;
+        if (R(17, 5, 19, 6, 0, bob)) c = S.hairDark;
         if (isSide) {
-            // 侧脸：单眼 + 偏侧嘴
+            // 侧脸：单眼 + 眼睛高光 + 偏侧嘴；发型 1 后脑侧覆盖
+            if (hs === 1) {
+                if (sign < 0 ? R(8, 4, 13, 10, 0, bob) : R(15, 4, 20, 10, 0, bob)) c = S.hair;
+                if (sign < 0 ? R(8, 4, 13, 5, 0, bob) : R(15, 4, 20, 5, 0, bob)) c = S.hairLight;
+            }
             const ex = sign < 0 ? 10 : 17;
-            if (R(ex, 6, ex + 2, 8, 0, bob)) c = L.eyes;
+            const blink = !moving && a && a.frame === 1; // 站立呼吸帧眯眼
+            if (R(ex, blink ? 7 : 6, ex + 2, 8, 0, bob)) c = L.eyes;
+            if (R(ex, blink ? 7 : 6, ex + 1, blink ? 8 : 7, 0, bob)) c = S.eyeHighlight;
             const mx = sign < 0 ? 11 : 14;
-            if (R(mx, 8, mx + 3, 9, 0, bob)) c = S.mouth;
+            const mw = moving ? (a.run ? 4 : 3) : 3; // 跑咧嘴 / 走微张
+            const mh = moving && a.run ? 2 : 1;
+            if (R(mx, 8, mx + mw, 8 + mh, 0, bob)) c = S.mouth;
         } else {
-            // 正脸：双眼 + 腮红 + 嘴
-            if (R(10, 6, 12, 8, 0, bob)) c = L.eyes;
-            if (R(16, 6, 18, 8, 0, bob)) c = L.eyes;
+            // 正脸：双眼(眨眼) + 高光 + 腮红 + 嘴(随状态)；发型 1 刘海遮额
+            if (hs === 1 && R(9, 5, 19, 6, 0, bob)) c = S.hair;
+            const blink = !moving && a && a.frame === 1; // 站立呼吸帧眯眼
+            if (R(10, blink ? 7 : 6, 12, 8, 0, bob)) c = L.eyes;
+            if (R(16, blink ? 7 : 6, 18, 8, 0, bob)) c = L.eyes;
+            if (R(10, blink ? 7 : 6, 11, blink ? 8 : 7, 0, bob)) c = S.eyeHighlight;
+            if (R(16, blink ? 7 : 6, 17, blink ? 8 : 7, 0, bob)) c = S.eyeHighlight;
             if (R(9, 7, 10, 8, 0, bob)) c = S.cheek;
             if (R(18, 7, 19, 8, 0, bob)) c = S.cheek;
-            if (R(12, 8, 16, 9, 0, bob)) c = S.mouth;
+            if (atk) { // 挥击喊声：嘴张大
+                if (R(11, 8, 17, 10, 0, bob)) c = S.mouth;
+            } else if (moving) {
+                if (R(11, 8, 17, 8 + (a.run ? 2 : 1), 0, bob)) c = S.mouth;
+            } else {
+                if (R(12, 8, 16, 9, 0, bob)) c = S.mouth;
+            }
         }
     }
     return c;
@@ -543,8 +604,9 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
     const width = 28, height = 33;
     if (level <= 0.01) {
         const L = look || {};
-        const key = [color, L.skin, L.hair, L.pants, L.shoes, L.eyes,
-            anim && anim.dir, anim && (anim.moving ? 'm' : 's'), anim && anim.frame, anim && anim.run ? 'r' : 'w'].join('|');
+        const key = [color, L.skin, L.hair, L.pants, L.shoes, L.eyes, L.hairStyle,
+            anim && anim.dir, anim && (anim.moving ? 'm' : 's'), anim && anim.frame,
+            anim && anim.run ? 'r' : 'w', anim && anim.atk ? 'a' : 'n'].join('|');
         let cv = _bodySpriteCache.get(key);
         if (!cv) {
             cv = makeOffscreen(width, height);
@@ -670,11 +732,12 @@ export function draw(ctx, sv) {
         drawHUD(ctx, sv, W, H);
         drawDriveHUD(ctx, sv, W);
         drawTeamPanel(ctx, sv, W, H);
-        if (sv.p2 || (sv.p2s && Object.keys(sv.p2s).length) || sv.zombies.some(z => z.isPlayerZombie)) {
-            // 指引指示器共享错位数组：队友 + 尸化的自己 同边缘自动错开不重叠
+        if (sv.p2 || (sv.p2s && Object.keys(sv.p2s).length) || sv.zombies.some(z => z.isPlayerZombie) || (sv._legacyDrop)) {
+            // 指引指示器共享错位数组：队友 + 尸化的自己 + 遗物包裹 同边缘自动错开不重叠
             const guideDrawn = [];
             if (sv.p2 || (sv.p2s && Object.keys(sv.p2s).length)) drawP2Guide(ctx, sv, W, H, guideDrawn);
             drawPlayerZombieGuide(ctx, sv, W, H, guideDrawn);   // 尸化的自己：寻回装备/曾经的你
+            drawLegacyDropGuide(ctx, sv, W, H, guideDrawn);     // 遗物包裹：正常模式队友救回后留下的行李
         }
         if (sv.build) drawBuildBar(ctx, sv, W, H);
         else drawHotbar(ctx, sv, W, H);
@@ -3212,6 +3275,7 @@ function drawPlayer(ctx, sv, camX, camY) {
         frame: sv.animMoving ? (sv.animFrame || 0) : 0,
         moving: !!sv.animMoving,
         run: !!sv.sprinting,
+        atk: sv.swingT > 0,
     };
 
     // 闪现残影（与单机 dashGhosts 一致）
@@ -3367,6 +3431,7 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
         frame: p.moving ? (p.frame || 0) : 0,
         moving: !!p.moving,
         run: !!p.run,
+        atk: (p.swingT || 0) > 0,
     };
     // 队友用蓝色调（与房主绿色区分），光晕跟衣服色走
     const lookShirt = (p.character && p.character.shirt) || '#4da3ff';
@@ -3582,6 +3647,73 @@ function drawPlayerZombieGuide(ctx, sv, W, H, sharedDrawn) {
         ctx.fillText(label, px2, py2 + 33);
         ctx.restore();
     }
+}
+
+// ---------- 遗物包裹 · 距离指引（正常模式队友救回后原地留下的行李，金色方箱样式） ----------
+// 玩家死亡（正常难度）→ 掉落全部物品成「遗物包裹」留在原地，有指引可前往拾取。
+// 样式与队友（圆点）和尸化自己（紫菱形）区分：金色方箱底 + 金色箭头 + 标签「遗物包裹 · N格」。
+const LEGACY_GUIDE_COLOR = '#FFD700';   // 金色
+function drawLegacyDropGuide(ctx, sv, W, H, sharedDrawn) {
+    if (!sv._legacyDrop || !sv.drops) return;
+    // 指引的是"死亡点"（包裹位置）——若包裹已被拾取（drops 中无 loot:legacy）则指引消失
+    const bagStillThere = sv.drops.some(d => d.id === 'loot:legacy' && d.contents && d.contents.length);
+    if (!bagStillThere) { sv._legacyDrop = null; return; }
+    const tx = sv._legacyDrop.x, ty = sv._legacyDrop.y;
+    const dx = tx - sv.px, dy = ty - sv.py;
+    const dist = Math.hypot(dx, dy);
+    const sx = tx - sv.camX, sy = ty - sv.camY;
+    const margin = 52;
+    // 同屏：能看到包裹（drawDrops 已画金色袋 + 名字牌），不显示指引
+    if (sx >= margin && sx <= W - margin && sy >= margin && sy <= H - margin) return;
+    const ang = Math.atan2(dy, dx);
+    const px2 = clamp(W / 2 + Math.cos(ang) * (W / 2 - 40), margin, W - margin);
+    let py2 = clamp(H / 2 + Math.sin(ang) * (H / 2 - 40), margin, H - margin);
+    // 与队友/尸化自己共享错位
+    const drawn = sharedDrawn || [];
+    for (const d of drawn) {
+        if (Math.abs(d.x - px2) < 40 && Math.abs(d.y - py2) < 44) {
+            py2 = d.y + 48 > H - margin ? d.y - 48 : d.y + 48;
+        }
+    }
+    drawn.push({ x: px2, y: py2 });
+    ctx.save();
+    ctx.translate(px2, py2);
+    // 金色方箱底 + 描边（与队友圆底、尸化菱形三方区分）
+    ctx.fillStyle = 'rgba(40,28,4,0.9)';
+    ctx.strokeStyle = LEGACY_GUIDE_COLOR;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(-12, -12, 24, 24);
+    ctx.fill(); ctx.stroke();
+    // 箱盖线（金色横条）
+    ctx.strokeStyle = LEGACY_GUIDE_COLOR;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-10, -4); ctx.lineTo(10, -4);
+    ctx.stroke();
+    // 指向包裹的金色箭头
+    ctx.rotate(ang);
+    ctx.fillStyle = LEGACY_GUIDE_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(12, 0); ctx.lineTo(-5, -7); ctx.lineTo(-2, 0); ctx.lineTo(-5, 7);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    // 下方标签
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 11px "Microsoft YaHei", monospace';
+    ctx.fillStyle = 'rgba(40,28,4,0.88)';
+    const label = '遗物包裹 · ' + Math.round(dist / TS) + ' 格';
+    const lw = ctx.measureText(label).width + 10;
+    roundRectPath(ctx, px2 - lw / 2, py2 + 24, lw, 18, 4);
+    ctx.fill();
+    ctx.strokeStyle = LEGACY_GUIDE_COLOR;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = '#FFE98A';
+    ctx.fillText(label, px2, py2 + 33);
+    ctx.restore();
 }
 
 // ---------- 建造模式：鼠标目标格高亮 ----------

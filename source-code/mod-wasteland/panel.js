@@ -60,11 +60,12 @@ const W_DESC = {
 };
 const RARITY_NAME = { common: '常见', rare: '稀有', epic: '史诗' };
 
-// 战利品袋品质（强僵尸掉好袋）
+// 战利品袋品质（强僵尸掉好袋）；legacy = 玩家死亡遗物包裹（正常模式队友救回后原地留下）
 export const LOOT_TIERS = {
     common: { name: '普通战利品', color: '#b8c0c8' },
     rare:   { name: '稀有战利品', color: '#4da3ff' },
     epic:   { name: '史诗战利品', color: '#ff9800' },
+    legacy: { name: '遗物包裹', color: '#ffd700' },
 };
 
 // 统一物品信息查询（材料 / 武器 / 弹药 / 种子）
