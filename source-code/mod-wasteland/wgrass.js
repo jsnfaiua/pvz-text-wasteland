@@ -264,8 +264,6 @@ export function grassRenderGround(ctx, sv, tx, ty, x0, y0) {
   const season = sv._season == null ? 1 : sv._season;
   const st = SEASONS[season];
   const bc = biomeColor(seed, tx, ty);
-  // 颗粒幅度：连续值噪声 3-8（不再按 16 格 chunk 取整数值——旧版 chunk 边界颗粒幅度跳变 = 草地被分割成大块）
-  const grit = 3 + grassNoise(seed ^ 0x51A7, tx, ty, 16) * 5;
   // 坐标取整 + 最后子块 +1px 防缝（保留修复：避免格间露底深色缝）
   const ox = Math.round(x0), oy = Math.round(y0);
   // 真实草密度（周围 4 格 clusterList 束数，缓存命中便宜）：草密 → 暗、草疏 → 亮，幅度 ±6
@@ -274,11 +272,12 @@ export function grassRenderGround(ctx, sv, tx, ty, x0, y0) {
   const g10 = clusterList(seed, tx + 1, ty).length;
   const g01 = clusterList(seed, tx, ty + 1).length;
   const g11 = clusterList(seed, tx + 1, ty + 1).length;
-  // 6px 子块：biome 平滑 + 季节偏移 + 颗粒 ±3~4 + 密度明暗
+  // 6px 子块：biome 平滑 + 季节偏移 + 密度明暗（±1 微颗粒——子块色差收敛，消除 6px 网格感；
+  // 像素质感由 pixelTile 每像素 ±7 提供，子块颗粒是多余网格源）
   for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 6; sx++) {
     const vx = tx * 6 + sx, vy = ty * 6 + sy;
     const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
-    const vary = Math.round((lo - 0.5) * grit * 0.9);
+    const vary = Math.round((lo - 0.5) * 2);
     const fx = sx / 6, fy = sy / 6;
     const top = g00 * (1 - fx) + g10 * fx;
     const bot = g01 * (1 - fx) + g11 * fx;

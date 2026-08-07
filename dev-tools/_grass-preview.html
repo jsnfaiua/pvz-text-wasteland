@@ -422,14 +422,13 @@ function renderBaseSeason(ctx, seed, biome, tx, ty, seasonKey, densGrid) {
   const bc = biomeColor(seed, tx, ty);
   const off = (SEASON_BG[seasonKey] || SEASON_BG.summer).off;
   const ox = tx * TS, oy = ty * TS;
-  const grit = BIOME_GRIT[biome] || 5;
-  // 6px 子块：颜色 = biome 平滑 + 季节偏移 + 颗粒 ±3~4 + 密度明暗
+  // 6px 子块：颜色 = biome 平滑 + 季节偏移 + 微颗粒 ±1（子块色差收敛 → 无 6px 网格感；像素质感由 pixelTile 每像素 ±7 提供）
   // 密度 = 周围 4 格【真实草束数】双线性插值（子块级 → 完全连续，无格缝无线条）：
   //   草密 → 暗（负偏移）、草疏 → 亮（正偏移），幅度 ±6 柔和
   for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 6; sx++) {
     const vx = tx * 6 + sx, vy = ty * 6 + sy;
     const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
-    const vary = Math.round((lo - 0.5) * grit * 1.1);
+    const vary = Math.round((lo - 0.5) * 2);
     let dens = 0;
     if (densGrid) {
       const fx = sx / 6, fy = sy / 6;
