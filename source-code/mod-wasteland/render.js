@@ -670,7 +670,12 @@ export function draw(ctx, sv) {
         drawHUD(ctx, sv, W, H);
         drawDriveHUD(ctx, sv, W);
         drawTeamPanel(ctx, sv, W, H);
-        if (sv.p2 || (sv.p2s && Object.keys(sv.p2s).length)) drawP2Guide(ctx, sv, W, H);   // 联机：队友方向距离指引（多队友每人一个）
+        if (sv.p2 || (sv.p2s && Object.keys(sv.p2s).length) || sv.zombies.some(z => z.isPlayerZombie)) {
+            // 指引指示器共享错位数组：队友 + 尸化的自己 同边缘自动错开不重叠
+            const guideDrawn = [];
+            if (sv.p2 || (sv.p2s && Object.keys(sv.p2s).length)) drawP2Guide(ctx, sv, W, H, guideDrawn);
+            drawPlayerZombieGuide(ctx, sv, W, H, guideDrawn);   // 尸化的自己：寻回装备/曾经的你
+        }
         if (sv.build) drawBuildBar(ctx, sv, W, H);
         else drawHotbar(ctx, sv, W, H);
     }
@@ -3455,12 +3460,12 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
 // 旧版只画 sv.p2（"最近活动队友"别名，随 wpos 到达顺序在玩家间切换）→ 多人时指示器乱闪；
 // 现遍历 sv.p2s 全队友槽，每人固定配色 + 边缘重叠自动错位。
 const P2_GUIDE_COLORS = ['#7fd6ff', '#ffd166', '#8dff9e', '#ff9ecb'];
-function drawP2Guide(ctx, sv, W, H) {
+function drawP2Guide(ctx, sv, W, H, sharedDrawn) {
     const list = [];
     if (sv.p2s) { for (const pid in sv.p2s) { const g = sv.p2s[pid]; if (g && g.tx != null) list.push(g); } }
     if (!list.length && sv.p2 && sv.p2.tx != null) list.push(sv.p2);
     if (!list.length) return;
-    const drawn = [];   // 已画指示器位置（同边缘重叠时逐个下移错位）
+    const drawn = sharedDrawn || [];   // 共享错位数组（队友 + 尸化自己 同边缘不重叠）
     for (let i = 0; i < list.length; i++) {
         drawOneP2Guide(ctx, sv, W, H, list[i], P2_GUIDE_COLORS[i % P2_GUIDE_COLORS.length], drawn);
     }
@@ -3512,6 +3517,71 @@ function drawOneP2Guide(ctx, sv, W, H, p, color, drawn) {
     ctx.fillStyle = color;
     ctx.fillText(label, px2, py2 + 31);
     ctx.restore();
+}
+
+// ---------- 尸化的自己 · 距离指引（与队友指引明显不同：暗紫菱形 + 专属标签） ----------
+// 一条命存档延续后，死去的自己（isPlayerZombie 精英僵尸）留在旧世界并继承你的装备——
+// 用专属指引定位它（寻回装备/面对曾经的自己）。样式与队友（圆底彩箭头）区分：
+// 紫黑菱形底 + 白色倒三角箭头 + 标签「尸化的自己 · 名字 · N格」。
+const PZ_GUIDE_COLOR = '#9B6DFF';   // 暗紫（区别于队友的蓝/黄/绿/粉）
+function drawPlayerZombieGuide(ctx, sv, W, H, sharedDrawn) {
+    const list = sv.zombies.filter(z => z.isPlayerZombie && z.hp > 0);
+    if (!list.length) return;
+    const drawn = sharedDrawn || [];
+    for (const z of list) {
+        const dx = z.x - sv.px, dy = z.y - sv.py;
+        const dist = Math.hypot(dx, dy);
+        const sx = z.x - sv.camX, sy = z.y - sv.camY;
+        const margin = 52;
+        // 同屏：能看到尸化的自己（名字牌已画），不再显示指引
+        if (sx >= margin && sx <= W - margin && sy >= margin && sy <= H - margin) continue;
+        // 屏幕外：边缘菱形指引
+        const ang = Math.atan2(dy, dx);
+        const px2 = clamp(W / 2 + Math.cos(ang) * (W / 2 - 40), margin, W - margin);
+        let py2 = clamp(H / 2 + Math.sin(ang) * (H / 2 - 40), margin, H - margin);
+        // 与队友/其他尸化自己共享错位（同边缘 48px 下移，超出反向叠）
+        for (const d of drawn) {
+            if (Math.abs(d.x - px2) < 40 && Math.abs(d.y - py2) < 44) {
+                py2 = d.y + 48 > H - margin ? d.y - 48 : d.y + 48;
+            }
+        }
+        drawn.push({ x: px2, y: py2 });
+        ctx.save();
+        ctx.translate(px2, py2);
+        // 紫黑菱形底（旋转 45° 正方形）+ 暗紫描边 —— 与队友圆底明确区分
+        ctx.fillStyle = 'rgba(24,12,40,0.88)';
+        ctx.strokeStyle = PZ_GUIDE_COLOR;
+        ctx.lineWidth = 2;
+        ctx.save();
+        ctx.rotate(Math.PI / 4);
+        ctx.beginPath();
+        ctx.rect(-12, -12, 24, 24);
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+        // 指向尸化自己的箭头（白色，粗倒三角）
+        ctx.rotate(ang);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.moveTo(10, 0); ctx.lineTo(-5, -7); ctx.lineTo(-2, 0); ctx.lineTo(-5, 7);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+        // 下方标签：尸化的自己 + 名字 + 距离
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 11px "Microsoft YaHei", monospace';
+        ctx.fillStyle = 'rgba(20,8,36,0.85)';
+        const label = '尸化的自己 · ' + (z.playerName || z.name || '？') + ' · ' + Math.round(dist / TS) + ' 格';
+        const lw = ctx.measureText(label).width + 10;
+        roundRectPath(ctx, px2 - lw / 2, py2 + 24, lw, 18, 4);
+        ctx.fill();
+        ctx.strokeStyle = PZ_GUIDE_COLOR;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = '#C9A6FF';
+        ctx.fillText(label, px2, py2 + 33);
+        ctx.restore();
+    }
 }
 
 // ---------- 建造模式：鼠标目标格高亮 ----------
