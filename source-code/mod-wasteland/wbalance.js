@@ -81,12 +81,15 @@ export function weatherAt(seed, day) {
 
 // ---------- 天气强度分级（用户：强度只影响疏密/浓度，不影响粒子速度） ----------
 // density = 粒子密度倍数（雾无粒子，用 mul 缩放覆盖层）；mul = 覆盖层浓度倍数
+// flash = 雷阵雨闪电闪光标记（渲染端确定性触发，双端同步）
 export const WX_INTENSITY = {
     rain: [
         { name: '小雨', density: 0.45, mul: 0.7 },
         { name: '中雨', density: 1.0, mul: 1.0 },
         { name: '大雨', density: 1.6, mul: 1.35 },
         { name: '暴雨', density: 2.3, mul: 1.7 },
+        { name: '阵雨', density: 1.2, mul: 1.1 },
+        { name: '雷阵雨', density: 2.0, mul: 1.5, flash: true },
     ],
     snow: [
         { name: '小雪', density: 0.5, mul: 0.7 },
@@ -104,6 +107,10 @@ export const WX_INTENSITY = {
         { name: '强沙暴', density: 1.7, mul: 1.4 },
     ],
 };
+// 当前实际强度档（dev 手动覆盖 _wxLevel 优先，否则按天确定性派生）
+export function wxLevelCur(sv) {
+    return (sv && sv._wxLevel != null) ? sv._wxLevel : wxLevelAt(sv.world.seed, sv.day);
+}
 export function wxIntensity(type, level) {
     const arr = WX_INTENSITY[type] || WX_INTENSITY.rain;
     const l = Math.max(0, Math.min(arr.length - 1, level || 0));

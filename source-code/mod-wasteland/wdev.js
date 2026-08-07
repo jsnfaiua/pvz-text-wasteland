@@ -238,9 +238,12 @@ function buildHtml() {
             <button data-q="t1h">快进1小时</button>
             <button data-q="tnight">到夜晚20点</button>
             <button data-q="tday">到白天6点</button>
-            <button data-q="wx" id="wdev-wx">天气轮换</button>
             <button data-q="randrespawn">随机重生</button>
             <button data-q="look">外观定制(捏脸)</button>
+        </div>
+        <div class="wsl-dev-quick">
+            <select id="wdev-wx-sel" class="wsl-dev-select" title="天气与强度（含雷阵雨闪电）"></select>
+            <button data-q="wxset" id="wdev-wxset">设置天气</button>
         </div>
         <div class="wsl-dev-quick">
             <button data-q="tp" class="wsl-dev-mp">传送队友(TP)</button>
@@ -546,6 +549,17 @@ function bindEvents() {
         });
     });
 
+    // 天气与强度下拉（每种天气×每个强度可分别查看，含雷阵雨闪电）
+    const wxSel = devEl.querySelector('#wdev-wx-sel');
+    if (wxSel) {
+        const opts = [['auto', '自动（当前种子当天）'], ['clear', '晴朗']];
+        for (const t of ['rain', 'snow', 'fog', 'sandstorm']) {
+            const arr = B.WX_INTENSITY[t];
+            for (let lv = 0; lv < arr.length; lv++) opts.push([`${t}:${lv}`, arr[lv].name + (arr[lv].flash ? ' ⚡' : '')]);
+        }
+        wxSel.innerHTML = opts.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+    }
+
     // 状态测试：饥饿 / 饱食 / 血量 / 感染
     devEl.querySelectorAll('.wsl-dev-quick [data-s]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -679,15 +693,12 @@ function bindEvents() {
                     MSG.pushMsg(sv, `[DEV] 跳到白天 6:00 → 第 ${sv.day} 天`, '#FFB347');
                     break;
                 }
-                case 'wx': {
-                    // 天气轮换（host 权威，weather 进 wsync 快照回传双端）
-                    if (sv.mp && sv.mp.role === 'guest') { reportDevCmd(sv, { cmd: 'wx' }); break; }
-                    const WX_ORDER = ['clear', 'rain', 'snow', 'fog', 'sandstorm'];
-                    const ci = WX_ORDER.indexOf(sv._weather || 'clear');
-                    sv._weather = WX_ORDER[(ci + 1) % WX_ORDER.length];
-                    const lvl = B.wxLevelAt(sv.world.seed, sv.day);
-                    const itn = B.wxIntensity(sv._weather, lvl);
-                    MSG.pushMsg(sv, `[DEV] 天气：${itn.name}（${B.wxInfo(sv._weather).desc}）`, '#FFB347');
+                case 'wxset': {
+                    // 天气与强度选择（host 权威，weather/wxLevel 进 wsync 快照回传双端）
+                    const sel = document.getElementById('wdev-wx-sel');
+                    const val = sel ? sel.value : 'auto';
+                    if (sv.mp && sv.mp.role === 'guest') { reportDevCmd(sv, { cmd: 'wxset', wx: val }); break; }
+                    applyWxSet(sv, val);
                     break;
                 }
                 case 'randrespawn': {
@@ -849,16 +860,37 @@ export function applyDevCmd(p) {
             else if (p.op === 'tnight') { sv.t = B.DAY_LEN * 20 / 24; MSG.pushMsg(sv, '[DEV] 对方跳到夜晚 20:00', '#FFB347'); }
             else if (p.op === 'tday') { sv.t = B.DAY_LEN * 6 / 24; MSG.pushMsg(sv, '[DEV] 对方跳到白天 6:00', '#FFB347'); }
             break;
-        case 'wx': {
-            // 天气（host 权威，weather 进 wsync 快照回传双端）
-            const WX_ORDER = ['clear', 'rain', 'snow', 'fog', 'sandstorm'];
-            const ci = WX_ORDER.indexOf(sv._weather || 'clear');
-            sv._weather = WX_ORDER[(ci + 1) % WX_ORDER.length];
-            const lvl = B.wxLevelAt(sv.world.seed, sv.day);
-            const itn = B.wxIntensity(sv._weather, lvl);
-            MSG.pushMsg(sv, `[DEV] 对方将天气改为「${itn.name}」`, '#FFB347');
+        case 'wxset': {
+            // 天气与强度（host 权威，weather/wxLevel 进 wsync 快照回传双端）
+            applyWxSet(sv, p.wx || 'auto');
+            MSG.pushMsg(sv, '[DEV] 对方设置了天气', '#FFB347');
             break;
         }
+    }
+}
+
+// 天气与强度设置（auto=恢复当天确定性派生；clear=晴；rain:2=大雨 等）
+// sv._wxLevel 为非 null 时渲染用它（dev 覆盖），null 用 wxLevelAt(seed,day) 确定性派生
+// 非 auto 时设 _devWxLock=true → updateWeather 跳过自动覆盖（dev 锁定直到选自动）
+function applyWxSet(sv, val) {
+    if (val === 'auto') {
+        const wx = B.weatherAt(sv.world.seed, sv.day);
+        sv._weather = wx;
+        sv._wxLevel = null;
+        sv._devWxLock = false;
+        MSG.pushMsg(sv, `[DEV] 天气恢复自动：${B.wxIntensity(wx, B.wxLevelAt(sv.world.seed, sv.day)).name}`, '#FFB347');
+    } else if (val === 'clear') {
+        sv._weather = 'clear';
+        sv._wxLevel = null;
+        sv._devWxLock = true;
+        MSG.pushMsg(sv, '[DEV] 天气：晴朗（锁定，8:00 不自动切换）', '#FFB347');
+    } else {
+        const [type, lvS] = val.split(':');
+        const lv = parseInt(lvS, 10);
+        sv._weather = type;
+        sv._wxLevel = lv;
+        sv._devWxLock = true;
+        MSG.pushMsg(sv, `[DEV] 天气：${B.wxIntensity(type, lv).name}（${B.wxInfo(type).desc}）${B.wxIntensity(type, lv).flash ? ' ⚡' : ''}（锁定）`, '#FFB347');
     }
 }
 

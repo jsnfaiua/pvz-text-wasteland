@@ -442,6 +442,8 @@ function updateEvents(sv, dt) {
 // host/单机在 guest 分流后更新（guest 不本地随机，从 wsync 快照读 sv._weather → 双端一致 §5.1）。
 function updateWeather(sv) {
     const hour = (sv.t / sv.dayLen) * 24;
+    // dev 手动设了天气 + 强度后锁定（applyWxSet 设 _devWxLock=true），不被每天 8:00 自动覆盖
+    if (sv._devWxLock) { sv._lastWxHour = hour; return; }
     if (sv._lastWxHour != null && sv._lastWxHour < 8 && hour >= 8) {
         const wx = B.weatherAt(sv.world.seed, sv.day);
         if (wx !== sv._weather) {
@@ -1483,8 +1485,10 @@ export function applyMpSnapshot(snap, guestId) {
     if (!sv || !snap) return;
     // 昼夜（host 权威，guest 不再本地推）
     if (typeof snap.t === 'number') { sv.t = snap.t; sv.day = snap.day || sv.day; }
-    // 天气（host 权威确定性；guest 渲染同款）+ 随机事件视觉（blackout 暗角，host 权威覆盖）
+    // 天气（host 权威确定性；guest 渲染同款）+ 强度覆盖（dev 手动，host 权威）+ 事件视觉
     if (typeof snap.weather === 'string') sv._weather = snap.weather;
+    if (typeof snap.wxLevel === 'number') sv._wxLevel = snap.wxLevel;
+    else if (snap.wxLevel === null) sv._wxLevel = null;
     sv._evt = snap.evt ? { type: snap.evt.type, endT: snap.evt.endT } : null;
     // 尸潮阶段
     sv.horde = snap.hordePhase ? { phase: snap.hordePhase } : null;

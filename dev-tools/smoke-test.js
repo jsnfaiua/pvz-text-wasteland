@@ -90,16 +90,24 @@ assert(typeof B.PLAYER_SPEED === 'number', 'wbalance.PLAYER_SPEED');
     }
     assert(B.wxInfo('nonsense') === B.WX_TABLE.clear, 'balance:wxInfo fallback clear');
     assert(B.INF_VIS.length === 6, 'balance:INF_VIS 6 stages');
-    assert(B.WX_INTENSITY.rain.length === 4 && B.WX_INTENSITY.snow.length === 3 && B.WX_INTENSITY.fog.length === 3 && B.WX_INTENSITY.sandstorm.length === 3, 'balance:WX_INTENSITY tiers');
+    assert(B.WX_INTENSITY.rain.length === 6 && B.WX_INTENSITY.snow.length === 3 && B.WX_INTENSITY.fog.length === 3 && B.WX_INTENSITY.sandstorm.length === 3, 'balance:WX_INTENSITY tiers');
+    assert(B.WX_INTENSITY.rain[4].name === '阵雨' && B.WX_INTENSITY.rain[5].name === '雷阵雨' && B.WX_INTENSITY.rain[5].flash === true, 'balance:阵雨/雷阵雨 tiers + flash flag');
     for (const k in B.WX_INTENSITY) {
         for (const t of B.WX_INTENSITY[k]) {
             assert(typeof t.name === 'string' && t.density >= 0 && t.mul > 0, `balance:WX_INTENSITY.${k} entry valid`);
         }
     }
     assert(B.wxIntensity('rain', 1).name === '中雨', 'balance:wxIntensity level select');
-    assert(B.wxIntensity('rain', 9) === B.WX_INTENSITY.rain[3], 'balance:wxIntensity clamp high');
+    assert(B.wxIntensity('rain', 9) === B.WX_INTENSITY.rain[5], 'balance:wxIntensity clamp high');
     assert(B.wxIntensity('nonsense', 0).name === '小雨', 'balance:wxIntensity fallback rain');
     assert(B.wxLevelAt(20260802, 1) === B.wxLevelAt(20260802, 1), 'balance:wxLevelAt deterministic');
+    assert(typeof B.wxLevelCur === 'function', 'balance:wxLevelCur exists');
+    {
+        const fakeSv = { world: { seed: 666002 }, day: 4, _wxLevel: null };
+        assert(B.wxLevelCur(fakeSv) === B.wxLevelAt(666002, 4), 'balance:wxLevelCur auto falls back to wxLevelAt');
+        fakeSv._wxLevel = 5;
+        assert(B.wxLevelCur(fakeSv) === 5, 'balance:wxLevelCur dev override wins');
+    }
 }
 
 // wconst

@@ -13,7 +13,7 @@ import { drawMsg } from './wmsg.js';
 import { TS } from './wconst.js';
 import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H } from './windoor.js';
 import { districtAt, districtProfile, infectionAt } from './wdistrict.js';
-import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelAt, WX_PART_SPEED } from './wbalance.js';
+import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED } from './wbalance.js';
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
 export { TS };
 
@@ -462,7 +462,8 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     const moving = !!(a && a.moving);
     const f = moving ? (a.frame === 0 ? 1 : a.frame === 2 ? -1 : 0) : 0; // 迈步相位
     const amp = a && a.run ? 2 : 1;                                  // 奔跑摆幅
-    const isSide = !!(moving && (a.dir === 'left' || a.dir === 'right'));
+    // 侧视只看方向(站立朝左/右也显示侧视,与动画一致,不因移动切换正/侧脸)
+    const isSide = !!(a && (a.dir === 'left' || a.dir === 'right'));
     const isUp = !!(a && a.dir === 'up');                            // 直行=背面
     const sign = a && a.dir === 'right' ? 1 : -1;                    // 右向镜像
     const bob = !moving && a && a.frame === 1 ? 1 : (moving && a.frame !== 1 ? -(a && a.run ? 2 : 1) : 0); // 迈步上浮(跑更弹) / 站立呼吸
@@ -489,16 +490,17 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     // 正面/背面 = 左右分立、垂直交错（迈步上下）；
     // 侧面 = 两腿收拢到身体中线、一前一后（前腿亮/后腿暗且略短=透视），朝行进方向摆步。
     if (isSide) {
-        // 侧视单腿剪影(对照 AI 参考图)：前腿细窄居中(x12-15亮)+ 后腿更窄贴后(x10-13暗)叠加，
-        // 视觉上"一条腿的侧面轮廓"；走路时前腿迈步帧/后腿换步帧交替抬脚
+        // 侧视(动画风格,静态/动态统一)：前后腿错位可见(前腿x13-18亮/后腿x9-14暗,主体不重叠)，
+        // 对称中心≈14=身体中线；静止(f=0)=前后腿并列的侧视轮廓，
+        // 走路=前腿迈步帧/后腿换步帧交替抬脚(与走路动画参考图一致)
         const frontLift = f > 0 ? -1 : 0; // 前腿迈步帧抬脚
-        if (R(12, 20, 15, 28, 0, frontLift)) c = S.pants;
-        if (R(12, 25, 15, 28, 0, frontLift)) c = S.pantsDark;
-        if (R(12, 28, 16, 33, 0, frontLift)) c = S.shoes;    // 鞋前尖 x16
-        if (R(12, 31, 16, 33, 0, frontLift)) c = S.shoesDark;
+        if (R(13, 20, 18, 28, 0, frontLift)) c = S.pants;
+        if (R(13, 25, 18, 28, 0, frontLift)) c = S.pantsDark;
+        if (R(13, 28, 19, 33, 0, frontLift)) c = S.shoes;   // 鞋前尖 x19 凸出行进侧
+        if (R(13, 31, 19, 33, 0, frontLift)) c = S.shoesDark;
         const backLift = f < 0 ? -1 : 0; // 后腿换步帧抬脚
-        if (R(10, 20, 13, 27, 0, backLift)) c = S.pantsDark;
-        if (R(10, 26, 13, 32, 0, backLift)) c = S.shoesDark;
+        if (R(9, 20, 14, 27, 0, backLift)) c = S.pantsDark;
+        if (R(9, 26, 14, 32, 0, backLift)) c = S.shoesDark;
     } else {
         // 鞋（含鞋底暗部）
         if (R(6, 28, 12, 33, ldx, ldy + bob)) c = S.shoes;
@@ -554,8 +556,10 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
         if (R(4, armY0, 6, armY0 + 2, adx, bob)) c = S.shirtDark;
         if (R(22, armY0, 24, armY0 + 2, -adx, bob)) c = S.shirtDark;
     }
-    // 脖子阴影
-    if (R(12, 10, 16, 12, 0, bob)) c = S.skinShade;
+    // 脖子深棕横条 + V 形衣领(Minecraft 方块像素风,对照 A 组参考图)
+    if (R(11, 10, 17, 11, 0, bob)) c = S.hairDark;          // 脖子深棕整行
+    if (R(12, 11, 16, 12, 0, bob)) c = S.hairDark;          // V 领外缘深棕
+    if (R(13, 11, 15, 11, 0, bob)) c = S.skin;              // V 领内三角露肤色
     // 头 + 耳朵（侧视不画耳朵=侧面干净剪影；远耳已由后脑发盖住）
     if (R(8, 1, 20, 11, 0, bob)) c = S.skin;
     if (!isSide) {
@@ -657,24 +661,27 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
                 if (R(9, 10, 12, 11, 0, bob)) c = S.skinShade;
             }
         } else {
-            // 正脸：双眉 + 双眼(眨眼) + 高光 + 腮红 + 嘴(随状态)；发型 1 刘海遮额
-            if (R(9, 5, 11, 6, 0, bob)) c = S.hairDark;
-            if (R(17, 5, 19, 6, 0, bob)) c = S.hairDark;
+            // 正脸(Minecraft 方块像素风,对照 A 组参考):双眉 1x1 + 双眼 2x2 精确方块 + 高光点 + 腮红 + 嘴 1x1
+            // 眉(1x1 小方块,与参考图眉毛位置一致)
+            if (R(10, 5, 11, 6, 0, bob)) c = S.hairDark;
+            if (R(16, 5, 17, 6, 0, bob)) c = S.hairDark;
             if (hs === 1 && R(9, 5, 19, 6, 0, bob)) c = S.hair;
-            const blink = !moving && a && a.frame === 1; // 站立呼吸帧眯眼
-            if (R(10, blink ? 7 : 6, 12, 8, 0, bob)) c = L.eyes;
-            if (R(16, blink ? 7 : 6, 18, 8, 0, bob)) c = L.eyes;
-            if (R(10, blink ? 7 : 6, 11, blink ? 8 : 7, 0, bob)) c = S.eyeHighlight;
-            if (R(16, blink ? 7 : 6, 17, blink ? 8 : 7, 0, bob)) c = S.eyeHighlight;
-            if (R(9, 7, 10, 8, 0, bob)) c = S.cheek;
-            if (R(18, 7, 19, 8, 0, bob)) c = S.cheek;
-            if (atk) { // 挥击喊声：嘴张大
-                if (R(11, 8, 17, 10, 0, bob)) c = S.mouth;
-            } else if (moving) {
-                if (R(11, 8, 17, 8 + (a.run ? 2 : 1), 0, bob)) c = S.mouth;
-            } else {
-                if (R(12, 8, 16, 9, 0, bob)) c = S.mouth;
-            }
+            // 眼 2x2 精确方块(与参考图黑色眼睛方块一致);眨眼=y6→y7
+            const blink = !moving && a && a.frame === 1;
+            const eyeY = blink ? 7 : 6;
+            if (R(10, eyeY, 12, eyeY + 2, 0, bob)) c = L.eyes;
+            if (R(16, eyeY, 18, eyeY + 2, 0, bob)) c = L.eyes;
+            // 眼高光点(2x2 内左上 1x1 白)
+            if (R(10, eyeY, 11, eyeY + 1, 0, bob)) c = S.eyeHighlight;
+            if (R(16, eyeY, 17, eyeY + 1, 0, bob)) c = S.eyeHighlight;
+            // 腮红(小方块)
+            if (R(9, 8, 10, 9, 0, bob)) c = S.cheek;
+            if (R(18, 8, 19, 9, 0, bob)) c = S.cheek;
+            // 嘴 1x1 小方块(对照参考图小红/暗块)
+            if (atk) { if (R(12, 8, 16, 10, 0, bob)) c = S.mouth; }
+            else if (moving && a.run) { if (R(12, 9, 16, 11, 0, bob)) c = S.mouth; }
+            else if (moving) { if (R(12, 9, 16, 10, 0, bob)) c = S.mouth; }
+            else { if (R(13, 9, 14, 10, 0, bob)) c = S.mouth; }
         }
     }
     return c;
@@ -813,6 +820,7 @@ export function draw(ctx, sv) {
         drawDayNight(ctx, sv, W, H, false);
         drawWeatherOverlay(ctx, sv, W, H, camX, camY);      // 天气氛围（沙色/雾/冷调，呼吸动态）
         drawWeatherParticles(ctx, sv, W, H, camX, camY);    // 天气粒子（雨丝/雪花/飞沙，世界坐标随相机）
+        drawThunder(ctx, sv, W, H);                         // 雷阵雨闪电+闪光（确定性触发，双端同刻）
         drawEventOverlay(ctx, sv, W, H);        // 随机事件暗角（停电夜深蓝）
         drawInfectionOverlay(ctx, sv, W, H);    // 感染侵蚀覆盖层（阶段越高越明显）
         drawSickVignette(ctx, sv, W, H);
@@ -873,7 +881,7 @@ function drawEventOverlay(ctx, sv, W, H) {
 function drawWeatherOverlay(ctx, sv, W, H) {
     const wx = wxInfo(sv._weather);
     if (wx.particles === 0) return;   // 晴朗无覆盖
-    const level = wxLevelAt(sv.world.seed, sv.day);
+    const level = wxLevelCur(sv);
     const inten = wxIntensity(sv._weather, level);
     const mul = inten.mul;
     const breathe = 0.5 + 0.5 * Math.sin(sv.now * 1.6);
@@ -922,7 +930,7 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
     if (wx.particles === 0 || wx.particles === 3) return;   // 雾用覆盖层，无粒子
     if (sv._devGfx === 0) return;   // 低画质：跳过粒子（§7 性能降级）
     const parts = ensureWxParticles();
-    const level = wxLevelAt(sv.world.seed, sv.day);
+    const level = wxLevelCur(sv);
     const inten = wxIntensity(sv._weather, level);
     const densityMul = inten.density;   // 强度 → 疏密（不改变速度）
     const n = Math.min(WX_PART_MAX, Math.floor(WX_PART_MAX * (sv._devGfx === 2 ? 1 : 0.6) * densityMul));
@@ -1017,6 +1025,38 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
         }
     }
     ctx.restore();
+}
+
+// ---------- 雷阵雨：闪电+全屏闪光（§13.2 确定性触发：sv.t 由 wsync 快照同步 → 双端同刻） ----------
+function drawThunder(ctx, sv, W, H) {
+    if (!sv || sv._weather !== 'rain') return;
+    if (sv._devGfx === 0) return;   // 低画质跳过（§7）
+    const inten = wxIntensity(sv._weather, wxLevelCur(sv));
+    if (!inten.flash) return;
+    const seed = sv.world.seed;
+    const PER = 5;   // 判定周期（秒）：每 5s 窗口最多一道闪电
+    const win = Math.floor(sv.t / PER);
+    const ph = sv.t - win * PER;
+    if (hash2(seed, win | 0, 0x51E1) < 0.7) {   // 70% 窗口有闪电（确定性）
+        const at = 0.15 + hash2(seed, win | 0, 0x31A9) * 1.45;   // 窗口内闪电时刻
+        const dt2 = ph - at;
+        if (dt2 >= 0 && dt2 < 0.2) {
+            const a = (1 - dt2 / 0.2) * 0.8;
+            ctx.fillStyle = `rgba(232,240,255,${a.toFixed(3)})`;   // 全屏闪白
+            ctx.fillRect(0, 0, W, H);
+            // 闪电枝（确定性随机位置竖折线）
+            const lx = hash2(seed, win | 0, 0x71C3) * W;
+            const bend = (hash2(seed, win | 0, 0x91E7) - 0.5) * 90;
+            ctx.strokeStyle = `rgba(210,232,255,${Math.min(1, a * 1.3).toFixed(3)})`;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(lx, 0);
+            ctx.lineTo(lx + bend * 0.3, H * 0.3);
+            ctx.lineTo(lx + bend, H * 0.55);
+            ctx.lineTo(lx + bend * 0.7, H * 0.8);
+            ctx.stroke();
+        }
+    }
 }
 
 // ---------- 感染屏幕覆盖层：阶段越高绿灰侵蚀越明显（呼吸 + 噪点，§13.1 INF_VIS 收口） ----------
@@ -4076,7 +4116,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
     ctx.fillText('HP ' + '■'.repeat(Math.max(0, filled)) + '□'.repeat(Math.max(0, blocks - filled)) +
         ` ${Math.ceil(sv.hp)}/${sv.maxHp}`, 10, 17);
 
-    // 天数 / 时刻 / 区域
+    // 天数 / 时刻 / 区域 / 天气（天气指示与粒子同源 sv._weather + wxLevelCur → UI/视觉同步）
     const dayT = (sv.t / sv.dayLen) * 24;
     const hh = String(Math.floor(dayT)).padStart(2, '0');
     const mm = String(Math.floor((dayT % 1) * 60)).padStart(2, '0');
@@ -4084,6 +4124,12 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
     const dName = districtNameOverride || districtProfile(sv.world.seed, pcx, pcy).name;
     ctx.fillStyle = '#DDDDDD';
     ctx.fillText(`第 ${sv.day} 天  ${hh}:${mm}  [${dName}]`, 232, 17);
+    // 天气指示（实时，与渲染同源）：强度名 + 天气色
+    if (sv._weather && wxInfo(sv._weather).particles !== 0) {
+        const wxT = wxIntensity(sv._weather, wxLevelCur(sv));
+        ctx.fillStyle = wxInfo(sv._weather).color;
+        ctx.fillText(` · ${wxT.name}`, 232 + ctx.measureText(`第 ${sv.day} 天  ${hh}:${mm}  [${dName}]`).width + 6, 17);
+    }
 
     // 背包占用 + 金币
     let coins = 0;
