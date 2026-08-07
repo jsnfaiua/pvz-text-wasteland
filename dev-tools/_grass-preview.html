@@ -327,17 +327,17 @@ for (const k of Object.keys(SEASONS2)) {
   }
 }
 
-// 束分布（按风格密度，跨格连续）
+// 束分布（每格独立随机，无密度场——避免"成片密区/秃区"格子感）
 function styleClusterList(seed, style, tx, ty) {
   const W = 1, SZ = style.w, SY = style.h;
   const out = [];
   for (let cy = Math.floor(ty / W) - 1; cy <= Math.floor(ty / W) + 1; cy++) {
     for (let cx = Math.floor(tx / W) - 1; cx <= Math.floor(tx / W) + 1; cx++) {
-      // 密度场 cell=2（连续）：相邻格草叶密度平滑过渡 → 无"空格/密格"跳变 = 无 36px 格子感。
-      // 旧版 cell=1 每格独立 → 30% 格没草叶 → 深色草叶密度格与格跳变 = 满屏草地"格子状"。
-      // cell=2 比 cell=4 好：连续但秃区短（1-2 格），不会成片秃。
-      const v = grassNoise(seed ^ 0xDD, cx, cy, 2);
-      if (v <= style.dens) continue;
+      // 每格独立 hash（无值噪声场）：空格分散不连片 → 无"成片格子"。
+      // 旧版 cell=1 值噪声：30% 空格相邻成片 → 格子感；
+      // cell=2 值噪声：成片密区/秃区 → 大块格子更明显（用户 09:32 反馈）。
+      // 独立 hash：70% 格有束（style.dens=0.30），空格随机分散 → 均匀无格子。
+      if (hash2(seed ^ 0xDD, cx, cy) > (1 - style.dens)) continue;
       const cx2 = cx * W * TS + hash2(seed, cx, cy) * (W * TS - SZ);
       const cy2 = cy * W * TS + hash2(seed, cx + 7, cy + 11) * (W * TS - SY);
       if (cx2 + SZ > tx * TS && cx2 < tx * TS + TS && cy2 + SY > ty * TS && cy2 < ty * TS + TS) {
@@ -559,7 +559,8 @@ function drawGrassRow(time, seed, zoom, rowCols, styleTable, clusterSet, rowKey)
         }
         const sway = wind + perturb;
         const frame = Math.max(0, Math.min(4, Math.round((sway / 6) * 2 + 2)));
-        ctx.drawImage(sc[frame][b.kind], b.cx2 * zoom - (st.w / 2) * zoom, b.cy2 * zoom - (st.h / 2) * zoom);
+        // 草叶瓦片 drawImage 坐标取整（亚像素 blit 双线性插值 → 每束草叶半透明虚边 = 格子状线条）
+        ctx.drawImage(sc[frame][b.kind], Math.round(b.cx2 * zoom - (st.w / 2) * zoom), Math.round(b.cy2 * zoom - (st.h / 2) * zoom));
       }
     }
   }

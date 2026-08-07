@@ -351,7 +351,9 @@ export function grassRenderLayer(ctx, sv, camX, camY, W, H) {
         }
         const sway = wind + perturb;
         const frame = Math.max(0, Math.min(4, Math.round((sway / 6) * 2 + 2)));
-        ctx.drawImage(tiles[frame][b.kind], sx - 12, sy - 8);
+        // 草叶瓦片 drawImage 坐标取整：sx = 束坐标 - camX（camX 小数）→ 亚像素 blit 双线性插值
+        // → 每束草叶瓦片周围 1px 半透明虚边 → 大量草叶束密集排列 = "格子状线条"（跟静态层 blit 同类问题）
+        ctx.drawImage(tiles[frame][b.kind], Math.round(sx - 12), Math.round(sy - 8));
       }
     }
   }
