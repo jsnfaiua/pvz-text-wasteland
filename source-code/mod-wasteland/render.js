@@ -1284,13 +1284,9 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
             ctx.lineTo(x0 + dx + (i % 2 ? 2 : -2), y0 + dy - 2);
             ctx.stroke();
         }
-        // 靠墙檐影（贴墙面端暗化，南北夹/东西夹方向一致）
-        ctx.fillStyle = 'rgba(0,0,0,0.30)';
-        if (alleyNS) ctx.fillRect(x0, y0, TS + 1, 4);
-        else ctx.fillRect(x0, y0, 4, TS + 1);
-        ctx.fillStyle = 'rgba(0,0,0,0.16)';
-        if (alleyNS) ctx.fillRect(x0, y0 + TS - 3, TS + 1, 3);
-        else ctx.fillRect(x0 + TS - 3, y0, 3, TS + 1);
+        // 【去掉靠墙檐影黑带】——原设计是"明确表达楼缝"，但 4px 黑带在每块楼间草地四周形成
+        // 明显框线（用户多次反馈"草地格子状被分开"的真凶之一）。楼间草地整体偏暗底色
+        // （rgb 35,48,36）+ 稀疏草叶已足够与普通草地/路面区分。
         return;
     }
     let r, g, b;
