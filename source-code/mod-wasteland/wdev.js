@@ -238,6 +238,7 @@ function buildHtml() {
             <button data-q="t1h">快进1小时</button>
             <button data-q="tnight">到夜晚20点</button>
             <button data-q="tday">到白天6点</button>
+            <button data-q="wx" id="wdev-wx">天气轮换</button>
             <button data-q="randrespawn">随机重生</button>
             <button data-q="look">外观定制(捏脸)</button>
         </div>
@@ -678,6 +679,15 @@ function bindEvents() {
                     MSG.pushMsg(sv, `[DEV] 跳到白天 6:00 → 第 ${sv.day} 天`, '#FFB347');
                     break;
                 }
+                case 'wx': {
+                    // 天气轮换（host 权威，weather 进 wsync 快照回传双端）
+                    if (sv.mp && sv.mp.role === 'guest') { reportDevCmd(sv, { cmd: 'wx' }); break; }
+                    const WX_ORDER = ['clear', 'rain', 'snow', 'fog', 'sandstorm'];
+                    const ci = WX_ORDER.indexOf(sv._weather || 'clear');
+                    sv._weather = WX_ORDER[(ci + 1) % WX_ORDER.length];
+                    MSG.pushMsg(sv, `[DEV] 天气：${B.wxInfo(sv._weather).name}（${B.wxInfo(sv._weather).desc}）`, '#FFB347');
+                    break;
+                }
                 case 'randrespawn': {
                     if (sv.driving) { MSG.pushMsg(sv, '[DEV] 请先下车再随机重生', '#FF8866'); break; }
                     for (let tries = 0; tries < 80; tries++) {
@@ -837,6 +847,14 @@ export function applyDevCmd(p) {
             else if (p.op === 'tnight') { sv.t = B.DAY_LEN * 20 / 24; MSG.pushMsg(sv, '[DEV] 对方跳到夜晚 20:00', '#FFB347'); }
             else if (p.op === 'tday') { sv.t = B.DAY_LEN * 6 / 24; MSG.pushMsg(sv, '[DEV] 对方跳到白天 6:00', '#FFB347'); }
             break;
+        case 'wx': {
+            // 天气（host 权威，weather 进 wsync 快照回传双端）
+            const WX_ORDER = ['clear', 'rain', 'snow', 'fog', 'sandstorm'];
+            const ci = WX_ORDER.indexOf(sv._weather || 'clear');
+            sv._weather = WX_ORDER[(ci + 1) % WX_ORDER.length];
+            MSG.pushMsg(sv, `[DEV] 对方将天气改为「${B.wxInfo(sv._weather).name}」`, '#FFB347');
+            break;
+        }
     }
 }
 

@@ -418,9 +418,10 @@ function stopBgKeepAlive() {
     if (bgTimer) { clearInterval(bgTimer); bgTimer = null; }
 }
 
-// ---------- 随机事件（D）：沙尘暴 / 停电夜 / 物资空投 ----------
+// ---------- 随机事件（D）：停电夜 / 物资空投 ----------
+// 沙尘暴已并入天气系统（sv._weather.sandstorm，每天确定性切换）。
 // 每天 8:00 判定一次（天≥3，30% 触发）；事件进行中不触发下一个。
-// sv._evt = { type, endT }（endT 按游戏时间 sv.now 秒）。运行时状态，不序列化（重进重新随机）。
+// sv._evt = { type, endT }（endT 按游戏时间 sv.now 秒）。运行时状态，联机经 wsync 快照同步。
 const EVT_UNLOCK_DAY = 3;
 const EVT_TRIGGER_CHANCE = 0.30;
 function updateEvents(sv, dt) {
@@ -431,18 +432,30 @@ function updateEvents(sv, dt) {
     const hour = (sv.t / sv.dayLen) * 24;
     if (sv._lastEvtHour != null && sv._lastEvtHour < 8 && hour >= 8 && sv.day >= EVT_UNLOCK_DAY && Math.random() < EVT_TRIGGER_CHANCE) {
         const r = Math.random();
-        if (r < 0.34) startEvent(sv, 'sandstorm');
-        else if (r < 0.67) startEvent(sv, 'blackout');
+        if (r < 0.5) startEvent(sv, 'blackout');
         else startEvent(sv, 'airdrop');
     }
     sv._lastEvtHour = hour;
 }
+
+// ---------- 天气系统：每天 8:00 确定性切换（§13.2 weatherAt(seed,day) 纯函数） ----------
+// host/单机在 guest 分流后更新（guest 不本地随机，从 wsync 快照读 sv._weather → 双端一致 §5.1）。
+function updateWeather(sv) {
+    const hour = (sv.t / sv.dayLen) * 24;
+    if (sv._lastWxHour != null && sv._lastWxHour < 8 && hour >= 8) {
+        const wx = B.weatherAt(sv.world.seed, sv.day);
+        if (wx !== sv._weather) {
+            const info = B.wxInfo(wx);
+            sv._weather = wx;
+            log(`${info.name}：${info.desc}`, info.color);   // log 经 host 广播 msg → 双端可见
+            if (wx === 'sandstorm') AudioSystem.playWaveWarning();
+        }
+    }
+    sv._lastWxHour = hour;
+}
+
 function startEvent(sv, type) {
-    if (type === 'sandstorm') {
-        sv._evt = { type, endT: sv.now + 30 };
-        sv.announce = { text: '🌪 沙尘暴来袭！移动速度降低', t: 2.5, color: '#E8C46A' };
-        AudioSystem.playWaveWarning();
-    } else if (type === 'blackout') {
+    if (type === 'blackout') {
         sv._evt = { type, endT: sv.now + 30 };
         sv.announce = { text: '⚡ 停电夜！视野受限', t: 2.5, color: '#8899BB' };
         AudioSystem.playWaveWarning();
@@ -479,12 +492,13 @@ function startEvent(sv, type) {
 function update(dt) {
     sv.now += dt;
     sv.playT += dt;
-    updateEvents(sv, dt);   // 随机事件（D：沙尘暴/停电夜/物资空投）
 
     // ---------- 联机客人端分流（Phase 2 主机权威）----------
     // guest 不模拟世界（昼夜/僵尸 AI/NPC/刷怪/尸潮/掉落生成都由 host 权威，
     // 经 wsync 100ms 快照下发）；本地只保留：自己移动/生存/武器视觉/特效/事件播放。
     if (sv.mp && sv.mp.role === 'guest') { updateGuest(dt); return; }
+    updateEvents(sv, dt);   // 随机事件（D：停电夜/物资空投）——host 权威，guest 从快照同步
+    updateWeather(sv);      // 天气切换（确定性 weatherAt）——host 权威，guest 从快照同步
 
     sv.t += dt * (sv._devTimeScale || 1);   // 开发工具：时间加速（测昼夜用），1 现实小时 = 1 游戏天
     if (sv.t >= sv.dayLen) {
@@ -661,7 +675,7 @@ function update(dt) {
             mx /= len; my /= len;
             sv.faceX = mx; sv.faceY = my;
             const infEff = playerInfectionEffects(sv.infection || 0);
-            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * (sv._evt && sv._evt.type === 'sandstorm' ? 0.7 : 1);   // 沙尘暴减速（D）
+            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * B.wxInfo(sv._weather).speedMul;   // 天气减速（沙尘暴 0.7 / 雪雾 0.9）
             const nx = sv.px + mx * spd * dt;
             const ny = sv.py + my * spd * dt;
             if (canStand(nx, sv.py)) sv.px = nx;
@@ -849,7 +863,7 @@ function updateGuest(dt) {
             mx /= len; my /= len;
             sv.faceX = mx; sv.faceY = my;
             const infEff = playerInfectionEffects(sv.infection || 0);
-            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * (sv._evt && sv._evt.type === 'sandstorm' ? 0.7 : 1);   // 沙尘暴减速（D）
+            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * B.wxInfo(sv._weather).speedMul;   // 天气减速（沙尘暴 0.7 / 雪雾 0.9）
             const nx = sv.px + mx * spd * dt;
             const ny = sv.py + my * spd * dt;
             if (canStand(nx, sv.py)) sv.px = nx;
@@ -1467,6 +1481,9 @@ export function applyMpSnapshot(snap, guestId) {
     if (!sv || !snap) return;
     // 昼夜（host 权威，guest 不再本地推）
     if (typeof snap.t === 'number') { sv.t = snap.t; sv.day = snap.day || sv.day; }
+    // 天气（host 权威确定性；guest 渲染同款）+ 随机事件视觉（blackout 暗角，host 权威覆盖）
+    if (typeof snap.weather === 'string') sv._weather = snap.weather;
+    sv._evt = snap.evt ? { type: snap.evt.type, endT: snap.evt.endT } : null;
     // 尸潮阶段
     sv.horde = snap.hordePhase ? { phase: snap.hordePhase } : null;
     const spaceMatch = (!!sv.interior) === (!!snap.inInterior);

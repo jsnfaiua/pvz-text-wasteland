@@ -382,6 +382,8 @@ export function serializeMpSnapshot(sv, deps, zombieList, cull) {
         t: sv.t,
         day: sv.day,
         hordePhase: sv.horde ? sv.horde.phase : null,
+        weather: sv._weather || null,   // 天气（host 权威确定性；guest 端渲染同款）
+        evt: sv._evt ? { type: sv._evt.type, endT: sv._evt.endT } : null,   // 随机事件（blackout 视觉同步）
         zombies: zombies.map(z => ({
             id: z.id, type: z.type, char: z.char, color: z.color, name: z.name,
             x: z.x, y: z.y,

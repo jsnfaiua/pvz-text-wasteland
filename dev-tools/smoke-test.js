@@ -77,6 +77,21 @@ assert(Array.isArray(B.LOOT_AMMO), 'wbalance.LOOT_AMMO');
 assert(B.HORDE_START_HOUR === 20 && B.HORDE_END_HOUR === 4, 'wbalance.horde night schedule');
 assert(typeof B.PLAYER_SPEED === 'number', 'wbalance.PLAYER_SPEED');
 
+// 天气系统（§13.6 权重和 = 1 / §13.2 确定性）
+{
+    let wxSum = 0;
+    for (const k in B.WX_TABLE) wxSum += B.WX_TABLE[k].weight;
+    assert(Math.abs(wxSum - 1) < 1e-9, 'balance:WX_TABLE weights sum to 1');
+    assert(typeof B.weatherAt === 'function', 'balance:weatherAt exists');
+    assert(B.weatherAt(20260802, 1) === B.weatherAt(20260802, 1), 'balance:weatherAt deterministic (same seed/day)');
+    for (let d = 1; d <= 30; d++) {
+        const wx = B.weatherAt(777, d);
+        assert(typeof wx === 'string' && B.WX_TABLE[wx], `balance:weatherAt valid type day${d}`);
+    }
+    assert(B.wxInfo('nonsense') === B.WX_TABLE.clear, 'balance:wxInfo fallback clear');
+    assert(B.INF_VIS.length === 6, 'balance:INF_VIS 6 stages');
+}
+
 // wconst
 assert(TS === 36, 'wconst.TS === 36');
 
@@ -419,10 +434,12 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
             zombies: [{ id: 'z1', type: 'normal', char: '僵', color: '#fff', name: 'x', x: 1, y: 2, hp: 3, maxHp: 3, speed: 1, damage: 1, horde: false, stunT: 0, hurt: 0, biteT: 0, wt: 999, atkState: 'windup' }],
             effects: [], bullets: [], drops: [], mods: { plants: {} },
             _devGod: true, _devInf: true,
+            _weather: 'rain', _evt: { type: 'blackout', endT: 99 },
         };
         const s1 = serializeMpSnapshot(mpSv, null);
         assert(s1.zombies[0].wt === undefined && s1.zombies[0].atkState === undefined, 'mp-snap: zombie runtime fields whitelisted out');
         assert(s1.dev.god === true && s1.dev.inf === true, 'mp-snap: dev flags block');
+        assert(s1.weather === 'rain' && s1.evt.type === 'blackout' && s1.evt.endT === 99, 'mp-snap: weather/evt whitelisted');
         const cullSv = {
             t: 1, day: 1, horde: null,
             zombies: [{ id: 'za', type: 'n', char: 'c', color: 'x', name: 'n', x: 1, y: 1, hp: 1, maxHp: 1, speed: 1, damage: 1 }],

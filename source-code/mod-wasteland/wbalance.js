@@ -52,6 +52,43 @@ export function deathVanishRate(count) {
 export const Z_DAY_SCALE = 0.05;
 export const Z_CHASE_RANGE = 8;       // 格：玩家周围总宽/高为 8 格的方形警戒区
 export const Z_WANDER_SPEED = 0.45;
+
+// ---------- 天气系统（§13.1 数值收口 / §13.6 概率表权重和 = 1，smoke 断言） ----------
+// sv._weather 每天 8:00 由 weatherAt(seed, day) 确定性切换（§13.2：世界状态禁 Math.random）；
+// 单机/联机 host 同一公式，guest 经 wsync 快照同步（§5.1 零差异）。
+// particles: 0 无粒子 / 1 雨 / 2 雪 / 3 雾（层）/ 4 沙尘
+export const WX_TABLE = {
+    clear:     { name: '晴朗',   color: '#E8E4D0', weight: 0.38, speedMul: 1.0, particles: 0, desc: '万里无云，视野开阔' },
+    rain:      { name: '细雨',   color: '#6FA8D8', weight: 0.20, speedMul: 1.0, particles: 1, desc: '雨丝斜织，地面湿润' },
+    snow:      { name: '飘雪',   color: '#E8F2FF', weight: 0.12, speedMul: 0.9, particles: 2, desc: '雪花纷飞，行动迟缓' },
+    fog:       { name: '大雾',   color: '#B8C4C8', weight: 0.16, speedMul: 0.9, particles: 3, desc: '浓雾弥漫，视野受限' },
+    sandstorm: { name: '沙尘暴', color: '#D8B878', weight: 0.14, speedMul: 0.7, particles: 4, desc: '狂风卷沙，行动困难' },
+};   // 权重和 = 0.38+0.20+0.12+0.16+0.14 = 1.00
+export function wxInfo(key) { return WX_TABLE[key] || WX_TABLE.clear; }
+// 确定性哈希（内联纯函数，wbalance 无外部依赖）：weatherAt(seed, day) 每天固定
+function wxHash(seed, a, b) {
+    let h = (seed | 0) ^ Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+}
+export function weatherAt(seed, day) {
+    const r = wxHash(seed, day | 0, 0x57AB);
+    let acc = 0;
+    for (const k in WX_TABLE) { acc += WX_TABLE[k].weight; if (r < acc) return k; }
+    return 'clear';
+}
+
+// ---------- 感染视觉（§13.1 收口）：屏幕覆盖层随阶段增强 ----------
+export const INF_VIS = [
+    { stage: 0, name: '完整', alpha: 0.00, noise: 0 },    // 0+  无
+    { stage: 1, name: '浮字', alpha: 0.00, noise: 0 },    // 10+ 无（身体剥落已表达）
+    { stage: 2, name: '缺口', alpha: 0.10, noise: 0 },    // 25+ 轻绿灰呼吸
+    { stage: 3, name: '字骨', alpha: 0.16, noise: 0 },    // 45+ 加深
+    { stage: 4, name: '失名', alpha: 0.24, noise: 1 },    // 70+ 噪点（文字侵蚀感）
+    { stage: 5, name: '文尸', alpha: 0.32, noise: 1 },    // 90+ 更深 + 更快呼吸
+];
+export function infVis(stage) { return INF_VIS[stage] || INF_VIS[0]; }
 export const Z_CHASE_SPEED_MUL = 1.3;  // 探测到玩家后追击加速倍率
 export const Z_HORDE_SPEED_MUL = 1.15;
 export const Z_BITE_INTERVAL = 0.6;
