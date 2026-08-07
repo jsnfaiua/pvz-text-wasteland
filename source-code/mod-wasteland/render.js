@@ -1212,7 +1212,7 @@ function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
     if (!same(getTile(sv, tx, ty - 1))) {
         const nc = tileSurfaceColor(sv, tx, ty - 1);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
-            const mix = (GROUND_EDGE_BLEND - i) / (GROUND_EDGE_BLEND + 1);
+            const mix = i / (GROUND_EDGE_BLEND - 1);
             ctx.fillStyle = `rgb(${Math.round(r + (nc[0] - r) * mix)},${Math.round(g + (nc[1] - g) * mix)},${Math.round(b + (nc[2] - b) * mix)})`;
             ctx.fillRect(x0, y0 + i, TS + 1, 1);
         }
@@ -1220,7 +1220,7 @@ function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
     if (!same(getTile(sv, tx, ty + 1))) {
         const nc = tileSurfaceColor(sv, tx, ty + 1);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
-            const mix = (GROUND_EDGE_BLEND - i) / (GROUND_EDGE_BLEND + 1);
+            const mix = i / (GROUND_EDGE_BLEND - 1);
             ctx.fillStyle = `rgb(${Math.round(r + (nc[0] - r) * mix)},${Math.round(g + (nc[1] - g) * mix)},${Math.round(b + (nc[2] - b) * mix)})`;
             ctx.fillRect(x0, y0 + TS - i, TS + 1, 1);
         }
@@ -1228,7 +1228,7 @@ function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
     if (!same(getTile(sv, tx - 1, ty))) {
         const nc = tileSurfaceColor(sv, tx - 1, ty);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
-            const mix = (GROUND_EDGE_BLEND - i) / (GROUND_EDGE_BLEND + 1);
+            const mix = i / (GROUND_EDGE_BLEND - 1);
             ctx.fillStyle = `rgb(${Math.round(r + (nc[0] - r) * mix)},${Math.round(g + (nc[1] - g) * mix)},${Math.round(b + (nc[2] - b) * mix)})`;
             ctx.fillRect(x0 + i, y0, 1, TS + 1);
         }
@@ -1236,7 +1236,7 @@ function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
     if (!same(getTile(sv, tx + 1, ty))) {
         const nc = tileSurfaceColor(sv, tx + 1, ty);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
-            const mix = (GROUND_EDGE_BLEND - i) / (GROUND_EDGE_BLEND + 1);
+            const mix = i / (GROUND_EDGE_BLEND - 1);
             ctx.fillStyle = `rgb(${Math.round(r + (nc[0] - r) * mix)},${Math.round(g + (nc[1] - g) * mix)},${Math.round(b + (nc[2] - b) * mix)})`;
             ctx.fillRect(x0 + TS - i, y0, 1, TS + 1);
         }
@@ -1293,8 +1293,9 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
         // 草地（独立模块 wgrass.js）：biome 平滑 + 季节背景 + 颗粒 + 低对比噪声
         WGRASS.grassRenderGround(ctx, sv, tx, ty, x0, y0);
         // 草地→相邻表面（路面/人行道）边缘 4px 渐变混合带：
-        // 恢复 wgrass 接入前被 return 跳过的边缘过渡，避免草地与路面硬切出"草地边缘线"
-        drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, 42, 56, 42, t);
+        // 起始色用 wgrass 实际基底色（grassGroundColor），避免写死 (42,56,42) 与基底不匹配 → 草地块四周色差框线
+        const gc = WGRASS.grassGroundColor(sv, tx, ty);
+        drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, gc[0], gc[1], gc[2], t);
         return;
     } else {
         const vary = Math.floor(n * 6) - 3;

@@ -301,6 +301,27 @@ export function grassRenderGround(ctx, sv, tx, ty, x0, y0) {
   ctx.globalAlpha = 1;
 }
 
+// ---------- 导出：草地实际基底色（供 render.js 边缘渐变起始色——与 grassRenderGround 基底一致，
+// 避免渐变带起始色写死 (42,56,42) 与 wgrass 实际色不匹配 → 草地块四周色差框线 = 横竖网格线） ----------
+export function grassGroundColor(sv, tx, ty) {
+  ensureInit();
+  const seed = sv.world.seed;
+  const season = sv._season == null ? 1 : sv._season;
+  const st = SEASONS[season];
+  const bc = biomeColor(seed, tx, ty);
+  // 密度明暗（格级近似：4 格平均束数 → 与 grassRenderGround 基底一致；不含 overlay 颗粒/纹理）
+  const g00 = clusterList(seed, tx, ty).length;
+  const g10 = clusterList(seed, tx + 1, ty).length;
+  const g01 = clusterList(seed, tx, ty + 1).length;
+  const g11 = clusterList(seed, tx + 1, ty + 1).length;
+  const dens = Math.round((1.3 - (g00 + g10 + g01 + g11) / 4) * 4);
+  return [
+    Math.max(0, Math.min(255, Math.round(bc[0] + st.bg[0] + dens))),
+    Math.max(0, Math.min(255, Math.round(bc[1] + st.bg[1] + dens))),
+    Math.max(0, Math.min(255, Math.round(bc[2] + st.bg[2] + dens))),
+  ];
+}
+
 // ---------- 导出：动态草层（风摆 + 玩家踩动） ----------
 export function grassRenderLayer(ctx, sv, camX, camY, W, H) {
   ensureInit();
