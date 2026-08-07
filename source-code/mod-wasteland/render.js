@@ -455,202 +455,298 @@ function lookShades(bodyColor, L) {
 //   'N' hairDark (深棕脖/领) / 'G' shirt / 'g' shirtDark / 'B' pants / 'b' pantsDark
 //   'k' shoes / 'K' shoesDark / 'E' eyes (需查 L.eyes)
 const FRONT_GRID = [
-  '........hhhhhhhhhhhhhhh.........',
-  '......NNhhhhhhhhhhhhhhhhh.......',
-  '......NNhhhhhhhhhhhhhhhhh.......',
-  '.....NNhhhhhNNhhhhNNhhhhNN......',
-  '.....NNhhhhNNNhhhNNNhhhHNN......',
-  '.....NNNhhNsshhhhNNsNhhNNN......',
-  '.....NNNhNNssshhhNsssNhNNN......',
-  '.....NNNNssssssHssssssNNNN......',
-  '.....MMNsssNNssssssENssNSS......',
-  '.....MMNsssNNsssssEENssNSS......',
-  '.....MMkssssssssssssssssSS......',
-  '.....hKEssssssSSSsssssssKh......',
-  '.......EssssssssssssssssN.......',
-  '........ssssssssssssssss........',
-  '........ssssssssssssssss........',
-  '............MMMMMMMM............',
-  'GGGGGGGgggg.GSSSSSSG.gggggGGGGGG',
-  'GGGGGGGgggggGGSSSSSGggggggGGGGGG',
-  'GGGGGGGggggggMMMMMMgggggggGGGGGG',
-  'GGGGGGGgggggggMMMMggggggggGGGGGG',
-  'GGGGGGGggggggggggggggggggGGGGGGG',
-  'GGGGGGG.gggggggggggggggggGGGGGGG',
-  'GGGGGGG.gggggggggggggggggGGGGGGG',
-  'GGGGGGG.gggggggggggggggggGGGGGGG',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssss.gggggggggggggggggsssssss',
-  'sssssssggggggggggggggggggsssssss',
-  'sssssss.ggBBBBBBBBBBBBbggsssssss',
-  'sssssssggBBBBbbBbBbbbBbggsssssss',
-  'sssssssggbbBbBbBBBbbbbbggsssssss',
-  '......ggbbbbBBBBbbbbbbbbgg......',
-  '......ggbbbbBBB..Bbbbbbbgg......',
-  '........bbbBBBB..bbbbbbBB.......',
-  '.......gbbbbbBB..bbbbbbBB.......',
-  '........bbbbbBB..bbbbbBBB.......',
-  '........bbbbbBBg.bbbbbBBB.......',
-  '.......gbbbbbBBggbbbbbBBB.......',
-  '.......gbbbbbBBg.bbbbBBBb.......',
-  '.......gbbbbbBBg.BbbbBbbb.......',
-  '.......gBBBBBBB.ggBBBBBBB.......',
-  '.......gbbbbbbbggBbbbbbbb.......',
-  '.......gbbbbbbbgggbbbbbbb.......',
-  '.......gbbbbbbbgggbbbbbBb.......',
-  '.......gbbbbbBBgggbbbbBBb.......',
-  '.......gbbbbbbBgggbbbbbBb.......',
-  '.......gbbbbbBBgggbbbBbBb.......',
-  '.......gbbbbbBbgggbBBBBBg.......',
-  '.......gbbbbbbbggggggggggg......',
-  '.......gHHHHHHHg.EHHHHHHHg......',
-  '........HHHHHHH..EHHHHHHH.......',
-  '......HHNEEEEHH..EHEEEENNHH.....',
-  '......HHHHHHHHH..HHHHHHHHHH.....',
-  '......HHHHHHHHH..NHHHHHHHHH.....',
-  '......KEEEEE..E..EEEEEEEEEE.....',
-  '......E.gbg...E..EEEEEEEEEE.....',
+  '............hhhhhhhhhhhhhhhhhhhhhh..............',
+  '............hhhhhhhhhhhhhhhhhhhhhh..............',
+  '..........NNhhhhhhhhhhhhhhhhhhhhhhhhh...........',
+  '..........NNhhhhhhhhhhhhhhhhhhhhhhhhh...........',
+  '........NNNNhhhhhhNNhhhhhhhhNNhhhhhhhNN.........',
+  '........NNhhhhhhhhNNhhhhhhhhNNNhhhhhhNN.........',
+  '........NNNhhhhhNNNNhhhhhNNNNNNhhhhHHNN.........',
+  '........NNhhhhhhNNNNhhhhhNNNNNNhhhhHHNN.........',
+  '........NNNNhhNNsssshhhhhNNssssNNhhNNNN.........',
+  '........NNNNhhNNssssshhhhNNssssNNhhNNNN.........',
+  '........NNNNNNsssssssssHHssssssssNNNNNN.........',
+  '........NNNNNNsssssssssHHssssssssNNNNNN.........',
+  '........MMMNssssNNNNssssssssNEEssssNNSS.........',
+  '........MMMNssssNNNNssssssssEEEssssNNSS.........',
+  '........MMMNssssNNNNssssssssEENssssNNSS.........',
+  '........MMkkssssssssssssssssssssssssMSS.........',
+  '........MMkkssssssssssssssssssssssssMSS.........',
+  '..........EEssssssssSSSSSSssssssssssH...........',
+  '..........EEsssssssssSSSSsssssssssssH...........',
+  '............ssssssssssssssssssssssss............',
+  '............ssssssssssssssssssssssss............',
+  '............ssssssssssssssssssssssss............',
+  '..................MMMMMMMMMMMM..................',
+  '..................SSSSSSSSSSSS..................',
+  'GGGGGGGGGGgggggg..SSSSSSSSSSSS..ggggggGGGGGGGGGG',
+  'GGGGGGGGGGggggggg.GGGSSSSSSSGG..ggggggGGGGGGGGGG',
+  'GGGGGGGGGGggggggggGGSSSSSSSSGGggggggggGGGGGGGGGG',
+  'GGGGGGGGGGggggggggggMMMMMMMM.gggggggggGGGGGGGGGG',
+  'GGGGGGGGGGgggggggggggMMMMMMMggggggggggGGGGGGGGGG',
+  'GGGGGGGGGGggggggggggg......gggggggggggGGGGGGGGGG',
+  'GGGGGGGGGGggggggggggggggggggggggggggggGGGGGGGGGG',
+  'GGGGGGGGGGGgggggggggggggggggggggggggg.GGGGGGGGGG',
+  'GGGGGGGGGGG.ggggggggggggggggggggggggg.GGGGGGGGGG',
+  'GGGGGGGGGGG.ggggggggggggggggggggggggggGGGGGGGGGG',
+  'GGGGGGGGGGG.ggggggggggggggggggggggggg.GGGGGGGGGG',
+  'GGGGGGGGGGG.ggggggggggggggggggggggggg.GGGGGGGGGG',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
+  'sssssssssss.ggbBBBBBBBBBBBBBBBBBBBggg.ssssssssss',
+  'sssssssssss.ggBBBBbBBbBbbBbbBbbBbbbgg.ssssssssss',
+  'sssssssssss.ggBBBBBBbBbBBbBBbbbBBbbgg.ssssssssss',
+  'sssssssssssgggBbbBBbbbbBbBBbbbbbbbbgggssssssssss',
+  '..........ggbbbbBBbBBbbBbbbbbbbbbbbbbgg.........',
+  '..........ggbbbbbbbbBBBbbbbbbbbbbbbbggg.........',
+  '..........ggbbbbBBBBBBB...bbbbbbbbbbggg.........',
+  '..........ggbbbbbbBBBBB...bbbbbbbbbbbgg.........',
+  '............bbbbbBbBBBB...bbbbbbbbBBB...........',
+  '..........g.bbbbbbBBBBB...bbbbbbbBbBB...........',
+  '............bbbbbBbBBBB...bbbbbbbBBBB...........',
+  '............bbbbbbBBBBB...bbbbbbBbBBB...........',
+  '............bbbbbbbBBBBg..bbbbbbbBBBB...........',
+  '..........g.bbbbbbbbBBBg..bbbbbbbBBBB...........',
+  '..........g.bbbbbbbbBBBg.gbbbbbbbbBBb...........',
+  '..........g.bbbbbbbbBBBg..bbbBbbbBBBb...........',
+  '..........g.BbbbbbbbbBBg.gbbbbbBbbBbb...........',
+  '..........g.bbbbbbbBBBBg..BbbbBBBbbbb...........',
+  '..........g.bBBBBBBBBBb..ggBBBBBBBBBb...........',
+  '..........g....ggg..gg.g.g........g.............',
+  '..........g.bbbbbbbbbbbg.gBbbbbbBbbbb...........',
+  '..........ggbbbbbbbbbbbg.ggbbbbbbbbbb...........',
+  '..........g.bbbbbbbbbbbg.ggbbBbbbBBBb.g.........',
+  '..........ggbbbbbbbbbbBg.ggbbbbbbbbBb...........',
+  '..........ggbbbbbbbbBbBg.ggbbbbbbBBbb...........',
+  '..........ggbbbbbbBbbBbg.ggbbBbbbbbBb.g.........',
+  '..........ggbbbbbbbbBbBg.ggbbBbBBBBBb...........',
+  '..........ggbbbbbbbbbBBg.ggbbBbbBBBBb...........',
+  '..........g.bbbbbbbbBbBg.ggbbbbbbbBBb...........',
+  '..........g.bbbbbbbbbbBg.gggggggggggg...........',
+  '..........g.bbbbbbbbbbBg.gggggggggggg.g.........',
+  '..........ggbbbHbHbHHbBg.gggggggHggHggg.........',
+  '............HHHHHHHHHHH...EHHHHHHHHHH...........',
+  '............HHHHHHHHHHH...EHHHHHHHHHH...........',
+  '............NNEEEEEEHHH...EHHEEEEEENN...........',
+  '.........HHHHNEEEEEEHHH...EHHEEEEEHNHHHH........',
+  '.........HHHHHHHHHHHHHH...EHHHHHHHHHHHHH........',
+  '.........HHHHHHHHHHHHHH...HHHHHHHHHHHHHH........',
+  '.........HHHHHHHHHHHHHH...NHHHHHHHHHHHHE........',
+  '.........K.EEEEEE.........EEEEEEEEEEEEEE........',
+  '.........KKEEEEEEE....E...EEEEEEEEEEEEEE........',
+  '............ggbg................................',
 ];
 const BACK_GRID = [
-  '.......hhhhhhhhhhhhh............',
-  '.....hhhNhhhhhhhhhhhh...........',
-  '....NhhhNNhhhhhhhNhhhN..........',
-  '....NNhhhhhhhhhNNhhNNN..........',
-  '....NNNNNhNhhhhNNhhNNN..........',
-  '....NNNNNhNhhhhhhNNNNN..........',
-  '....NNNNNhNhhhhhhNNNNN..........',
-  '....NMNNNNNNhhhhNNNNNM..........',
-  '.....MNNNNNNhhhNNNNNMM..........',
-  '.....MNNNNNNhNNNNNNNMM..........',
-  '.....MNNNNNNNNNNNNNNEM..........',
-  '.......NNNNNNNNNNNNNE...........',
-  '.......ENMMNNNNNMNMM............',
-  '........MMMSNNSSMMMM............',
-  '.........SSSSsSSS...............',
-  'GGGGGGggggGGGGGGGggggGGGGG......',
-  'GGGGGGggggGGGGGGgggggGGGGG......',
-  'GGGGGGgggggggggggggggGGGGG......',
-  'GGGGGGgggggggggggggggGGGGG......',
-  'GGGGGGggggggggggggggGGGGGG......',
-  'GGGGGGggggggggggggggGGGGGG......',
-  'GGGGGGggggggggggggggGGGGGG......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggEsssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssggggggggggggggssssss......',
-  'ssssssBbbbBbbbbbbbBBssssss......',
-  'ssssssbbbBbbbbbbbbbBssssss......',
-  '......bbbBBbbbbbbbBbg...........',
-  '......bbbBBb..bbbbBb............',
-  '......bbbbbb..bbbbBb............',
-  '......bbbbbbg.bbbbbb............',
-  '......bbbbbbg.bbbbbb............',
-  '......bbbBbbg.bbbbbb............',
-  '......bbbBBbg.BbbbBB............',
-  '......bbbBBbg.BBbbBb............',
-  '......bbbBBbg.BBBBBb............',
-  '......bbbgBgg.BBBBBB............',
-  '......bbbbbbg.BbbBBB............',
-  '......bbbBBbg.BBbBBB............',
-  '......bbbBBbg.BBBBBB............',
-  '......bbbbbbg.BBBBBB............',
-  '......bbbbbBg.BBBBBB............',
-  '......bbbBBbg.BBBBBg............',
-  '......gggggggggggggg............',
-  '......HHHHHH..HHHHHH............',
-  '......HHHHHH..HHHHHH............',
-  '.....HHHHHHH..HHHHHHH...........',
-  '.....HHHHHHH..HHHHHHH...........',
-  '.....EEEEEEE..HHHHHHH...........',
-  '.....EEEEEEE..KKKEE.K...........',
-  '................................',
-  '................................',
-  '........................M.....M.',
-  '.......................MM......k',
-  '.........................MkMbbbM',
+  '..........Nhhhhhhhhhhhhhhhhhhh..................',
+  '..........hhhhhhhhhhhhhhhhhhhh..................',
+  '........hhhhNNhhhhhhhhhhhhNhhhh.................',
+  '........hhhhNNNhhhhhhhhhhhNNhhh.................',
+  '......NNhhhhhhhhhhhhhhhNNNhhNNNNN...............',
+  '......NNNhhhhhhhhhhhhhhNNNhhNNNNN...............',
+  '......NNNNNNNhhNhhhhhhhNNNhhNNNNN...............',
+  '......NNNNNNNhhNhhhhhhhhhhhNNNNNH...............',
+  '......NNNNNNNhhNhhhhhhhhhhNNNNNNN...............',
+  '......NNNNNNNhhNhhhhhhhhhhNNNNNNN...............',
+  '......NNNNNNNhhNhhhhhhhhhhNNNNNNN...............',
+  '.......MMMNNNNNNNNhhhhhNNNNNNNKMM...............',
+  '.......kMMNNNNNNNNhhhhhNNNNNNHKMM...............',
+  '.......kMMNNNNNNNNhhhhhNNNNNNHKMM...............',
+  '.......kMMNNNNNNNNhhNNNNNNNNNHHMM...............',
+  '.......kMNNNNNNNNNNNNNNNNNNNNNEMM...............',
+  '...........NNNNNNNNNNNNNNNNNNEE.................',
+  '...........NNNNMNNNNNNNNMNNNMME.................',
+  '...........NNNNMNNNNNNNNMMNMMM..................',
+  '...........MMMMMNNNNNNNNMMMMMM..................',
+  '...........MMMMSSSSSSSSSSMMMMM..................',
+  '..............SSSSSSSSSSSS......................',
+  'GGGGGGGGggggggssssssssssssgggggGGGGGGGG.........',
+  'GGGGGGGGgggggggGGGGGGGGGGggggggGGGGGGGG.........',
+  'GGGGGGGGgggggggGGGGGGGGGGggggggGGGGGGGG.........',
+  'GGGGGGGGgggggggggggggggggggggggGGGGGGGG.........',
+  'GGGGGGGGgggggggggggggggggggggggGGGGGGGG.........',
+  'GGGGGGGGgggggggggggggggggggggggGGGGGGGG.........',
+  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
+  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
+  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
+  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
+  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggEssssssss.........',
+  'sssssssssgggggggggggggggggggggkssssssss.........',
+  'sssssssssgggggggggggggggggggggkssssssss.........',
+  'sssssssssBBBbbbbBbBbbbBbbBbBBBkssssssss.........',
+  'sssssssssBbbbbbBbbbbbbbbbbbBBBkssssssss.........',
+  'sssssssssbbBbBBBBbbbbbbbbbbBBbkssssssss.........',
+  'sssssssssbbbbbbBbbbbbbbbbbbbbBkssssssss.........',
+  '.........bbbBBBBbbbbbbBbbbbBbb..................',
+  '.........bbbbBbBbbBBBbbbbbbbbbg.................',
+  '.........bbBbbBBbb...bbbbbbBbb..................',
+  '.........bbbbbbbbb...bbbbbbbbb..................',
+  '.........bbbbbbbbbg..bbbbbbBbB..................',
+  '.........bbbbbbbbbg..bbbbbbbbb..................',
+  '.........bbbbbbbbbg..bbbbbbbbb..................',
+  '.........bbbbbbbbbg..bbbbbbbbb..................',
+  '.........bbbbbbbbbg..bbbbbbbbb..................',
+  '.........bbbbbbBbbg..bbbbbbbbb..................',
+  '.........bbbbbBBbbg..bbbbbbbbB..................',
+  '.........bbbbbbBbbg..bbbbbbBbb..................',
+  '.........bbbbbbBBbg..BBBBbbBbb..................',
+  '.........bbbbgggggg..ggggggggg..................',
+  '.........bbbbbbgbgg..bBBBBBBBb..................',
+  '.........bbbbbbbbbg..bbbBbbbBB..................',
+  '.........bbbbBBBbbg..bbbBBBBBB..................',
+  '.........bbbbbBBBbg.gbbbBbBBbB..................',
+  '.........bbbbBbBbbg..bbbBBBBBB..................',
+  '.........bbbbbbbBbg.gbbbBBBBbB..................',
+  '.........bbbbbbBbbg..bBBBBBBBB..................',
+  '.........bbbbbBBBbg..bBBBBBBBB..................',
+  '.........bbbbbbBbbg..bBBBBBBBb..................',
+  '.........bgggggggb...gBggggggg..................',
+  '.........ggggggggg...ggggggggg..................',
+  '........ggHHHHHHHHg.gHHHHHHHHH..................',
+  '.........HHHHHHHHH...HHHHHHHHH..................',
+  '.........HHHHHHHHH...HHHHHHHHH..................',
+  '.........HHHHHHHHH...HHHHHHHHH..................',
+  '.......HHHHHHHHHHH...HHHHHHHHHH.................',
+  '.......HHHHHHHHHHH...HHHHHHHHHH.................',
+  '.......HHHHHHHHHHH...HHHHHHHHHH.................',
+  '.......EEEEEEEEEEE...KKKKKKE..K.................',
+  '.......EEEEEEEEEEE...KKKKEEEEKK.................',
+  '................................................',
+  '................................................',
+  '..............................................k.',
+  '.....................................M...b....b.',
+  '....................................Mk......MkBk',
+  '...................................MMGk.....BMM.',
+  '...................................M.MMk.MbbbbMk',
+  '....................................kMMMMbMMBkM.',
 ];
 const SIDE_GRID = [
-  '.....hhhhhhhhhhhhhhhhhhhhhhh....',
-  '.Nhhhhhhhhhhhhhhhhhhhhhhhhhhhh..',
-  '.HhhhhhNNNNNhhhhhhhhNNhhhhhhhh..',
-  'hhhhNhhhhhhhhhhhhhhhhhhhhhhhhhHH',
-  'hhhhNhhhhhhhHKhNNNhhhhhhNNhhhhHH',
-  'hhNNsNhhhNNHHHNNNNNNNNhhNNhhhhHH',
-  'hhNNssNhhNNNNNNNNNNNNNNhNNhhhhHH',
-  'hhNsssshhNNNNNNNNNNNNNNhNNhhhhHH',
-  '.SssNssssNNNNsssssNNNNNNNNNNNNHH',
-  '.MssNssssNNNNsssssNNNNNNNNNNNNHH',
-  '.MsssssssssNNsssssNNNNNNNNNNNN..',
-  '.MssssssssssssSSKHNNNNNNNNNNNN..',
-  '.MssssssssssssSSsHNNNNNNNNNNNN..',
-  '...sssssssssssssssNNNNNNEE.NNN..',
-  '...sssssssssssssssMMMMNNkk......',
-  '...........MMMMMMMMMMMMMM.......',
-  '.....ggggggMMMssssssSSSSS.......',
-  '.....ggggggggggggGGGGGGGG.......',
-  '..ggGGGGGGGGGGggggggggggg.......',
-  '.gggGGGGGGGGGGggggggggggg.......',
-  '..ggGGGGGGGGGGggggggggggg.......',
-  '..ggGGGGGGGGGGggggggggggg.......',
-  '..ggGGGGGGGGGGggggggggggg.......',
-  '...GGGGGGGGgggGGggggggggg.......',
-  '...sssssssssssGgggggggggg.......',
-  '...ssssssssssssgggggggggg.......',
-  '...ssssssssssssgggggggggg.......',
-  '...ssssssssssssgggggggggg.......',
-  '...ssssssssssssgggggggggg.......',
-  '..Ssssssssssssggggggggggg.......',
-  '..sssssssssssMggggggggggg.......',
-  '..sssssssssssMggggggggggg.......',
-  '..sssssssssssMggggggggggg.......',
-  '..sssssssssssMggggggggggg.......',
-  '..sssssssssssMggggggggggg.......',
-  '.MsssssssssssMggggggggggg.......',
-  '.KsssssssssssMggggggggggb.......',
-  '.ksssssssssssMgbbbbbbbbgb.......',
-  '...ssssssssssMgbbbbbbbbgb.......',
-  '...ssssssssbbbbbbbbbbbbbb.......',
-  '.......ggggbbbbbbbBBBBB.........',
-  '.......BbbbbbbbbbbB..bbg........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......Bbbbbbbbbbbb..bb.........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......bbbbbbbbbbbB.gbb.........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......Bbbbbbbbbbbb..bb.........',
-  '.........bbbbbbbbg..............',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......Bbbbbbbbbbbb.gbb.........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......bbbbbbbbbbbb..bb.........',
-  '.......bbbbbbbbbbbbEENH.........',
-  '.......HHHHHHHHHHHHEENN.........',
-  '...EEEEEEHHHHHHHHHHKENN.........',
-  '.NNHEEEEHHHHHHHHHHHEENN.........',
-  '.NNNHHHHHHHHHHHHHHHKENN.........',
-  '.NNNHHHHHHHHHHHHHHEKENN.........',
-  '...EEEEEEEEE.KEEEEE..E..........',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh......',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh......',
+  '..Nhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh...',
+  '..HhhhhhhhhNNNNNNhhhhhhhhhhhhhNNNNhhhhhhhhhhh...',
+  'hhhhhhhhhhhNNNNNNhhhhhhhhhhhhhNNNhhhhhhhhhhhhHHH',
+  'hhhhhhNNhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhHHH',
+  'hhhhhhNNhhhhhhhhhHHHhhNNNNNhhhhhhhhhNNNhhhhhhHHH',
+  'hhhhhhNNhhhhhhhhhHHHKKNNNNNhhhhhhhhhhNNhhhhhhHHH',
+  'hhhNNsssNNhhhhNNNHHHNNNNNNNNNNNNNNhhhNNhhhhhhHHH',
+  'hhhNNsssNNEhhNNNNNNNNNNNNNNNNNNNNNhhNNNhhhhhhHHH',
+  'hhhNNsssssshhNNNNNNNNNNNNNNNNNNNNNhhNNNhhhhhhHHH',
+  'hhhNNsssssshhNNNNNNNNNNNNNNNNNNNNNhhNNNhhhhhhHHH',
+  '..SsssNNssssssNNNNNNsssssssNNNNNNNNNNNNNNNNNNHHH',
+  '..MsssNNsssssNNNNNNNsssssssNNNNNNNNNNNNNNNNNNHHH',
+  '..MsssNNssssssNNNNNNsssssssNNNNNNNNNNNNNNNNNNHHH',
+  '..MssssssssssssssNNNsssssssNNNNNNNNNNNNNNNNNN...',
+  '..MssssssssssssssNNNsssssssNNNNNNNNNNNNNNNNNN...',
+  '..SssssssssssssssssssSSSKHHNNNNNNNNNNNNNNN......',
+  '..MssssssssssssssssssSSSHHHNNNNNNNNNNNNNNNEEE...',
+  '.....ssssssssssssssssssssssNNNNNNNNNNEEK.ENNN...',
+  '.....ssssssssssssssssssssssMNNNNNNNNNkk..NNNN...',
+  '.....ssssssssssssssssssssssMMMMMNNNNkkk.........',
+  '.....sssssssssssMMMMMMMMMMMMMMMMMMMMMMM.........',
+  '................MMMMMMMMMMMMMMMMMMMMM...........',
+  '........ggggggggMMMMMsssssssssSSSSSSS...........',
+  '........ggggggggggggggggggGGGGGGGGGGG...........',
+  '........ggggggggggggggggggGGGGGGGGGGG...........',
+  '...ggGGGGGGGGGGGGGGGGgggggggggggggggg...........',
+  '..gggGGGGGGGGGGGGGGGGgggggggggggggggg...........',
+  '..ggggGGGGGGGGGGGGGGGgggggggggggggggg...........',
+  '...gggGGGGGGGGGGGGGGGgggggggggggggggg...........',
+  '...gggGGGGGGGGGGGGGGGgggggggggggggggg...........',
+  '...gggGGGGGGGGGGGGGGGgggggggggggggggg...........',
+  '...gggGGGGGGGGGGGGGGGgggggggggggggggg...........',
+  '...ggGGGGGGGGGGGGggggGGgggggggggggggg...........',
+  '...ggGGGGGGGGGGGGggggGGGggggggggggggg...........',
+  '.....ssssssssssssssssGGgggggggggggggg...........',
+  '.....sssssssssssssssss.gggggggggggggg...........',
+  '.....sssssssssssssssss.gggggggggggggg...........',
+  '.....sssssssssssssssss.gggggggggggggg...........',
+  '.....sssssssssssssssss.gggggggggggggg...........',
+  '.....sssssssssssssssss.gggggggggggggg...........',
+  '.....sssssssssssssssss.gggggggggggggg...........',
+  '.....Sssssssssssssssss.gggggggggggggg...........',
+  '...sSssssssssssssssssgggggggggggggggg...........',
+  '...ssssssssssssssssMMgggggggggggggggg...........',
+  '...SsssssssssssssssMMgggggggggggggggg...........',
+  '...ssssssssssssssssMMgggggggggggggggg...........',
+  '...ssssssssssssssssMMgggggggggggggggg...........',
+  '...ssssssssssssssssMMgggggggggggggggg...........',
+  '...MsssssssssssssssMMgggggggggggggggg...........',
+  '...ssssssssssssssssMMgggggggggggggggg...........',
+  '..MssssssssssssssssMMgggggggggggggggg...........',
+  '..MssssssssssssssssMMgggggggggggggggb...........',
+  '..KssssssssssssssssMMgggggggggggggggb...........',
+  '..kssssssssssssssssMMbbbbbbbbbbbbbggb...........',
+  '..kssssssssssssssssMMgbbbbbbbbbbbbbgb...........',
+  '.....ssssssssssssssMMgbbbbbbbbbbbbbgb...........',
+  '.....ssssssssssssssMMbbbbbbbbbbbbbggb...........',
+  '..........g.ggg.gbbbbbbbbbbbbbbbbb..............',
+  '..........ggg.gggbbbbbbbbbbbBBbBBbg.............',
+  '...........ggggggbbbbbbbbbbb....................',
+  '..........bbbbbbbbbbbbbbbbbb...bbb.g............',
+  '..........bbbbbbbbbbbbbbbbbB...bbb..............',
+  '..........bBbbbbbbbbbbbbbbbB...bbb..............',
+  '..........bBbbbBbbbbbbbbbbbB...bbb..............',
+  '..........bBbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bBbbbbbbbbbbbbbbbb..gbbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bBbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '.............bbbbbbbbbbbbbg.....................',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bBbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
+  '..........bbbbbbbbbbbbbbbbbb....g...............',
+  '..........bbbbbbbbbbbbbbbbbbEEEEgg..............',
+  '..........HHHHHHHHHHHHHHHHHHEEEENN..............',
+  '..........NHHHHHHHHHHHHHHHHHEKEENN..............',
+  '.....EEEEEEEEEHHHHHHHHHHHHHHEKEENN..............',
+  '..EEEEEEEEEEEEHHHHHHHHHHHHHHEKEENN..............',
+  '..NNNHHHHHHHHHHHHHHHHHHHHHHHEKKENN..............',
+  '..NNNHHHHHHHHHHHHHHHHHHHHHHHKKKENN..............',
+  '..NNNHHHHHHHHHHHHHHHHHHHHHHHEKEENN..............',
+  '..KE.EEEEEEEEEEEEE...EEEEEEE....EE..............',
+  '.....EEEEEEEEEEEEE..KEEEEEEE...EEE..............',
 ];
 function mcColor(ch, S, L) {
   switch (ch) {
@@ -684,7 +780,7 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     const sign = a && a.dir === 'right' ? 1 : -1;
     const f = moving ? (a.frame === 0 ? 1 : a.frame === 2 ? -1 : 0) : 0; // ±1
     const amp = a && a.run ? 2 : 1;
-    const GRID_W = 32, GRID_H = 64;
+    const GRID_W = 48, GRID_H = 96;
 
     let grid;
     if (isUp) grid = BACK_GRID;
@@ -695,20 +791,28 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     let lx = isSide && sign < 0 ? (GRID_W - 1 - px) : px;
     let ly = py;
 
-    // 走路动画:真正的前后腿交替 + 手臂反相位摆动(4 拍循环)
-    // 32x64 网格分区:y0-15 头 / y16-23 肩颈 / y24-35 衣+臂 / y36+ 腿+鞋
+    // 走路动画(重新设计):身体 bob 起伏 + 前后腿交替 + 手臂反相位摆动(4 拍循环)
+    // 48x96 网格分区:y0-23 头 / y24-31 肩颈 / y32-53 衣+臂 / y54-83 腿 / y84-95 鞋
     if (moving) {
-        const st = amp * f; // 迈步幅度(跑 ±2 / 走 ±1)
+        const st = amp * f;             // 迈步幅度(跑 ±2 / 走 ±1)
+        const bobLift = f !== 0 ? -amp : 0; // 迈步帧身体上浮(走路-1/跑-2),落地帧回 0 = 走路起伏
         if (isSide) {
-            // 侧视:腿区(含鞋)随迈步整体微抬,衣身不动;手臂反相位摆动
-            if (ly >= 36) ly += st;          // 腿+鞋(侧视单列腿,迈步整体抬起)
-            else if (ly >= 24 && ly <= 35) ly += -st; // 手臂反相位
+            // 侧视:前腿(行进侧 lx>=24)迈步抬 +st,后腿(背侧)落地 -st;臂反相位;头/身 bob
+            if (ly >= 54) {
+                if (lx >= 24) ly += st; else ly -= st;  // 前后腿交替
+            } else if (ly >= 32 && ly <= 53) {
+                ly += -st;                              // 手臂反相位
+            } else {
+                ly += bobLift;                          // 头/肩/衣身起伏
+            }
         } else {
-            // 正面/背面:左右腿上下交错(左迈右收),左右臂反相位
-            if (ly >= 36) {
-                if (lx < 16) ly += st; else ly -= st; // 左腿 +st / 右腿 -st
-            } else if (ly >= 24 && ly <= 35) {
-                if (lx < 16) ly += -st; else ly += st; // 左臂反相位
+            // 正面/背面:左腿(lx<24)迈步 +st、右腿落地 -st;左右臂反相位;头/身 bob
+            if (ly >= 54) {
+                if (lx < 24) ly += st; else ly -= st;  // 左右腿交替
+            } else if (ly >= 32 && ly <= 53) {
+                if (lx < 24) ly += -st; else ly += st; // 左右臂反相位
+            } else {
+                ly += bobLift;                          // 头/肩/衣身起伏
             }
         }
     }
@@ -723,8 +827,8 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
 const _bodySpriteCache = new Map();
 export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, look, anim) {
     const level = (infection || 0) / 100;
-    const x = Math.round(sx - 16), y = Math.round(sy - 32);
-    const width = 32, height = 64;
+    const x = Math.round(sx - 24), y = Math.round(sy - 48);
+    const width = 48, height = 96;
     if (level <= 0.01) {
         const L = look || {};
         const key = [color, L.skin, L.hair, L.pants, L.shoes, L.eyes, L.hairStyle,
@@ -925,13 +1029,16 @@ function drawWeatherOverlay(ctx, sv, W, H) {
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, W, H);
     } else if (sv._weather === 'fog') {
-        // 大雾：可视半径（近清远朦，超距白蒙）——以角色（屏幕中心）为中心，radius 按强度
+        // 大雾：可视半径（近清远朦，屏幕最远端完全看不清）——以角色（屏幕中心）为中心，radius 按强度
         const rPx = fogRadius(sv._weather, level) * TS;
-        const aFull = Math.min(0.85, (0.35 + 0.10 * breathe) * mul);
-        const g = ctx.createRadialGradient(W / 2, H / 2, rPx, W / 2, H / 2, Math.max(rPx + 40, rPx * 1.35));
-        g.addColorStop(0, 'rgba(226,232,236,0)');                              // 可视半径内：清楚
-        g.addColorStop(0.75, `rgba(226,232,236,${(aFull * 0.55).toFixed(3)})`); // 边缘渐变朦胧
-        g.addColorStop(1, `rgba(226,232,236,${aFull.toFixed(3)})`);             // 超距：白蒙蒙
+        // 最远端白蒙 → 完全看不清（浓雾 ≈ 1.0；薄雾 0.42 轻度白蒙），呼吸微动
+        const aFar = Math.min(1, (0.55 + 0.15 * breathe) * mul);
+        // 平滑渐变：半径内清楚 → 中段 22% → 外段 60% → 最远端 100%
+        const g = ctx.createRadialGradient(W / 2, H / 2, rPx, W / 2, H / 2, Math.max(rPx + 40, rPx * 1.6));
+        g.addColorStop(0, 'rgba(228,234,238,0)');                               // 可视半径内：清楚
+        g.addColorStop(0.45, `rgba(228,234,238,${(aFar * 0.22).toFixed(3)})`);   // 开始朦胧
+        g.addColorStop(0.75, `rgba(228,234,238,${(aFar * 0.6).toFixed(3)})`);    // 渐浓
+        g.addColorStop(1, `rgba(228,234,238,${aFar.toFixed(3)})`);               // 最远端：完全看不清
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, W, H);
     } else if (sv._weather === 'rain' || sv._weather === 'snow') {
@@ -966,6 +1073,7 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
     const level = wxLevelCur(sv);
     const inten = wxIntensity(sv._weather, level);
     const densityMul = inten.density;   // 强度 → 疏密（不改变速度）
+    const partKind = wx.particles * 10 + level;   // 类型+强度组合 → 切换强度也重置粒子（否则旧速度残留，用户反馈"强度切换视觉无差异"）
     const n = Math.min(WX_PART_MAX, Math.floor(WX_PART_MAX * (sv._devGfx === 2 ? 1 : 0.6) * densityMul));
     // 帧间隔（封顶防跳帧）：粒子用现实秒驱动，暂停时静止
     const nowMs = performance.now();
@@ -990,16 +1098,16 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
     };
     if (wx.particles === 1) {   // 雨：斜线下落（侧风），世界坐标，同速
         ctx.strokeStyle = 'rgba(140,180,220,0.55)';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            if (p.kind !== wx.particles || !p.spd) {
+            if (p.kind !== partKind || !p.spd) {
                 // ① 切换/初始化：撒全屏（立即均匀）
                 const c = colsOf(i, n, W, H);
                 spawnFull(p, c, i, n, W, H, camX, camY);
                 p.spd = WX_PART_SPEED.rain * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);   // 基准×强度系数 ±6%
-                p.len = 7 + Math.random() * 8;
-                p.kind = wx.particles;
+                const sm = wxSpeedMul(sv._weather, level); p.len = (6 + Math.random() * 9) * sm;   // 长度∝速度（大雨更长）
+                p.kind = partKind;
             } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 60 || p.x > camX + W + 60) {
                 // ② 越界：顶部边界进入（稳定流）
                 const c = colsOf(i, n, W, H);
@@ -1015,34 +1123,35 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
         }
     } else if (wx.particles === 2) {   // 雪：慢速飘落小点 + 左右摇摆，世界坐标，同速
         ctx.fillStyle = 'rgba(238,246,255,0.85)';
+        const pSize = 1.5 + level * 0.5;   // 雪花大小随强度（小雪 1.5 / 大雪 2.5）
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            if (p.kind !== wx.particles || !p.spd) {
+            if (p.kind !== partKind || !p.spd) {
                 const c = colsOf(i, n, W, H);
                 spawnFull(p, c, i, n, W, H, camX, camY);
                 p.spd = WX_PART_SPEED.snow * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
                 p.seed = Math.random() * 6.28;
-                p.kind = wx.particles;
+                p.kind = partKind;
             } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 40 || p.x > camX + W + 40) {
                 const c = colsOf(i, n, W, H);
                 spawnTop(p, c, i, n, W, H, camX, camY);
             }
             p.y += p.spd * fdt;
             p.x += Math.sin(sv.now * 1.2 + p.seed) * 16 * fdt;
-            ctx.fillRect(p.x - camX, p.y - camY, 2, 2);
+            ctx.fillRect(p.x - camX, p.y - camY, pSize, pSize);
         }
     } else if (wx.particles === 4) {   // 沙尘：横向快速飞沙（沙尘暴），世界坐标，同速
         ctx.strokeStyle = 'rgba(205,175,115,0.5)';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            if (p.kind !== wx.particles || !p.spd) {
+            if (p.kind !== partKind || !p.spd) {
                 const c = colsOf(i, n, W, H);
                 p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
                 p.y = camY + Math.random() * H;
                 p.spd = WX_PART_SPEED.sand * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
-                p.len = 4 + Math.random() * 7;
-                p.kind = wx.particles;
+                p.len = (4 + Math.random() * 7) * wxSpeedMul(sv._weather, level);   // 飞沙长度∝速度
+                p.kind = partKind;
             } else if (p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {
                 const c = colsOf(i, n, W, H);
                 p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
@@ -1192,7 +1301,7 @@ function drawCollectible(ctx, sx, sy, text, color, now, tx, ty, highlight) {
             const pulse = 0.4 + Math.sin(now * 2.5 + tx * 1.7 + ty * 2.3) * 0.3;
             ctx.globalAlpha = pulse;
             ctx.strokeStyle = color;
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
             ctx.strokeRect(bx - 1, by - 1, bw + 2, bh + 2);
             ctx.globalAlpha = 1;
         }
@@ -1225,7 +1334,7 @@ function drawCollectible(ctx, sx, sy, text, color, now, tx, ty, highlight) {
             ctx.fillStyle = '#5a5a5a'; ctx.fillRect(px + 2, py + 5, 5, 3); ctx.fillRect(px + 9, py + 4, 4, 3);
             ctx.fillStyle = '#707070'; ctx.fillRect(px + 4, py + 6, 2, 1); ctx.fillRect(px + 12, py + 5, 2, 1);
             ctx.strokeStyle = 'rgba(30,28,26,0.5)';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
             ctx.beginPath();
             ctx.moveTo(px + 2, py + 11); ctx.lineTo(px + 8, py + 7); ctx.lineTo(px + 15, py + 10);
             ctx.stroke();
@@ -1316,7 +1425,7 @@ function drawStreetContainer(ctx, sx, sy, text, now, tx, ty, highlight) {
         const pulse = 0.4 + Math.sin(now * 2.5 + tx * 1.7 + ty * 2.3) * 0.3;
         ctx.globalAlpha = pulse;
         ctx.strokeStyle = '#E8C46A';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(x0 + 4.5, y0 + 3.5, TS - 8, TS - 8);
         ctx.globalAlpha = 1;
     }
@@ -1383,7 +1492,7 @@ function drawBuilt(ctx, sx, sy, text, now, tx, ty) {
         ctx.fillStyle = '#55a54d'; ctx.fillRect(x0 + 10, y0 + 7, 5, 4); ctx.fillRect(x0 + 16, y0 + 5, 5, 4);
     } else {
         ctx.fillStyle = 'rgba(15,25,40,0.6)'; ctx.fillRect(x0 + 2, y0 + 2, TS - 4, TS - 4);
-        ctx.strokeStyle = '#7799BB'; ctx.lineWidth = 1; ctx.setLineDash([3, 2]);
+        ctx.strokeStyle = '#7799BB'; ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度 ctx.setLineDash([3, 2]);
         ctx.strokeRect(x0 + 2, y0 + 2, TS - 4, TS - 4); ctx.setLineDash([]);
         ctx.fillStyle = '#AACCEE'; ctx.font = 'bold 11px "Microsoft YaHei", monospace';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, sx, sy);
@@ -1457,7 +1566,7 @@ function drawCar(ctx, tileX, tileY, dir, opt) {
         ctx.fill();
         // 车门缝（车顶两侧各 2 条竖线 = 4 门分隔）
         ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         for (const dx of [-hl * 0.05, hl * 0.28]) {
             ctx.beginPath();
             ctx.moveTo(dx, -hw); ctx.lineTo(dx, -hw * 0.7);
@@ -1480,7 +1589,7 @@ function drawCar(ctx, tileX, tileY, dir, opt) {
     } else {
         // 残骸：破裂纹 + 歪斜车顶
         ctx.strokeStyle = '#2a2a2a';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.beginPath();
         ctx.moveTo(-hl * 0.3, -hw * 0.5); ctx.lineTo(hl * 0.2, hw * 0.3);
         ctx.moveTo(hl * 0.1, -hw * 0.4); ctx.lineTo(-hl * 0.2, hw * 0.5);
@@ -1513,7 +1622,7 @@ function drawCar(ctx, tileX, tileY, dir, opt) {
         const tw = ctx.measureText(label).width + 10;
         ctx.fillStyle = 'rgba(0,0,0,0.75)';
         ctx.fillRect(cx - tw / 2, cy - TS / 2 - 18, tw, 15);
-        ctx.strokeStyle = col; ctx.lineWidth = 1;
+        ctx.strokeStyle = col; ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(cx - tw / 2, cy - TS / 2 - 18, tw, 15);
         ctx.fillStyle = col;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -1681,7 +1790,7 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
             const v = ((s >> (i * 7)) & 0x7F);
             const dx = (v % (TS - 4)) + 2, dy = ((v >> 3) % (TS - 4)) + 2;
             ctx.strokeStyle = i % 2 ? 'rgba(56,76,52,0.35)' : 'rgba(20,32,20,0.28)';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
             ctx.beginPath();
             ctx.moveTo(x0 + dx, y0 + dy);
             ctx.lineTo(x0 + dx + (i % 2 ? 2 : -2), y0 + dy - 2);
@@ -1752,7 +1861,7 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
             }
             if (n2 > 0.4) {
                 ctx.strokeStyle = 'rgba(20,18,16,0.5)';
-                ctx.lineWidth = 1;
+                ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
                 ctx.beginPath();
                 const cx0 = x0 + Math.floor(n * 20), cy0 = y0 + Math.floor(n2 * 16);
                 ctx.moveTo(cx0, cy0); ctx.lineTo(cx0 + 6, cy0 + 8); ctx.lineTo(cx0 + 2, cy0 + 14);
@@ -1878,7 +1987,7 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
         const isWalkLook = v => v === T.SIDEWALK || v === T.TRASHBIN || v === T.CARDBOX || v === T.HYDRANT || v === T.NEWSSTAND || v === T.TIRES || v === T.CAR || v === T.CARWRECK;
         const walkUnderAt = (gx, gy) => isWalkLook(getTile(sv, gx, gy)) || groundTypeAt(sv, gx, gy) === T.SIDEWALK;
         ctx.strokeStyle = 'rgba(42,40,34,0.5)';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.beginPath();
         ctx.moveTo(x0 + TS, y0); ctx.lineTo(x0 + TS, y0 + 18);          // 右缘（第一行段）
         ctx.moveTo(x0, y0 + TS); ctx.lineTo(x0 + TS, y0 + TS);          // 下缘（全段）
@@ -1893,7 +2002,7 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
         // 废墟人行道：破损裂纹 + 缺角，与城区完整人行道区分
         if (biome === 3) {
             ctx.strokeStyle = 'rgba(30,26,22,0.55)';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
             ctx.beginPath();
             const cx0 = x0 + 4 + Math.floor(n * 20), cy0 = y0 + 4 + Math.floor(n2 * 18);
             ctx.moveTo(cx0, cy0); ctx.lineTo(cx0 + 5, cy0 + 6);
@@ -1971,7 +2080,7 @@ function drawWorldDynamic(ctx, sv, camX, camY, W, H, dyn) {
         const pulse = 0.4 + Math.sin(sv.now * 2.5 + p.tx * 1.7 + p.ty * 2.3) * 0.3;
         ctx.globalAlpha = pulse;
         ctx.strokeStyle = p.kind === 'box' ? p.color : '#E8C46A';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         if (p.kind === 'box') ctx.strokeRect(sx - TS / 2 + 5, sy - TS / 2 + 7, 26, 22);
         else ctx.strokeRect(sx - TS / 2 + 4.5, sy - TS / 2 + 3.5, TS - 8, TS - 8);
         ctx.globalAlpha = 1;
@@ -2653,7 +2762,7 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         ctx.fillStyle = isRuins ? '#1a1512' : '#2a2018';
                         ctx.fillRect(doorX, doorY, 6, 16);
                         ctx.strokeStyle = isRuins ? '#4a3a2a' : '#8a6a42';
-                        ctx.lineWidth = 1;
+                        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
                         ctx.strokeRect(doorX - 0.5, doorY - 0.5, 7, 17);
                         ctx.fillStyle = '#c8a860';
                         ctx.fillRect(doorX + 4, doorY + 7, 2, 2);
@@ -2673,7 +2782,7 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         ctx.fillStyle = isRuins ? '#1a1512' : '#2a2018';
                         ctx.fillRect(doorX, doorY, 6, 16);
                         ctx.strokeStyle = isRuins ? '#4a3a2a' : '#8a6a42';
-                        ctx.lineWidth = 1;
+                        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
                         ctx.strokeRect(doorX - 0.5, doorY - 0.5, 7, 17);
                         ctx.fillStyle = '#c8a860';
                         ctx.fillRect(doorX + 1, doorY + 7, 2, 2);
@@ -2684,7 +2793,7 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         ctx.fillStyle = isRuins ? '#1a1512' : '#2a2018';
                         ctx.fillRect(rx0 + 10, ry0 + 1, 16, 8);
                         ctx.strokeStyle = isRuins ? '#4a3a2a' : '#8a6a42';
-                        ctx.lineWidth = 1;
+                        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
                         ctx.strokeRect(rx0 + 9.5, ry0 + 0.5, 17, 9);
                         ctx.fillStyle = 'rgba(0,0,0,0.15)';
                         ctx.fillRect(rx0, ry0 + 9, TS + 1, 2);
@@ -2713,7 +2822,7 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         ctx.fill();
                     }
                     ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-                    ctx.lineWidth = 1;
+                    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
                     ctx.strokeRect(bx + 1.5, by + 3.5, TS - 3, TS - 7);
                 } else if (COLLECT_INFO[t]) {
                     const ci = COLLECT_INFO[t];
@@ -2923,7 +3032,7 @@ function drawZombieTelegraph(ctx, z, sx, sy) {
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.strokeStyle = `rgba(200,60,60,${0.15 + prog * 0.2})`;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.beginPath();
         ctx.arc(sx, sy, Z_FLAG_AURA_RANGE * (TS / 12), 0, Math.PI * 2);
         ctx.stroke();
@@ -3324,7 +3433,7 @@ function drawSickPlayerFX(ctx, sv, px, py) {
         // 热浪：头顶正弦波纹 + 汗珠
         ctx.strokeStyle = col;
         ctx.globalAlpha = 0.6;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         for (let i = 0; i < 3; i++) {
             const wy = py - TS / 2 - 18 - i * 4;
             ctx.beginPath();
@@ -3371,7 +3480,7 @@ function drawDriveHUD(ctx, sv, W) {
         ctx.fillStyle = color;
         ctx.fillRect(x + 2, by + 2, 88 * clamp(ratio, 0, 1), 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(x + 2, by + 2, 88, 10);
         ctx.fillStyle = '#DDDDDD';
         ctx.fillText(label, x + 94, by + 7);
@@ -3396,7 +3505,7 @@ function drawCampFlag(ctx, sv, camX, camY) {
     const fx = camp.x - camX, fy = camp.y - camY;
     // 领地范围圈（淡金色，常驻低透明度）
     ctx.strokeStyle = 'rgba(255,215,0,0.10)';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
     ctx.beginPath();
     ctx.arc(fx, fy, CAMP_RADIUS * TS, 0, Math.PI * 2);
     ctx.stroke();
@@ -3435,7 +3544,7 @@ function drawTeamPanel(ctx, sv, W, H) {
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.strokeStyle = 'rgba(255,215,0,0.45)';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
     ctx.stroke();
     // 标题
     ctx.font = 'bold 12px "Microsoft YaHei", monospace';
@@ -3450,7 +3559,7 @@ function drawTeamPanel(ctx, sv, W, H) {
             ctx.fillStyle = 'rgba(57,217,138,0.10)';
             ctx.fill();
             ctx.strokeStyle = 'rgba(57,217,138,0.35)';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
             ctx.stroke();
         }
         // 第一行：名字 + 武器（名字右边）+ 状态徽标
@@ -3726,7 +3835,7 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
         roundRectPath(ctx, 8, 34, w, 20, 5);
         ctx.fill();
         ctx.strokeStyle = 'rgba(77,163,255,0.5)';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.stroke();
         ctx.fillStyle = '#7fd6ff';
         ctx.fillText(label, 14, 44);
@@ -3841,7 +3950,7 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
     ctx.fillStyle = 'rgba(8,20,32,0.82)';
     ctx.fill();
     ctx.strokeStyle = 'rgba(77,163,255,0.5)';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
     ctx.stroke();
     ctx.fillStyle = '#7fd6ff';
     ctx.fillText(name, sx, sy - 32);
@@ -3985,7 +4094,7 @@ function drawPlayerZombieGuide(ctx, sv, W, H, sharedDrawn) {
         roundRectPath(ctx, px2 - lw / 2, py2 + 24, lw, 18, 4);
         ctx.fill();
         ctx.strokeStyle = PZ_GUIDE_COLOR;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.stroke();
         ctx.fillStyle = '#C9A6FF';
         ctx.fillText(label, px2, py2 + 33);
@@ -4053,7 +4162,7 @@ function drawLegacyDropGuide(ctx, sv, W, H, sharedDrawn) {
     roundRectPath(ctx, px2 - lw / 2, py2 + 24, lw, 18, 4);
     ctx.fill();
     ctx.strokeStyle = LEGACY_GUIDE_COLOR;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
     ctx.stroke();
     ctx.fillStyle = '#FFE98A';
     ctx.fillText(label, px2, py2 + 33);
@@ -4116,7 +4225,7 @@ function drawHotbar(ctx, sv, W, H) {
         ctx.fillStyle = 'rgba(10,14,10,0.82)';
         ctx.fillRect(x, y, size, size);
         ctx.strokeStyle = id ? '#3a5a3a' : '#222';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(x, y, size, size);
         ctx.textAlign = 'left';
         ctx.font = '9px Consolas, monospace';
@@ -4180,7 +4289,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
     ctx.fillStyle = sv.exhausted ? '#AA2222' : '#CCDD44';
     ctx.fillRect(10, 42, 76 * clamp((sv.stamina || 0) / (sv.maxStamina || 100), 0, 1), 10);
     ctx.strokeStyle = '#334455';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
     ctx.strokeRect(10, 42, 76, 10);
     ctx.textAlign = 'left';
     ctx.fillStyle = sv.exhausted ? '#FF6666' : '#AADDFF';
@@ -4198,7 +4307,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillStyle = flash ? '#FF3333' : (sv.food < 30 ? '#C46A2A' : '#E8A33D');
         ctx.fillRect(10, fy, 76 * fr, 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(10, fy, 76, 10);
         ctx.fillStyle = sv.food <= 0 ? '#FF8866' : (sv.food < 30 ? '#FFB37A' : '#FFE4B0');
         ctx.fillText(sv.food <= 0 ? '饥饿' : `饱食 ${Math.round(sv.food)}`, 90, fy + 5);
@@ -4216,7 +4325,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillStyle = flash ? '#FF3333' : (sv.water < 30 ? '#3A6A9A' : '#4E9AE8');
         ctx.fillRect(10, wy, 76 * wr, 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(10, wy, 76, 10);
         ctx.fillStyle = sv.water <= 0 ? '#66CCFF' : (sv.water < 30 ? '#7AB6E8' : '#BFE4FF');
         ctx.fillText(sv.water <= 0 ? '缺水' : `水分 ${Math.round(sv.water)}`, 90, wy + 5);
@@ -4235,7 +4344,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillStyle = pulse ? '#9b2d3a' : (infEff.stage >= 4 ? '#6b1d2a' : infEff.stage >= 2 ? '#5a3040' : '#4a3548');
         ctx.fillRect(10, iy, 76 * ir, 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(10, iy, 76, 10);
         ctx.fillStyle = infEff.stage >= 4 ? '#FF6688' : infEff.stage >= 2 ? '#CC8899' : '#AA99AA';
         ctx.fillText(`感染 ${infEff.name}`, 90, iy + 5);
@@ -4255,7 +4364,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillRect(10, sy, 76, 10);
         ctx.globalAlpha = 1;
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(10, sy, 76, 10);
         ctx.fillStyle = col;
         ctx.fillText(`染病：${s.name}`, 90, sy + 5);
@@ -4274,7 +4383,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillStyle = '#6b1d1d';
         ctx.fillRect(10, by, 76, 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
         ctx.strokeRect(10, by, 76, 10);
         ctx.fillStyle = '#FF8866';
         ctx.fillText('武器损坏', 90, by + 5);
@@ -4399,7 +4508,7 @@ function drawInterior(ctx, sv, W, H) {
             ctx.fillStyle = `rgb(${44 + n},${36 + n},${28 + n})`;
             ctx.fillRect(px0, py0, TS + 1, TS + 1);
             ctx.strokeStyle = 'rgba(90,70,50,0.15)';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
             ctx.strokeRect(px0 + 0.5, py0 + 0.5, TS, TS);
             drawInteriorWeathering(ctx, px0, py0, 'floor', age, sv.world.seed ^ worldX ^ (worldY << 8));
         } else if (t === IT.WALL) {
@@ -4425,7 +4534,7 @@ function drawInterior(ctx, sv, W, H) {
                 ctx.fillStyle = '#3a3a42';
                 ctx.fillRect(px0, py0, TS + 1, TS + 1);
                 ctx.strokeStyle = 'rgba(20,20,26,0.9)';
-                ctx.lineWidth = 1;
+                ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
                 ctx.strokeRect(px0 + 0.5, py0 + 0.5, TS, TS);
                 drawInteriorWeathering(ctx, px0, py0, 'wall', age, sv.world.seed ^ worldX ^ (worldY << 8));
             }
