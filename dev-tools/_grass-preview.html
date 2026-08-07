@@ -177,12 +177,10 @@ function makeNoiseTile(size, cell, salt, amp) {
   return cv;
 }
 // 肌理（细颗粒，cell=2，±10）+ 色斑（草丛团块，cell=10，±12）+ 大尺度明暗（cell=32，±16）
-// 三张无缝值噪声瓦片（drawWrap 滚动采样）
-const texTile = makeNoiseTile(256, 2, 0x1A5C, 20);
-const patchTile = makeNoiseTile(256, 10, 0x77E1, 32);   // 色斑加强 → 基底明暗团块感（星露谷 patch）
-const toneTile = makeNoiseTile(256, 32, 0x3F7A, 32);
-// 四方连续像素颗粒瓦片（cell=1 → 每像素独立 hash，±7 受控色差）：无缝平铺（角点 wrap），
-// 每个像素点色差「不太大也不太相似」——草地表面像素质感主纹理（与草分布 seed 独立随机）
+// 高频像素颗粒瓦片（cell=1 → 每像素独立 hash，±7 受控色差）：无缝平铺（角点 wrap），
+// 每个像素点色差「不太大也不太相似」——草地表面像素质感主纹理（与草分布 seed 独立随机）。
+// patch/tone 低频色斑/明暗【不用瓦片】——256px 瓦片在 36px 格上周期 7.111 格（256%36=4px 起点漂移）
+// → 低频图案每 ~7 格重复 = "7×7 板块+偏移线条"；已改为 renderBaseSeason 内函数化采样（零周期）
 const pixelTile = makeNoiseTile(256, 1, 0xBEEF, 14);
 
 // ===== 四季草样式（以 A1 基础草甸为底，为季节系统铺路；地面共用不动） =====
@@ -429,10 +427,14 @@ function renderBaseSeason(ctx, seed, biome, tx, ty, seasonKey, densGrid) {
   // 6px 子块：颜色 = biome 平滑 + 季节偏移 + 微颗粒 ±1（子块色差收敛 → 无 6px 网格感；像素质感由 pixelTile 每像素 ±7 提供）
   // 密度 = 周围 4 格【真实草束数】双线性插值（子块级 → 完全连续，无格缝无线条）：
   //   草密 → 暗（负偏移）、草疏 → 亮（正偏移），幅度 ±6 柔和
+  // patch/tone 低频色斑/明暗【函数化采样】——按世界像素坐标直接 grassNoise 插值，天然连续零周期
+  // （旧瓦片平铺 256px 在 36px 格上周期 7.111 格 + 4px 起点漂移 = "7×7 板块+偏移线条"）
   for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 6; sx++) {
     const vx = tx * 6 + sx, vy = ty * 6 + sy;
     const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
     const vary = Math.round((lo - 0.5) * 2);
+    const patchV = Math.round((grassNoise(seed ^ 0x77E1, vx, vy, 10) - 0.5) * 14);
+    const toneV = Math.round((grassNoise(seed ^ 0x3F7A, vx, vy, 32) - 0.5) * 10);
     let dens = 0;
     if (densGrid) {
       const fx = sx / 6, fy = sy / 6;
@@ -443,21 +445,16 @@ function renderBaseSeason(ctx, seed, biome, tx, ty, seasonKey, densGrid) {
       const bot = d01 * (1 - fx) + d11 * fx;
       dens = Math.round(top * (1 - fy) + bot * fy);
     }
-    const r = Math.max(0, Math.min(255, bc[0] + off[0] + vary + dens));
-    const g = Math.max(0, Math.min(255, bc[1] + off[1] + vary + dens));
-    const b = Math.max(0, Math.min(255, bc[2] + off[2] + vary + dens));
+    const r = Math.max(0, Math.min(255, bc[0] + off[0] + vary + dens + patchV + toneV));
+    const g = Math.max(0, Math.min(255, bc[1] + off[1] + vary + dens + patchV + toneV));
+    const b = Math.max(0, Math.min(255, bc[2] + off[2] + vary + dens + patchV + toneV));
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(ox + sx * 6, oy + sy * 6, 6, 6);
   }
-  // 四方连续像素颗粒 overlay（每像素 ±7 独立 hash，无缝平铺 → 像素质感主纹理）
+  // 高频像素颗粒 overlay（每像素 ±7 独立 hash，cell=1 白噪声——256px 瓦片周期重复肉眼不可见，可平铺）
   ctx.globalCompositeOperation = 'overlay';
   ctx.globalAlpha = 0.5;
   drawWrap(ctx, pixelTile, ox, oy, tx, ty);
-  // 大尺度明暗（低对比防条纹）
-  ctx.globalAlpha = 0.2;
-  drawWrap(ctx, patchTile, ox, oy, tx, ty);
-  ctx.globalAlpha = 0.1;
-  drawWrap(ctx, toneTile, ox, oy, tx, ty);
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
 }
@@ -506,13 +503,17 @@ function buildCol(c, seed, zoom) {
   for (let tx = 0; tx <= 6; tx++) for (let ty = 0; ty <= 4; ty++) {
     c.list.set(tx + ',' + ty, styleClusterList(seed, SEASONS2[c.season], tx, ty));
   }
-  // ② 密度网格：束数 → 明暗偏移（草密=负=暗 / 草疏=正=亮，平均 ~1.3 束，幅度 ±6 柔和）
+  // ② 密度网格：3×3 邻域平均束数 → 明暗偏移（平滑：单格整数束数 0/1/2 → 1 格跳变 = "1 格宽深色条"）
   const densGrid = [];
+  const avgAt = (tx2, ty2) => {
+    let s = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) s += (c.list.get((tx2 + dx) + ',' + (ty2 + dy)) || []).length;
+    return s / 9;
+  };
   for (let ty = 0; ty <= 4; ty++) {
     densGrid[ty] = [];
     for (let tx = 0; tx <= 6; tx++) {
-      const n = (c.list.get(tx + ',' + ty) || []).length;
-      densGrid[ty][tx] = Math.round((1.3 - n) * 4);
+      densGrid[ty][tx] = Math.round((1.3 - avgAt(tx, ty)) * 3);
     }
   }
   // ③ 画基底（子块级密度双线性 → 明暗随上方草，完全连续无格缝）

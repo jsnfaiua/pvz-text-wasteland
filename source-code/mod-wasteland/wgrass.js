@@ -222,10 +222,11 @@ function ensureInit() {
     }
     _tiles.push(bySeason);
   }
+  // 只有高频像素颗粒用瓦片平铺（cell=1 白噪声，256px 周期重复肉眼不可见）。
+  // patch/tone（低频色斑/明暗）【不用瓦片】——瓦片 256px 在 36px 格上周期 7.111 格
+  // （256%36=4px 起点漂移）→ 低频图案每 ~7 格重复 = 用户看到的"7×7 板块+偏移线条"。
+  // 低频噪声改为 grassRenderGround 内按世界坐标函数化采样（grassNoise 连续、零周期）。
   _noiseTiles = {
-    tex: makeNoiseTile(256, 2, 0x1A5C, 20),
-    patch: makeNoiseTile(256, 10, 0x77E1, 32),
-    tone: makeNoiseTile(256, 32, 0x3F7A, 32),
     // 四方连续像素颗粒（cell=1 → 每像素独立 hash，±7 受控色差）：草地表面像素质感主纹理
     // （与草分布 seed 独立随机；无缝平铺 → 游戏内四方连续效果）
     pixel: makeNoiseTile(256, 1, 0xBEEF, 14),
@@ -271,38 +272,41 @@ export function grassRenderGround(ctx, sv, tx, ty, x0, y0) {
   const bc = biomeColor(seed, tx, ty);
   // 坐标取整 + 最后子块 +1px 防缝（保留修复：避免格间露底深色缝）
   const ox = Math.round(x0), oy = Math.round(y0);
-  // 真实草密度（周围 4 格 clusterList 束数，缓存命中便宜）：草密 → 暗、草疏 → 亮，幅度 ±6
-  // 子块级双线性插值 → 完全连续，无格缝无线条（明暗真正对应上方草的位置）
-  const g00 = clusterList(seed, tx, ty).length;
-  const g10 = clusterList(seed, tx + 1, ty).length;
-  const g01 = clusterList(seed, tx, ty + 1).length;
-  const g11 = clusterList(seed, tx + 1, ty + 1).length;
+  // 真实草密度【3×3 邻域平均束数】（平滑：旧版单格束数整数 0/1/2 → dens 1 格跳变 ±8 级
+  // = "1 格宽深色条交叉"）。3×3 平均后相邻格差 ≤0.4 束 → dens ≤1 级 → 无 1 格条，仍有草密暗/疏亮。
+  const avgAt = (x, y) => {
+    let s = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) s += clusterList(seed, x + dx, y + dy).length;
+    return s / 9;
+  };
+  const g00 = avgAt(tx, ty), g10 = avgAt(tx + 1, ty), g01 = avgAt(tx, ty + 1), g11 = avgAt(tx + 1, ty + 1);
   // 6px 子块：biome 平滑 + 季节偏移 + 密度明暗（±1 微颗粒——子块色差收敛，消除 6px 网格感；
   // 像素质感由 pixelTile 每像素 ±7 提供，子块颗粒是多余网格源）
+  // patch/tone 低频噪声【函数化采样】：按世界像素坐标 (vx,vy) 直接 grassNoise 插值——
+  // 天然连续无周期（瓦片平铺 256px 在 36px 格上周期 7.111 格 + 4px 起点漂移 = "7×7 板块+偏移线条"）
   for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 6; sx++) {
     const vx = tx * 6 + sx, vy = ty * 6 + sy;
     const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
     const vary = Math.round((lo - 0.5) * 2);
+    // 低频色斑（cell=10，±7）+ 大尺度明暗（cell=32，±5）：函数化 → 无缝无周期
+    const patchV = Math.round((grassNoise(seed ^ 0x77E1, vx, vy, 10) - 0.5) * 14);
+    const toneV = Math.round((grassNoise(seed ^ 0x3F7A, vx, vy, 32) - 0.5) * 10);
     const fx = sx / 6, fy = sy / 6;
     const top = g00 * (1 - fx) + g10 * fx;
     const bot = g01 * (1 - fx) + g11 * fx;
-    const dens = Math.round((1.3 - (top * (1 - fy) + bot * fy)) * 4);
-    const r = Math.max(0, Math.min(255, bc[0] + st.bg[0] + vary + dens));
-    const g = Math.max(0, Math.min(255, bc[1] + st.bg[1] + vary + dens));
-    const b = Math.max(0, Math.min(255, bc[2] + st.bg[2] + vary + dens));
+    const dens = Math.round((1.3 - (top * (1 - fy) + bot * fy)) * 3);   // ±柔和（3×3 平均后幅度小）
+    const r = Math.max(0, Math.min(255, bc[0] + st.bg[0] + vary + dens + patchV + toneV));
+    const g = Math.max(0, Math.min(255, bc[1] + st.bg[1] + vary + dens + patchV + toneV));
+    const b = Math.max(0, Math.min(255, bc[2] + st.bg[2] + vary + dens + patchV + toneV));
     // 子块正好 6px（去掉 +1px 防缝：坐标取整已保证格间整数对齐无缝；cw=7 覆盖到相邻格第一子块，
     // 与本格最后子块色差 → 每 36px 一条 1px 色差线 = "基底格子状线条"）
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(ox + sx * 6, oy + sy * 6, 6, 6);
   }
-  // 四方连续像素颗粒 overlay（±7 受控色差，无缝平铺主纹理）+ 大尺度明暗（低对比防条纹）
+  // 高频像素颗粒 overlay（±7 受控色差，cell=1 白噪声——256px 瓦片周期重复肉眼不可见，可平铺）
   ctx.globalCompositeOperation = 'overlay';
   ctx.globalAlpha = 0.5;
   drawWrap(ctx, _noiseTiles.pixel, ox, oy, tx, ty);
-  ctx.globalAlpha = 0.2;
-  drawWrap(ctx, _noiseTiles.patch, ox, oy, tx, ty);
-  ctx.globalAlpha = 0.1;
-  drawWrap(ctx, _noiseTiles.tone, ox, oy, tx, ty);
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
 }

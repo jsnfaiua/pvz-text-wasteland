@@ -1,9 +1,10 @@
 // ============================================================
-// 画布全屏适配：保持 960×540 逻辑坐标，按显示尺寸放大内部分辨率
-// —— 字体渲染保持清晰，鼠标映射（/rect.width）依旧准确。
-// 同时把缩放比写入 --wsl-scale，供荒原模组 HTML 面板等比缩放。
-// 布局测量只在尺寸变化时进行（resize/DPR 变化/ResizeObserver），
-// 避免每帧强制布局读取。
+// 画布全屏适配：960×540 逻辑坐标 = 物理像素（1:1 绘制）。
+// —— 修复：旧版 setTransform(非整数 scale) 把缩放放进 canvas 内部 →
+//    逐格 fillRect 在物理上亚像素错位（每格 28.4px 累积误差）= "格子状线条"。
+//    现改为内部 1:1 绘制 + CSS 整图缩放（#game 已加 image-rendering: pixelated
+//    最近邻 → 整图缩放相对位置不变，无格边界错位线）。
+//    --wsl-scale 仍写入，供荒原模组 HTML 面板等比缩放。
 // ============================================================
 
 export const LOGICAL_W = 960;
@@ -34,8 +35,7 @@ export function observeCanvasFit(canvas) {
     ro.observe(canvas);
 }
 
-// 画质档渲染缩放因子：低画质 0.75 内部分辨率（画质档 B，纯本地显示降级，
-// 不参与联机同步；默认 1 = 现状）。dpr 变化时缓存失效需重新测量。
+// 画质档渲染缩放因子：保留签名（低画质 0.75 未来可改为内部分辨率降级，默认 1 = 现状）
 let _factor = -1;
 
 export function fitCanvasBacking(ctx, factor = 1) {
@@ -43,7 +43,7 @@ export function fitCanvasBacking(ctx, factor = 1) {
     if (!canvas) return 1;
     if (factor !== _factor) {
         _factor = factor;
-        _cssW = -1;   // 画质切换 → 内部分辨率变化 → 强制重测
+        _cssW = -1;
     }
     const dpr = window.devicePixelRatio || 1;
     if (dpr !== _dpr) {
@@ -54,19 +54,17 @@ export function fitCanvasBacking(ctx, factor = 1) {
         _cssW = canvas.clientWidth || LOGICAL_W;
     }
     const cssW = _cssW;
-    const scale = Math.max(0.25, Math.min(4, (cssW / LOGICAL_W) * dpr * factor));
-    const bw = Math.round(LOGICAL_W * scale);
-    const bh = Math.round(LOGICAL_H * scale);
-    if (canvas.width !== bw) canvas.width = bw;
-    if (canvas.height !== bh) canvas.height = bh;
-    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    // 内部 1:1（物理 = 960×540）：不再 setTransform 缩放（非整数 scale → 逐格 fillRect 亚像素错位 = 格子线）
+    if (canvas.width !== LOGICAL_W) canvas.width = LOGICAL_W;
+    if (canvas.height !== LOGICAL_H) canvas.height = LOGICAL_H;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     const scaleCss = (cssW / LOGICAL_W).toFixed(3);
     if (scaleCss !== _lastScaleCss) {
         _lastScaleCss = scaleCss;
         const cont = document.getElementById('game-container');
         if (cont) cont.style.setProperty('--wsl-scale', scaleCss);
     }
-    return scale;
+    return 1;
 }
 
 export function toggleFullscreen() {
