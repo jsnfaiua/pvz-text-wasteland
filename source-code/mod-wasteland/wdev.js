@@ -685,7 +685,9 @@ function bindEvents() {
                     const WX_ORDER = ['clear', 'rain', 'snow', 'fog', 'sandstorm'];
                     const ci = WX_ORDER.indexOf(sv._weather || 'clear');
                     sv._weather = WX_ORDER[(ci + 1) % WX_ORDER.length];
-                    MSG.pushMsg(sv, `[DEV] 天气：${B.wxInfo(sv._weather).name}（${B.wxInfo(sv._weather).desc}）`, '#FFB347');
+                    const lvl = B.wxLevelAt(sv.world.seed, sv.day);
+                    const itn = B.wxIntensity(sv._weather, lvl);
+                    MSG.pushMsg(sv, `[DEV] 天气：${itn.name}（${B.wxInfo(sv._weather).desc}）`, '#FFB347');
                     break;
                 }
                 case 'randrespawn': {
@@ -852,7 +854,9 @@ export function applyDevCmd(p) {
             const WX_ORDER = ['clear', 'rain', 'snow', 'fog', 'sandstorm'];
             const ci = WX_ORDER.indexOf(sv._weather || 'clear');
             sv._weather = WX_ORDER[(ci + 1) % WX_ORDER.length];
-            MSG.pushMsg(sv, `[DEV] 对方将天气改为「${B.wxInfo(sv._weather).name}」`, '#FFB347');
+            const lvl = B.wxLevelAt(sv.world.seed, sv.day);
+            const itn = B.wxIntensity(sv._weather, lvl);
+            MSG.pushMsg(sv, `[DEV] 对方将天气改为「${itn.name}」`, '#FFB347');
             break;
         }
     }

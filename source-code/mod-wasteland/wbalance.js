@@ -79,6 +79,44 @@ export function weatherAt(seed, day) {
     return 'clear';
 }
 
+// ---------- 天气强度分级（用户：强度只影响疏密/浓度，不影响粒子速度） ----------
+// density = 粒子密度倍数（雾无粒子，用 mul 缩放覆盖层）；mul = 覆盖层浓度倍数
+export const WX_INTENSITY = {
+    rain: [
+        { name: '小雨', density: 0.45, mul: 0.7 },
+        { name: '中雨', density: 1.0, mul: 1.0 },
+        { name: '大雨', density: 1.6, mul: 1.35 },
+        { name: '暴雨', density: 2.3, mul: 1.7 },
+    ],
+    snow: [
+        { name: '小雪', density: 0.5, mul: 0.7 },
+        { name: '中雪', density: 1.0, mul: 1.0 },
+        { name: '大雪', density: 1.8, mul: 1.4 },
+    ],
+    fog: [
+        { name: '薄雾', density: 0, mul: 0.6 },
+        { name: '中雾', density: 0, mul: 1.0 },
+        { name: '浓雾', density: 0, mul: 1.5 },
+    ],
+    sandstorm: [
+        { name: '扬沙', density: 0.6, mul: 0.7 },
+        { name: '沙尘暴', density: 1.0, mul: 1.0 },
+        { name: '强沙暴', density: 1.7, mul: 1.4 },
+    ],
+};
+export function wxIntensity(type, level) {
+    const arr = WX_INTENSITY[type] || WX_INTENSITY.rain;
+    const l = Math.max(0, Math.min(arr.length - 1, level || 0));
+    return arr[l];
+}
+export function wxLevelAt(seed, day) {
+    // 确定性强度（§13.2）：同一世界同一天强度固定；单机/联机 host/guest 一致（seed 相同）
+    const type = weatherAt(seed, day);
+    const arr = WX_INTENSITY[type] || WX_INTENSITY.rain;
+    const r = wxHash(seed, day | 0, 0x2C1B);
+    return Math.floor(r * arr.length);
+}
+
 // ---------- 感染视觉（§13.1 收口）：屏幕覆盖层随阶段增强 ----------
 export const INF_VIS = [
     { stage: 0, name: '完整', alpha: 0.00, noise: 0 },    // 0+  无

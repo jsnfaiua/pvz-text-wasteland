@@ -446,8 +446,10 @@ function updateWeather(sv) {
         const wx = B.weatherAt(sv.world.seed, sv.day);
         if (wx !== sv._weather) {
             const info = B.wxInfo(wx);
+            const level = B.wxLevelAt(sv.world.seed, sv.day);
+            const inten = B.wxIntensity(wx, level);
             sv._weather = wx;
-            log(`${info.name}：${info.desc}`, info.color);   // log 经 host 广播 msg → 双端可见
+            log(`${inten.name}：${info.desc}`, info.color);   // 强度名（小雨/中雨…大雪/浓雾）+ 描述，host 广播 msg 双端可见
             if (wx === 'sandstorm') AudioSystem.playWaveWarning();
         }
     }
