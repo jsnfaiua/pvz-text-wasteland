@@ -57,7 +57,7 @@ import { TS } from '../source-code/mod-wasteland/wconst.js';
 import * as MSG from '../source-code/mod-wasteland/wmsg.js';
 import * as WW from '../source-code/mod-wasteland/wwordcraft-rules.js';
 import * as WI from '../source-code/mod-wasteland/winfection.js';
-import { genChunkTiles, T, CHUNK, gridRoadKept, SPAWN, getTile, isWalk, plannedSidewalkAt } from '../source-code/mod-wasteland/world.js';
+import { genChunkTiles, T, CHUNK, gridRoadKept, SPAWN, getTile, isWalk, plannedSidewalkAt, wildSidewalkKept } from '../source-code/mod-wasteland/world.js';
 import { districtAt, arterialClassAt, blockAt } from '../source-code/mod-wasteland/wdistrict.js';
 import { serializeSV, createRunDefaults, applySnapshot, serializeCharacter, applyCharacter, serializeWorld, applyWorld, serializeMpSnapshot, mergeZombieList } from '../source-code/mod-wasteland/wstate.js';
 
@@ -470,7 +470,12 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
             const rx = ((x % BL) + BL) % BL, ry = ((y % BL) + BL) % BL;
             planned = rx === 4 || rx === BL - 1 || ry === 4 || ry === BL - 1;
         }
-        if (!planned && arterialClassAt(seed, x, y) !== 'sidewalk') orphan++;
+        // 荒野贴邻城市边界的合理人行道延续（wildSidewalkKept）不算孤儿：
+        // 城市人行道带自然过渡进荒野 1 圈，避免"到荒野边界硬断"（2026-08-07 用户反馈）
+        if (!planned && arterialClassAt(seed, x, y) !== 'sidewalk') {
+            const wildOk = d !== 'urban' && d !== 'suburb' && wildSidewalkKept(seed, x, y);
+            if (!wildOk) orphan++;
+        }
     }
     // 人行道带成带连续：城市区块的 walk 带格必须与"实际保留路走廊"严格一致——
     // 紧邻保留路/主干道（hasAdjacentRoad）→ 必须是人行道；否则（死腿/无路）→ 不许生成人行道跑进绿地。

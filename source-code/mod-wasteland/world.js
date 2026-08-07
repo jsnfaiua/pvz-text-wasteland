@@ -119,6 +119,27 @@ function rawHorizontalRoad(seed, gy, cx, cy) {
     return ((gy % BL) + BL) % BL < 4;
 }
 
+// 荒野人行道延续：城市人行道带在荒野边界自然过渡 1 圈（不硬断）。
+// 仅在"贴邻城市/郊区/废墟 的荒野格 + 城市人行道相位 + 邻格有保留路"时铺 SIDEWALK；
+// 走廊外 / 荒野深处的相位格不铺（避免荒野深处孤立人行道）。
+export function wildSidewalkKept(seed, gx, gy) {
+    const cx = Math.floor(gx / CHUNK), cy = Math.floor(gy / CHUNK);
+    const up = districtAt(seed, cx, cy - 1), down = districtAt(seed, cx, cy + 1);
+    const left = districtAt(seed, cx - 1, cy), right = districtAt(seed, cx + 1, cy);
+    const isCity = d => d === 'urban' || d === 'suburb' || d === 'ruins';
+    if (!isCity(up) && !isCity(down) && !isCity(left) && !isCity(right)) return false;
+    // 用邻区城市 BLOCK 判人行道相位
+    const BL = isCity(up) ? blockAt(seed, cx, cy - 1) :
+        isCity(down) ? blockAt(seed, cx, cy + 1) :
+        isCity(left) ? blockAt(seed, cx - 1, cy) : blockAt(seed, cx + 1, cy);
+    const rx = ((gx % BL) + BL) % BL, ry = ((gy % BL) + BL) % BL;
+    const walkX = rx === 4 || rx === BL - 1;
+    const walkY = ry === 4 || ry === BL - 1;
+    const roadX = rx < 4, roadY = ry < 4;
+    if (roadX || roadY || !(walkX || walkY)) return false;
+    return hasAdjacentRoad(seed, gx, gy);
+}
+
 // 网格路是否在 (gx,gy) 真正铺设——按"走廊"粒度判定，而非逐区块：
 // 先找出包含该格的最长连续原始路段（走廊），只保留"第一个路口与最后一个路口之间"，
 // 两端不收死腿（DEAD_LEG_EXT=0）：道路只存在于路口之间，尽头即路口，城市内不产生死路。
@@ -549,8 +570,15 @@ export function genChunkTiles(seed, cx, cy) {
                 t = T.ROAD;   // 主干道带：主干道统一铺设
             } else if (ai.cls === 'sidewalk') {
                 t = T.SIDEWALK;   // 主干道环带：规划为人行道，不能铺路
-            } else if (rawVerticalRoad(seed, gx, cx, cy) || rawHorizontalRoad(seed, gy, cx, cy)) {
+            } else if ((rawVerticalRoad(seed, gx, cx, cy) || rawHorizontalRoad(seed, gy, cx, cy)) && gridRoadKept(seed, gx, gy)) {
+                // C：走廊限制——只有"城市路带真正延续的走廊"铺路；
+                // 荒野深处相位碰巧匹配的"孤路"（gridRoadKept=false）保持草地，
+                // 不再出现"本不该有公路的地方被公路盖住"。
                 t = T.ROAD;
+            } else if (wildSidewalkKept(seed, gx, gy)) {
+                // 人行道自然过渡：城市人行道带延续进荒野边界 1 圈（不硬断），
+                // 走廊外/荒野深处不铺（避免孤立人行道）。
+                t = T.SIDEWALK;
             } else {
                 const r = H(11, gx, gy);
                 if (r < 0.15) t = T.TREE;

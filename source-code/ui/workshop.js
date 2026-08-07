@@ -123,6 +123,25 @@ function renderDetail() {
         const charOptions = (chars.names || []).map(n =>
             `<option value="${n}"${n === curChar ? ' selected' : ''}>${n}</option>`).join('');
         const worldSeed = st.opts.seed != null ? st.opts.seed : (prof ? prof.worldSeed : null);
+        // 枚举已有世界档（下拉选择：同角色选择方式——拉下选存档 / 选随机）
+        const user = (getSession() && getSession().username) || '__guest__';
+        const wPrefix = `u:${user}:wasteland_world_`;
+        const worldList = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const full = localStorage.key(i);
+            if (!full || !full.startsWith(wPrefix)) continue;
+            const seedStr = full.slice(wPrefix.length);
+            try {
+                const raw = localStorage.getItem(full);
+                if (raw == null) continue;
+                const data = JSON.parse(raw);
+                if (!data || typeof data.seed !== 'number') continue;
+                worldList.push({ seed: data.seed, day: data.day || 1, mins: Math.floor((data.playT || 0) / 60) });
+            } catch { /* 损坏键跳过 */ }
+        }
+        worldList.sort((a, b) => (b.seed - a.seed));
+        const worldOptionsHtml = worldList.map(w =>
+            `<option value="${w.seed}"${String(w.seed) === String(worldSeed) ? ' selected' : ''}>世界 #${w.seed} · 第${w.day}天 · 存活${w.mins}分</option>`).join('');
         wastelandExtra = `
             <div class="ws-section-title">难度（决定死亡惩罚）</div>
             <div class="wsl-diff-row">
@@ -135,10 +154,15 @@ function renderDetail() {
                 </select>
                 <button class="menu-btn ws-enter-btn" id="ws-char-new">新建角色</button>
             </div>
-            <div class="ws-section-title">世界种子（可修改后开新世界）</div>
+            <div class="ws-section-title">世界种子（下拉选择已有存档 / 随机 / 手动输入）</div>
             <div class="wsl-seed-row">
-                <input id="ws-seed-input" class="wsl-seed-input" placeholder="${worldSeed != null ? '当前 ' + worldSeed + ' · 留空开随机世界' : '留空 = 随机种子'}" maxlength="10" value="${st.opts.seed != null ? st.opts.seed : ''}">
-                <button class="menu-btn ws-enter-btn" id="ws-seed-apply">用此种子开新世界</button>
+                <select id="ws-seed-select" class="wsl-seed-input">
+                    <option value="">（随机种子 · 开新世界）</option>
+                    ${worldOptionsHtml}
+                    <option value="__manual__">✏ 手动输入种子…</option>
+                </select>
+                <input id="ws-seed-input" class="wsl-seed-input" placeholder="输入种子数字" maxlength="10" value="${st.opts.seed != null ? st.opts.seed : ''}" style="display:none;flex:1;">
+                <button class="menu-btn ws-enter-btn" id="ws-seed-apply" style="display:none;">用此种子开新世界</button>
             </div>
             <div class="ws-section-title">联机（需先登录账户）</div>
             <div class="wsl-mp-row">
@@ -271,7 +295,25 @@ function renderDetail() {
         launchWasteland({ ...cur.opts, characterName: '__new__' + Date.now() });
     });
 
-    // 世界种子：查看/修改（输入新种子 → 开新世界）
+    // 世界种子下拉：选已有存档 → 继续该世界；选随机 → 开随机世界；选手动 → 显示输入框
+    const seedSel = document.getElementById('ws-seed-select');
+    const seedInput = document.getElementById('ws-seed-input');
+    const seedApply = document.getElementById('ws-seed-apply');
+    if (seedSel) seedSel.addEventListener('change', () => {
+        const v = seedSel.value;
+        if (v === '__manual__') {
+            if (seedInput) seedInput.style.display = 'flex';
+            if (seedApply) seedApply.style.display = '';
+            return;
+        }
+        if (seedInput) seedInput.style.display = 'none';
+        if (seedApply) seedApply.style.display = 'none';
+        // 选已有世界：更新 opts.seed（进入时继续该世界档）；选空（随机）：清空 seed
+        const newSeed = v ? Number(v) : undefined;
+        setModState(mod.id, { opts: { seed: newSeed } });
+        renderDetail();
+    });
+    // 手动输入种子 → 用此种子开新世界（强制新世界，与"继续"区分）
     document.getElementById('ws-seed-apply')?.addEventListener('click', () => {
         const cur = getModState(mod.id);
         if (!cur.enabled) return;
