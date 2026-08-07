@@ -1206,9 +1206,14 @@ function tileSurfaceColor(sv, gx, gy) {
 // 邻居表面为人行道/路面即参与；物体格不绘制任何背景带，只叠加在地面上。
 function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
     if (t === T.SIDEWALK) return;
-    // 草地类（GROUND/WEED）互为同类：相邻不画渐变（否则每块杂草被深色渐变框围住 = 草地分割成方框块）
+    // 涉及草地的边界【全部不画渐变】：无论渐变画在哪一侧（草地侧或路面/人行道侧），
+    // 4px 色带都会形成"分割线"（草地块被路面网格框成格子状）。
+    // 草地↔路面/人行道/建筑直接硬切（两种表面本身颜色分明，无需过渡带）。
     const isGrassLike = v => v === T.GROUND || v === T.WEED;
-    const same = v => isGrassLike(t) ? isGrassLike(v) : v === t;
+    if (isGrassLike(t)) return;
+    if (isGrassLike(getTile(sv, tx, ty - 1)) || isGrassLike(getTile(sv, tx, ty + 1))
+        || isGrassLike(getTile(sv, tx - 1, ty)) || isGrassLike(getTile(sv, tx + 1, ty))) return;
+    const same = v => v === t;
     if (!same(getTile(sv, tx, ty - 1))) {
         const nc = tileSurfaceColor(sv, tx, ty - 1);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
@@ -1541,7 +1546,9 @@ function drawWorld(ctx, sv, camX, camY, W, H) {
         c.dyn = { cars: [], pulses: [], plants: [] };
         drawWorldStatic(c.bctx, sv, t0x * TS, t0y * TS, cw, chh, c.dyn);
     }
-    ctx.drawImage(c.canvas, t0x * TS - camX, t0y * TS - camY);
+    // blit 坐标取整：camX/camY 是小数（玩家移动任意）→ 亚像素 blit 会双线性插值，
+    // 每 36px 格边缘产生半像素色带 = "格子状分割线"（预览页无相机滚动所以看不到）
+    ctx.drawImage(c.canvas, Math.round(t0x * TS - camX), Math.round(t0y * TS - camY));
     drawWorldDynamic(ctx, sv, camX, camY, W, H, c.dyn);
 }
 
