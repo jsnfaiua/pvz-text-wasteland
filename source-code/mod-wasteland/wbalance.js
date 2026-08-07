@@ -35,6 +35,13 @@ export const DIFF_TABLE = {
 // ---------- 僵尸 ----------
 export const Z_CHAR = { normal: '僵', cone: '障', bucket: '桶', pole: '杆', flag: '旗', door: '门', remnant: '残', deleter: '删', swapper: '换', giant: '巨' };
 export const Z_SPEED_MUL = 2.6;
+// 尸化玩家精英僵尸（hardcore 死亡后留世；§13.1 数值收口）
+export const PZ_BASE_HP = 70;        // 基础生命（×天数/难度/环 ×精英系数）
+export const PZ_ELITE_MUL = 1.8;     // 精英系数（血量）
+export const PZ_SPEED = 0.22;        // 速度（× Z_SPEED_MUL）
+export const PZ_DAMAGE = 22;         // 接触伤害基准
+export const PZ_INF_LOW = 0.15;      // 尸化初期腐烂度下限
+export const PZ_INF_RANGE = 0.2;     // 腐烂度随机幅度（运行时表现类，不进存档）
 export const Z_DAY_SCALE = 0.05;
 export const Z_CHASE_RANGE = 8;       // 格：玩家周围总宽/高为 8 格的方形警戒区
 export const Z_WANDER_SPEED = 0.45;

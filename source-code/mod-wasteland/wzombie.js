@@ -152,21 +152,21 @@ export function spawnPlayerZombie(sv, opts) {
             }
         }
     }
-    // 精英强度：随天数成长（复用普通僵尸成长公式，再 ×1.8 精英系数）
+    // 精英强度：随天数成长（复用普通僵尸成长公式，再 ×精英系数）
     const cx = Math.floor((px / TS) / CHUNK), cy = Math.floor((py / TS) / CHUNK);
     const ringMul = zombieStrengthAt(seed, cx, cy);
     const mul = (1 + (sv.day - 1) * B.Z_DAY_SCALE) * (B.DIFF_TABLE[sv.diffKey] || B.DIFF_TABLE.normal).mul * ringMul;
-    const baseHp = Math.round(70 * mul * 1.8);
+    const baseHp = Math.round(B.PZ_BASE_HP * mul * B.PZ_ELITE_MUL);
     const z = {
         id: 'z' + ((sv._zIdSeq = (sv._zIdSeq || 0) + 1)),
         type: 'playerzombie', char: look.skin ? '亡' : '尸', color: look.shirt || '#58656d',
         x: px, y: py, name: sv.characterName || '幸存者',
         hp: baseHp, maxHp: baseHp,
-        speed: 0.22 * B.Z_SPEED_MUL, damage: 22,
+        speed: B.PZ_SPEED * B.Z_SPEED_MUL, damage: B.PZ_DAMAGE,
         wt: 0, tx: px, ty: py, wDir: null, biteT: 0, hurt: 0, stunT: 0,
         biteCd: 0, lungeCd: 0, lungeT: 0, plantBiteCd: 0,
         horde: false,
-        infection: 0.15 + Math.random() * 0.2,   // 刚尸化：轻度腐烂
+        infection: B.PZ_INF_LOW + Math.random() * B.PZ_INF_RANGE,   // 刚尸化：轻度腐烂（运行时表现，不进存档）
         textAbility: null,
         atkState: null, atkT: 0, atkCd: 0, atkAngle: 0, atkWindup: 0, hasHit: false, auraT: 0, comboLeft: 0,
         // ---- 尸化玩家专属 ----

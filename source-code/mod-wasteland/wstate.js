@@ -28,6 +28,11 @@
 //   _savedMag                 null                        startRun 恢复弹匣
 //   interior/interiors        sv.mods.interiors 缺省 {}   室内楼层进度
 //   boxSearched / guarded     {}                          容器已搜/守卫标记
+//   zombies[].isPlayerZombie  false                       尸化玩家精英（hardcore 死亡后留世）
+//   zombies[].playerName/skin null/null                   尸化僵尸名字/肤色
+//   zombies[].inv/hotbar/wpnKey null                      尸化僵尸继承的装备背包
+//   legacyDrop                null                        正常模式死亡遗物包裹{位置,内容}
+//   _deathCount               0                           死亡次数（遗物永久消失代价递增）
 //   新增字段规则：①白名单序列化函数同步补字段；②apply 端给默认值；
 //   ③旧档无该字段时必须安全缺省（不得抛错）；④联机快照字段双端同改。
 // ============================================================
@@ -55,6 +60,8 @@ export function serializeSV(sv, deps) {
         py: sv.py,
         wpnMag: sv.wpn ? sv.wpn.mag : {},
         _devInfBag: !!sv._devInfBag,
+        // 死亡次数（正常模式遗物包裹永久消失代价：死亡越多丢越多；角色跨世界保留）
+        _deathCount: sv._deathCount || 0,
         mods: sv.mods,
         homeBed: sv.homeBed || null,
         lastRestDay: sv.lastRestDay,
@@ -166,6 +173,7 @@ export function applySnapshot(run, saved, deps) {
         run.homeBed = saved.homeBed || null;
         run._savedMag = saved.wpnMag || null;
         run.curSlot = saved.curSlot || 'ranged';
+        run._deathCount = typeof saved._deathCount === 'number' ? Math.max(0, Math.floor(saved._deathCount)) : 0;
         if (Array.isArray(saved.hotbar)) {
             run.hotbar = saved.hotbar.slice(0, HOTBAR_SIZE);
             while (run.hotbar.length < HOTBAR_SIZE) run.hotbar.push(null);
@@ -248,6 +256,8 @@ export function applyCharacter(run, data, deps) {
     if (typeof data.stamina === 'number') run.stamina = Math.max(0, Math.min(data.maxStamina || run.maxStamina || B.MAX_HP, data.stamina));
     run._savedMag = data.wpnMag || null;
     run._devInfBag = !!data._devInfBag;
+    // 死亡次数（遗物包裹永久消失代价：角色跨世界保留）
+    run._deathCount = typeof data._deathCount === 'number' ? Math.max(0, Math.floor(data._deathCount)) : 0;
 }
 
 // 世界白名单（跟 seed 走：同一种子恢复同一世界状态）
