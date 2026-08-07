@@ -2456,6 +2456,19 @@ function onDeath() {
     }
     const dk = B.DIFF_TABLE[sv.diffKey] || B.DIFF_TABLE.normal;
     const deadName = sv.characterName || '幸存者';
+    // 联机：任一玩家死亡 → 双端结算退出（R7 保持，host 权威判定）。
+    // 死亡 v2 的「救回/包裹/尸化」是单机规则：联机 guest 背包在本地（wsync 不带 inv），
+    // host 无法权威生成 guest 的遗物包裹/尸化僵尸 → 死亡一律走既有 R7 双端结束，
+    // 与 §6 教训5「guest 死亡必须同步」一致，避免 guest 血量归零卡死/双端不一致。
+    if (sv.mp) {
+        if (!sv._mpDeadSent) {
+            sv._mpDeadSent = true;
+            (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'dead', who: sv.mp.role });
+        }
+        AudioSystem.playDefeat();
+        setTimeout(() => exitWasteland(true), 1200);   // 本端也结算退出（与 playMpEvent 'dead' 一致）
+        return;
+    }
     let pz = null;
     if (!dk.soft) {
         // 硬核一条命：死亡 → 原角色尸化为当前世界的一只精英僵尸
@@ -2472,12 +2485,18 @@ function onDeath() {
         // 原地留下「遗物包裹」（有指引可前往拾取）；部分物品因不可抗力永久消失，
         // 死亡次数越多代价越大（首次丢 30%，每多死一次 +10%，封顶 60%）。
         sv._deathCount = (sv._deathCount || 0) + 1;
-        const vanishRate = Math.min(0.2 + sv._deathCount * 0.1, 0.6);
+        const vanishRate = B.deathVanishRate(sv._deathCount);
         const kept = [], vanished = [];
+        // 消失判定确定性化（§13.2：包裹内容进存档 legacyDrop.contents，禁止 Math.random
+        // 参与存档字段——改用 world seed 派生纯函数 hash2，同档重进/联机双端一致；
+        // 输入含死亡格坐标+槽位+死亡次数，分布仍似随机但可复现）
+        const dgx = Math.floor(sv.px / TS), dgy = Math.floor(sv.py / TS);
+        let slot = 0;
         for (const s of sv.inv) {
             if (!s) continue;
-            if (Math.random() < vanishRate) vanished.push(s.id);
+            if (hash2(sv.world.seed, dgx + slot * 131, dgy + sv._deathCount * 97) < vanishRate) vanished.push(s.id);
             else kept.push({ id: s.id, n: s.n });
+            slot++;
         }
         sv.inv = Array(Panel.BAG_SIZE).fill(null);   // 全掉落
         if (kept.length) {
@@ -4026,6 +4045,7 @@ export function hostGuestBiteCheck(dt) {
     // 3+ 人：对所有队友（p2s 多槽）循环咬伤判定；无 p2s 时回退单队友（1v1 兼容）
     if (!sv) return;
     const guests = sv.p2s && Object.keys(sv.p2s).length ? Object.values(sv.p2s) : (sv.p2 ? [sv.p2] : []);
+    let guestDied = false;
     for (const p of guests) {
         if (!p || p.tx == null) continue;
         if (p.inInterior) continue;
@@ -4048,10 +4068,26 @@ export function hostGuestBiteCheck(dt) {
                     if (p._devGod) break;
                     p._hostHp = Math.max(0, p._hostHp - z.damage);
                     p.hurt = 0.3;
+                    // guest 死亡（host 权威判定）：R7 双端结束。
+                    // 修复：guest 血量归零后若无判定，guest 端 sv.hp=0 且回血无法恢复
+                    // （applyMpSnapshot 只处理下降不恢复）→ 永久卡死，违反 §5.1 零差异。
+                    if (p._hostHp <= 0) {
+                        if (!sv._mpDeadSent) {
+                            sv._mpDeadSent = true;
+                            (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'dead', who: 'guest' });
+                        }
+                        guestDied = true;
+                        break;
+                    }
                 }
                 break;
             }
         }
+        if (guestDied) break;
+    }
+    if (guestDied) {
+        AudioSystem.playDefeat();
+        setTimeout(() => exitWasteland(true), 1200);   // 与 playMpEvent 'dead' 处理一致：本端也结算退出
     }
 }
 

@@ -42,6 +42,13 @@ export const PZ_SPEED = 0.22;        // 速度（× Z_SPEED_MUL）
 export const PZ_DAMAGE = 22;         // 接触伤害基准
 export const PZ_INF_LOW = 0.15;      // 尸化初期腐烂度下限
 export const PZ_INF_RANGE = 0.2;     // 腐烂度随机幅度（运行时表现类，不进存档）
+// 正常模式死亡：遗物包裹物品「不可抗力永久消失」比例（死亡次数越多代价越大）
+export const DEATH_VANISH_BASE = 0.2;   // 基础消失率（第 1 次实际 30%）
+export const DEATH_VANISH_STEP = 0.1;   // 每次死亡递增
+export const DEATH_VANISH_MAX = 0.6;    // 封顶
+export function deathVanishRate(count) {
+    return Math.min(DEATH_VANISH_BASE + (count || 0) * DEATH_VANISH_STEP, DEATH_VANISH_MAX);
+}
 export const Z_DAY_SCALE = 0.05;
 export const Z_CHASE_RANGE = 8;       // 格：玩家周围总宽/高为 8 格的方形警戒区
 export const Z_WANDER_SPEED = 0.45;

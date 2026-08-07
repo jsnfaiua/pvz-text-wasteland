@@ -17,6 +17,7 @@ users.json
 
 # ---- 临时诊断 / 截图 / 测试产物（开发期生成） ----
 dev-tools/_qa_tmp/
+dev-tools/_qa_keep/*.png
 dev-tools/_cdp-*.png
 dev-tools/_chain-test.mjs
 **/_cdp-*.png
