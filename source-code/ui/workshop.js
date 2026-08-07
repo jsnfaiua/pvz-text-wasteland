@@ -249,7 +249,10 @@ function renderDetail() {
         if (!cur.enabled) return;
         if (mod.id !== 'wasteland') return;
         if (!confirm('将放弃当前世界存档，开启一个全新的随机世界（角色物品与属性保留）。确定吗？')) return;
-        launchWasteland({ ...cur.opts, forceNew: true });
+        // 剔除残留 opts.seed：用户设过一次种子后 seed 会持久化，若残留则"新世界"仍用旧种子开档
+        // （= 世界和旧种子一样，用户以为"读旧档"）。新世界默认随机种子，除非用「用此种子」显式指定。
+        const { seed: _ignored, ...restOpts } = cur.opts;
+        launchWasteland({ ...restOpts, forceNew: true });
     });
 
     // 角色：选择已有角色 / 新建角色（命名+捏脸，进入后自动落档）
