@@ -181,6 +181,9 @@ function makeNoiseTile(size, cell, salt, amp) {
 const texTile = makeNoiseTile(256, 2, 0x1A5C, 20);
 const patchTile = makeNoiseTile(256, 10, 0x77E1, 32);   // 色斑加强 → 基底明暗团块感（星露谷 patch）
 const toneTile = makeNoiseTile(256, 32, 0x3F7A, 32);
+// 四方连续像素颗粒瓦片（cell=1 → 每像素独立 hash，±7 受控色差）：无缝平铺（角点 wrap），
+// 每个像素点色差「不太大也不太相似」——草地表面像素质感主纹理（与草分布 seed 独立随机）
+const pixelTile = makeNoiseTile(256, 1, 0xBEEF, 14);
 
 // ===== 四季草样式（以 A1 基础草甸为底，为季节系统铺路；地面共用不动） =====
 const SEASONS = {
@@ -195,10 +198,10 @@ function bladeColors(s) {
 }
 // A1+A3 混合四季（主选）：束级混合——65% A1 原味束 + 35% A3 双色束（A1 主体不改，A3 点缀层次）
 const SEASONS2 = {
-  spring: { ...SEASONS.spring, name: '春·混合', twin: true, flower: 0.20, twinCols: { deep: ['#2a6a2a', '#a8d878'], bright: ['#3a7a2a', '#c0e090'] } },
-  summer: { ...SEASONS.summer, name: '夏·混合', twin: true, flower: 0.18, twinCols: { deep: ['#2c5428', '#cfdf8e'], bright: ['#3a6a30', '#e0f0a8'] } },
-  autumn: { ...SEASONS.autumn, name: '秋·混合', twin: true, flower: 0.10, twinCols: { deep: ['#5a5230', '#c8b45a'], bright: ['#6a6a38', '#e0c868'] } },
-  winter: { ...SEASONS.winter, name: '冬·混合', twin: true, flower: 0.04, twinCols: { deep: ['#5a5a52', '#b8b8a8'], bright: ['#6a6a60', '#d0d0c0'] } },
+  spring: { ...SEASONS.spring, name: '春·混合', twin: true, flower: 0.26, twinCols: { deep: ['#2a6a2a', '#a8d878'], bright: ['#3a7a2a', '#c0e090'] } },
+  summer: { ...SEASONS.summer, name: '夏·混合', twin: true, flower: 0.22, twinCols: { deep: ['#2c5428', '#cfdf8e'], bright: ['#3a6a30', '#e0f0a8'] } },
+  autumn: { ...SEASONS.autumn, name: '秋·混合', twin: true, flower: 0.12, twinCols: { deep: ['#5a5230', '#c8b45a'], bright: ['#6a6a38', '#e0c868'] } },
+  winter: { ...SEASONS.winter, name: '冬·混合', twin: true, flower: 0.06, twinCols: { deep: ['#5a5a52', '#b8b8a8'], bright: ['#6a6a60', '#d0d0c0'] } },
 };
 function mkStyleCluster(style, seed, frame, shape) {
   shape = shape || 0;
@@ -278,14 +281,23 @@ function mkStyleCluster(style, seed, frame, shape) {
       c.fillRect(fx, fy, 2, 1);
     }
   }
-  // 花点（星星点点：低饱和白/淡黄/淡粉，少而精）
-  if (hash2(seed, 3, 3) > (1 - style.flower)) {
-    const petals = ['rgba(245,245,235,0.9)', 'rgba(235,228,205,0.9)', 'rgba(236,228,222,0.9)'];   // 白 / 淡黄 / 淡粉
+  // 花点（点睛之笔：低饱和白/淡黄/淡粉，3×3 十字小野花 → 1x 下也可见，少而精）
+  // 判定 hash 含 shape 因子（每形态独立 → 一季总有几朵），但【不含 frame】（花的有无必须与摆动帧无关，
+  // 否则摆动时花随帧切换闪烁消失）
+  const flowerKey = seed ^ (shape * 131) ^ 0xF10A;
+  if (hash2(flowerKey, 3, 3) > (1 - style.flower)) {
+    const petals = ['rgba(250,250,242,0.95)', 'rgba(242,236,210,0.95)', 'rgba(243,234,226,0.95)'];   // 白 / 淡黄 / 淡粉
+    // 花随摆动帧横移（约草叶 60% 高度摆幅 → 花跟着草一起随风动）
+    const flowerSway = Math.round(SWING * 0.6);
     for (let f = 0; f < (hash2(seed, 4, 4) > 0.6 ? 2 : 1); f++) {
-      const fx = 4 + (hash2(seed, f, 7) * (w - 8) | 0), fy = (h * 0.55) + (hash2(seed, f, 8) * 5 | 0);
+      let fx = 3 + (hash2(seed, f, 7) * (w - 7) | 0) + flowerSway;
+      fx = Math.max(1, Math.min(w - 4, fx));   // clamp 不越瓦片
+      const fy = Math.round(h * 0.32) + (hash2(seed, f, 8) * (h - 10) | 0);
       c.fillStyle = petals[(hash2(seed, f, 9) * 3) | 0];
-      c.fillRect(fx, fy, 2, 2);
-      c.fillStyle = 'rgba(230,220,180,0.9)';   // 淡黄花心
+      c.fillRect(fx + 1, fy, 1, 1);       // 上瓣
+      c.fillRect(fx, fy + 1, 3, 1);       // 中横（左右瓣）
+      c.fillRect(fx + 1, fy + 2, 1, 1);   // 下瓣
+      c.fillStyle = 'rgba(250,246,190,0.95)';   // 亮花心
       c.fillRect(fx + 1, fy + 1, 1, 1);
     }
   }
@@ -405,32 +417,43 @@ const SEASON_BG = {
 };
 // biome 颗粒幅度（城区平整 / 郊区适中 / 荒野斑驳 / 废墟最碎）——基底纹理按地形差异化
 const BIOME_GRIT = [3, 5, 7, 8];
-function renderBaseSeason(ctx, seed, biome, tx, ty, seasonKey, density) {
+function renderBaseSeason(ctx, seed, biome, tx, ty, seasonKey, densGrid) {
   // biome 参数仅供 BIOME_GRIT；基底色用 biomeColor 平滑（hash 选 biome + 双线性插值 → 无硬切色带）
   const bc = biomeColor(seed, tx, ty);
   const off = (SEASON_BG[seasonKey] || SEASON_BG.summer).off;
-  const dens = density || 0;   // 草密度关联明暗：正=亮（草疏）、负=暗（草密），±5 柔和
   const ox = tx * TS, oy = ty * TS;
   const grit = BIOME_GRIT[biome] || 5;
-  // 6px 细腻颗粒（幅度收紧避免条纹感）
+  // 6px 子块：颜色 = biome 平滑 + 季节偏移 + 颗粒 ±3~4 + 密度明暗
+  // 密度 = 周围 4 格【真实草束数】双线性插值（子块级 → 完全连续，无格缝无线条）：
+  //   草密 → 暗（负偏移）、草疏 → 亮（正偏移），幅度 ±6 柔和
   for (let sy = 0; sy < 6; sy++) for (let sx = 0; sx < 6; sx++) {
     const vx = tx * 6 + sx, vy = ty * 6 + sy;
     const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
-    const hi = hash2(seed ^ 0x77E1, vx, vy);
-    const vary = Math.round((lo - 0.5) * grit * 1.1 + (hi - 0.5) * 2);
+    const vary = Math.round((lo - 0.5) * grit * 1.1);
+    let dens = 0;
+    if (densGrid) {
+      const fx = sx / 6, fy = sy / 6;
+      const g = densGrid;
+      const d00 = g[ty][tx], d10 = g[ty][tx + 1];
+      const d01 = g[ty + 1][tx], d11 = g[ty + 1][tx + 1];
+      const top = d00 * (1 - fx) + d10 * fx;
+      const bot = d01 * (1 - fx) + d11 * fx;
+      dens = Math.round(top * (1 - fy) + bot * fy);
+    }
     const r = Math.max(0, Math.min(255, bc[0] + off[0] + vary + dens));
     const g = Math.max(0, Math.min(255, bc[1] + off[1] + vary + dens));
     const b = Math.max(0, Math.min(255, bc[2] + off[2] + vary + dens));
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(ox + sx * 6, oy + sy * 6, 6, 6);
   }
-  // 3 层无缝噪声 overlay（降条纹：patch 0.5→0.28 / tone 0.28→0.16——条带感主源）
+  // 四方连续像素颗粒 overlay（每像素 ±7 独立 hash，无缝平铺 → 像素质感主纹理）
   ctx.globalCompositeOperation = 'overlay';
-  ctx.globalAlpha = 0.4;
-  drawWrap(ctx, texTile, ox, oy, tx, ty);
+  ctx.globalAlpha = 0.5;
+  drawWrap(ctx, pixelTile, ox, oy, tx, ty);
+  // 大尺度明暗（低对比防条纹）
   ctx.globalAlpha = 0.2;
   drawWrap(ctx, patchTile, ox, oy, tx, ty);
-  ctx.globalAlpha = 0.12;
+  ctx.globalAlpha = 0.1;
   drawWrap(ctx, toneTile, ox, oy, tx, ty);
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
@@ -475,22 +498,24 @@ function buildCol(c, seed, zoom) {
   c.base = document.createElement('canvas');
   c.base.width = 36 * 6 * zoom; c.base.height = 36 * 4 * zoom;
   const bc = c.base.getContext('2d');
-  for (let tx = 0; tx < 6; tx++) for (let ty = 0; ty < 4; ty++) {
-    bc.save(); bc.scale(zoom, zoom);
-    renderBaseSeason(bc, seed, 0, tx, ty, c.season);   // 季节地面背景（biome 色内部平滑）
-    bc.restore();
-  }
+  // ① 先算每格真实草束（草分布 seed^0xDD，与基底 seed 独立随机）——含 +1 边界格（密度双线性插值需要）
   c.list = new Map();
-  for (let tx = 0; tx < 6; tx++) for (let ty = 0; ty < 4; ty++) {
+  for (let tx = 0; tx <= 6; tx++) for (let ty = 0; ty <= 4; ty++) {
     c.list.set(tx + ',' + ty, styleClusterList(seed, SEASONS2[c.season], tx, ty));
   }
-  // 基底明暗：草密处暗/草疏处亮——用连续值噪声场（cell=1 相邻格差 ≤1 级），避免整格跳变的线条
+  // ② 密度网格：束数 → 明暗偏移（草密=负=暗 / 草疏=正=亮，平均 ~1.3 束，幅度 ±6 柔和）
+  const densGrid = [];
+  for (let ty = 0; ty <= 4; ty++) {
+    densGrid[ty] = [];
+    for (let tx = 0; tx <= 6; tx++) {
+      const n = (c.list.get(tx + ',' + ty) || []).length;
+      densGrid[ty][tx] = Math.round((1.3 - n) * 4);
+    }
+  }
+  // ③ 画基底（子块级密度双线性 → 明暗随上方草，完全连续无格缝）
   for (let tx = 0; tx < 6; tx++) for (let ty = 0; ty < 4; ty++) {
-    // 密度场 cell=4：大块平滑明暗（4 格一周期），避免 cell=1 的'一格亮一格暗'格纹条纹
-    const densField = grassNoise(seed ^ 0xABCD, tx, ty, 4);
-    const density = Math.round((0.5 - densField) * 8);   // ±4 大块柔和
     bc.save(); bc.scale(zoom, zoom);
-    renderBaseSeason(bc, seed, 0, tx, ty, c.season, density);
+    renderBaseSeason(bc, seed, 0, tx, ty, c.season, densGrid);
     bc.restore();
   }
 }
