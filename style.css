@@ -500,6 +500,10 @@ body {
     width: 960px;
     height: 540px;
     max-width: 100%;
+    /* 像素风：canvas 被非整数缩放（窗口 < 960px 时）会双线性插值 → 每 36px 格边界采样色带 = "格子状线条"。
+       最近邻采样（pixelated）→ 无插值色带（用户偏好像素复古风，本来就不需要平滑） */
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
 }
 
 /* ---------- 全屏模式（整页全屏：所有弹窗/菜单仍在 DOM 中可交互） ---------- */
@@ -525,6 +529,8 @@ body {
     height: auto;
     aspect-ratio: 16 / 9;
     max-width: none;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
 }
 :root:fullscreen #top-bar,
 :root:fullscreen #bot-bar {
