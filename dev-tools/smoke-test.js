@@ -92,6 +92,7 @@ assert(typeof B.PLAYER_SPEED === 'number', 'wbalance.PLAYER_SPEED');
     assert(B.INF_VIS.length === 6, 'balance:INF_VIS 6 stages');
     assert(B.WX_INTENSITY.rain.length === 6 && B.WX_INTENSITY.snow.length === 3 && B.WX_INTENSITY.fog.length === 3 && B.WX_INTENSITY.sandstorm.length === 3, 'balance:WX_INTENSITY tiers');
     assert(B.WX_INTENSITY.rain[4].name === '阵雨' && B.WX_INTENSITY.rain[5].name === '雷阵雨' && B.WX_INTENSITY.rain[5].flash === true, 'balance:阵雨/雷阵雨 tiers + flash flag');
+    for (const k in B.WX_TABLE) assert(typeof B.WX_TABLE[k].icon === 'string' && B.WX_TABLE[k].icon.length > 0, `balance:WX_TABLE.${k} icon`);
     for (const k in B.WX_INTENSITY) {
         for (const t of B.WX_INTENSITY[k]) {
             assert(typeof t.name === 'string' && t.density >= 0 && t.mul > 0, `balance:WX_INTENSITY.${k} entry valid`);
@@ -99,7 +100,7 @@ assert(typeof B.PLAYER_SPEED === 'number', 'wbalance.PLAYER_SPEED');
     }
     assert(B.wxIntensity('rain', 1).name === '中雨', 'balance:wxIntensity level select');
     assert(B.wxIntensity('rain', 9) === B.WX_INTENSITY.rain[5], 'balance:wxIntensity clamp high');
-    assert(B.wxIntensity('nonsense', 0).name === '小雨', 'balance:wxIntensity fallback rain');
+    assert(B.wxIntensity('nonsense', 0).name === '晴朗', 'balance:wxIntensity unknown type falls back to wxInfo (clear 晴朗)');
     assert(B.wxLevelAt(20260802, 1) === B.wxLevelAt(20260802, 1), 'balance:wxLevelAt deterministic');
     assert(typeof B.wxLevelCur === 'function', 'balance:wxLevelCur exists');
     {
@@ -452,12 +453,14 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
             zombies: [{ id: 'z1', type: 'normal', char: '僵', color: '#fff', name: 'x', x: 1, y: 2, hp: 3, maxHp: 3, speed: 1, damage: 1, horde: false, stunT: 0, hurt: 0, biteT: 0, wt: 999, atkState: 'windup' }],
             effects: [], bullets: [], drops: [], mods: { plants: {} },
             _devGod: true, _devInf: true,
-            _weather: 'rain', _evt: { type: 'blackout', endT: 99 },
+            _weather: 'rain', _evt: { type: 'blackout', endT: 99 }, _wxLevel: 2,
+            announce: { text: '🌧 接下来：大雨', t: 2.8, color: '#6FA8D8' },
         };
         const s1 = serializeMpSnapshot(mpSv, null);
         assert(s1.zombies[0].wt === undefined && s1.zombies[0].atkState === undefined, 'mp-snap: zombie runtime fields whitelisted out');
         assert(s1.dev.god === true && s1.dev.inf === true, 'mp-snap: dev flags block');
         assert(s1.weather === 'rain' && s1.evt.type === 'blackout' && s1.evt.endT === 99, 'mp-snap: weather/evt whitelisted');
+        assert(s1.wxLevel === 2 && s1.announce.text === '🌧 接下来：大雨' && s1.announce.t === 2.8, 'mp-snap: wxLevel/announce whitelisted');
         const cullSv = {
             t: 1, day: 1, horde: null,
             zombies: [{ id: 'za', type: 'n', char: 'c', color: 'x', name: 'n', x: 1, y: 1, hp: 1, maxHp: 1, speed: 1, damage: 1 }],

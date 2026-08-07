@@ -451,8 +451,11 @@ function updateWeather(sv) {
             const level = B.wxLevelAt(sv.world.seed, sv.day);
             const inten = B.wxIntensity(wx, level);
             sv._weather = wx;
+            // 大字公告（提示与天气改变同刻，host 端设 → wsync 快照 announce 双端显示）：
+            // 「接下来：雷阵雨 ⚡」——预告即将到来的天气
+            sv.announce = { text: `${info.icon} 接下来：${inten.name}${inten.flash ? ' ⚡' : ''}`, t: 2.8, color: info.color };
             log(`${inten.name}：${info.desc}`, info.color);   // 强度名（小雨/中雨…大雪/浓雾）+ 描述，host 广播 msg 双端可见
-            if (wx === 'sandstorm') AudioSystem.playWaveWarning();
+            if (wx === 'sandstorm' || inten.flash) AudioSystem.playWaveWarning();
         }
     }
     sv._lastWxHour = hour;
@@ -1489,6 +1492,8 @@ export function applyMpSnapshot(snap, guestId) {
     if (typeof snap.weather === 'string') sv._weather = snap.weather;
     if (typeof snap.wxLevel === 'number') sv._wxLevel = snap.wxLevel;
     else if (snap.wxLevel === null) sv._wxLevel = null;
+    // 大字公告（天气切换提示等，host 权威 → guest 同显；t 由双端各自衰减）
+    if (snap.announce) sv.announce = { text: snap.announce.text, t: snap.announce.t, color: snap.announce.color || null };
     sv._evt = snap.evt ? { type: snap.evt.type, endT: snap.evt.endT } : null;
     // 尸潮阶段
     sv.horde = snap.hordePhase ? { phase: snap.hordePhase } : null;

@@ -450,249 +450,182 @@ function lookShades(bodyColor, L) {
     return s;
 }
 
-// 像素小人取色：外观参数化（肤色/发色/上衣/裤子/鞋子/瞳色/发型）+ 可选逐帧动画。
-// 动画参数 anim = { dir:'up'|'down'|'left'|'right', frame:0|1|2, moving, run, atk }，
-// 不传 anim 或 moving=false 时为静态站立。28×33 网格，供世界渲染与捏脸预览共用。
-// 形象增强（技术美术版）：hairStyle 0=短发 1=齐刘海长发 2=双马尾；
-// 表情（眉毛/眼睛高光/眨眼/嘴型随状态）；姿态（奔跑发丝后飘+弹跳、挥击手臂前伸/上举）。
+// MC 标准 20×32 像素网格(严格对照 A 组三视图参考图:A 组正面/侧视/背面)
+// 字符 → lookShades: '.' bg / 'h' hairLight / 'H' hair / 's' skin / 'S' skinShade
+//   'N' hairDark (深棕脖/领) / 'G' shirt / 'g' shirtDark / 'B' pants / 'b' pantsDark
+//   'k' shoes / 'K' shoesDark / 'E' eyes (需查 L.eyes)
+const FRONT_GRID = [
+  '..HHHHHHHHHHHHHHHH..',
+  '.HHHHHHHHHHHHHHHHHH.',
+  'HHHHHHHHHHHHHHHHHHHH',
+  'HHHHHHHHHHHHHHHHHHHH',
+  '.HHssssssssssssssHH.',
+  '.HsEEsssssssssEEssH.',
+  '.Hssssssssssssssssh.',
+  '.Hssssssssssssssssh.',
+  '.NNssssssssssssssNN.',
+  'NNNsssssssssssssNNN.',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'SgGGGGGGGGGGGGGGGSgG',
+  'SgsGGGGGGGGGGGGGSgsg',
+  'SgsGGGGGGGGGGGGGSgsg',
+  'SgsGGGGGGGGGGGGGSgsg',
+  'SgsGGGGGGGGGGGGGSgsg',
+  'SgsGGGGGGGGGGGGGSgsg',
+  'SgsGGGGGGGGGGGGGSgsg',
+  'bbbBBBBBBBBBBBBBBbbb',
+  'bBBBBBBBBBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'kkkkkkkkkkkkkkkkkkkk',
+  'kkkkkkkkkkkkkkkkkkkk',
+  'KKKKKKK..KKKKKKKKKK',
+];
+const BACK_GRID = [
+  '..HHHHHHHHHHHHHHHH..',
+  '.HHHHHHHHHHHHHHHHHH.',
+  'HHHHHHHHHHHHHHHHHHHH',
+  'HHHHHHHHHHHHHHHHHHHH',
+  'HHHHHHHHHHHHHHHHHHHH',
+  'HHHHHHHHHHHHHHHHHHHH',
+  'HHHHHHHHHHHHHHHHHHHH',
+  'HHHHHHHHHHHHHHHHHHHH',
+  '.Hssssssssssssssssh.',
+  'NNNsssssssssssssNNN.',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GSGGGGGGGGGGGGGGGSGG',
+  'GSsGGGGGGGGGGGGGSgsg',
+  'GSsGGGGGGGGGGGGGSgsg',
+  'GSsGGGGGGGGGGGGGSgsg',
+  'GSsGGGGGGGGGGGGGSgsg',
+  'GSsGGGGGGGGGGGGGSgsg',
+  'GSsGGGGGGGGGGGGGSgsg',
+  'bbbBBBBBBBBBBBBBBbbb',
+  'bBBBBBBBBBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'kkkkkkkkkkkkkkkkkkkk',
+  'kkkkkkkkkkkkkkkkkkkk',
+  'KKKKKKK..KKKKKKKKKK',
+];
+const SIDE_GRID = [
+  '..HHHHHHHHHHHHHHHH..',
+  '.HHHHHHHHHHHHHHHHHH.',
+  'HHHHHHHHHHHHHHHHHHHH',
+  'HHHHHHHHHHHHHHHHHHHH',
+  'HHHHHHHsssssHHHHHHHH',
+  'HHHHHHssEEssHHHHHHHH',
+  'HHHHHHssssssHHHHHHHH',
+  'HHHHHHsssMssHHHHHHHH',
+  '.HHHsssssssssssHHHH.',
+  '.NNsssssssssssssNN..',
+  'GGggGGGGGGGGGGGGGggG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'GGGGGGGGGGGGGGGGGGGG',
+  'sGGGGGGGGGGGGGGGGGgs',
+  'bbbBBBBBBBBBBBBBBbbb',
+  'bBBBBBBBBBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'bBBBBBBbBBBBBBBBBbB',
+  'skkkkkkkkkkkkkkkkkks',
+  'skkkkkkkkkkkkkkkkkks',
+  'sKKKKKKKKKKKKKKKKKKs',
+];
+function mcColor(ch, S, L) {
+  switch (ch) {
+    case 'h': return S.hairLight;
+    case 'H': return S.hair;
+    case 's': return S.skin;
+    case 'S': return S.skinShade;
+    case 'N': return S.hairDark;     // 脖=V领=深棕
+    case 'G': return S.shirt;
+    case 'g': return S.shirtDark;
+    case 'B': return S.pants;
+    case 'b': return S.pantsDark;
+    case 'k': return S.shoes;
+    case 'K': return S.shoesDark;
+    case 'E': return L.eyes;
+    case 'M': return S.mouth;
+    default: return null;
+  }
+}
+
+// 像素小人取色：外观参数化 + 可选逐帧动画。
+// 画布改为 20×32(MC 标准比例,对照 A 组三视图参考图);
+// 站立/走路/奔跑/挥击 仅做腿/手/衣摆 ±1 像素偏移,保留 MC 方块风。
 export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     const L = look || {};
     const S = lookShades(bodyColor || L.shirt || '#39d98a', L);
     const a = anim || null;
     const moving = !!(a && a.moving);
-    const f = moving ? (a.frame === 0 ? 1 : a.frame === 2 ? -1 : 0) : 0; // 迈步相位
-    const amp = a && a.run ? 2 : 1;                                  // 奔跑摆幅
-    // 侧视只看方向(站立朝左/右也显示侧视,与动画一致,不因移动切换正/侧脸)
+    const isUp = !!(a && a.dir === 'up');
     const isSide = !!(a && (a.dir === 'left' || a.dir === 'right'));
-    const isUp = !!(a && a.dir === 'up');                            // 直行=背面
-    const sign = a && a.dir === 'right' ? 1 : -1;                    // 右向镜像
-    const bob = !moving && a && a.frame === 1 ? 1 : (moving && a.frame !== 1 ? -(a && a.run ? 2 : 1) : 0); // 迈步上浮(跑更弹) / 站立呼吸
-    const hs = L.hairStyle === 1 || L.hairStyle === 2 ? L.hairStyle : 0; // 发型 0短发/1长发/2双马尾
-    const atk = !!(a && a.atk);                                      // 挥击姿态
-    // 腿：正面/背面垂直交错，侧面水平交错
-    const ldx = isSide ? f * amp * sign : 0, ldy = isSide ? 0 : f * amp;
-    const rdx = isSide ? -f * amp * sign : 0, rdy = isSide ? 0 : -f * amp;
-    const fd = f * amp * sign; // 侧面前腿/手臂朝行进方向偏移（后腿反向）
-    const step = fd > 0 ? 1 : fd < 0 ? -1 : 0; // 迈步方向(±1/0)：前腿/前手微移 1px，脚不滑动
-    const adx = isSide ? f * amp * sign : 0, ady = isSide ? 0 : f * amp; // 臂
-    // 奔跑时发丝后飘（左右跑朝身后偏 1px）；马尾随步伐摆动
-    const hairSweep = moving && a.run && isSide ? -sign : 0;
-    const tailSway = isSide ? 0 : f * amp;
-    // 挥击手臂：侧面朝前伸出，正/背面双手上举
-    const armFwd = atk && isSide ? sign : 0;
-    const armY0 = atk ? (isSide ? 14 : 10) : 13;
-    const armY1 = atk ? (isSide ? 18 : 16) : 20;
-    const R = (x0, y0, x1, y1, dx = 0, dy = 0) =>
-        px - dx >= x0 && px - dx < x1 && py - dy >= y0 && py - dy < y1;
+    const sign = a && a.dir === 'right' ? 1 : -1;
+    const f = moving ? (a.frame === 0 ? 1 : a.frame === 2 ? -1 : 0) : 0; // ±1
+    const amp = a && a.run ? 2 : 1;
+    const GRID_W = 20, GRID_H = 31;
 
-    let c = null;
-    // 腿脚（含鞋底暗部）：
-    // 正面/背面 = 左右分立、垂直交错（迈步上下）；
-    // 侧面 = 两腿收拢到身体中线、一前一后（前腿亮/后腿暗且略短=透视），朝行进方向摆步。
-    if (isSide) {
-        // 侧视(动画风格,静态/动态统一)：前后腿错位可见(前腿x13-18亮/后腿x9-14暗,主体不重叠)，
-        // 对称中心≈14=身体中线；静止(f=0)=前后腿并列的侧视轮廓，
-        // 走路=前腿迈步帧/后腿换步帧交替抬脚(与走路动画参考图一致)
-        const frontLift = f > 0 ? -1 : 0; // 前腿迈步帧抬脚
-        if (R(13, 20, 18, 28, 0, frontLift)) c = S.pants;
-        if (R(13, 25, 18, 28, 0, frontLift)) c = S.pantsDark;
-        if (R(13, 28, 19, 33, 0, frontLift)) c = S.shoes;   // 鞋前尖 x19 凸出行进侧
-        if (R(13, 31, 19, 33, 0, frontLift)) c = S.shoesDark;
-        const backLift = f < 0 ? -1 : 0; // 后腿换步帧抬脚
-        if (R(9, 20, 14, 27, 0, backLift)) c = S.pantsDark;
-        if (R(9, 26, 14, 32, 0, backLift)) c = S.shoesDark;
-    } else {
-        // 鞋（含鞋底暗部）
-        if (R(6, 28, 12, 33, ldx, ldy + bob)) c = S.shoes;
-        if (R(16, 28, 22, 33, rdx, rdy + bob)) c = S.shoes;
-        if (R(6, 30, 12, 33, ldx, ldy + bob)) c = S.shoesDark;
-        if (R(16, 30, 22, 33, rdx, rdy + bob)) c = S.shoesDark;
-        // 裤（裤脚暗部）
-        if (R(7, 20, 13, 28, ldx, ldy + bob)) c = S.pants;
-        if (R(15, 20, 21, 28, rdx, rdy + bob)) c = S.pants;
-        if (R(7, 25, 13, 28, ldx, ldy + bob)) c = S.pantsDark;
-        if (R(15, 25, 21, 28, rdx, rdy + bob)) c = S.pantsDark;
-    }
-    // 上衣（肩/胸高光 + 腰带/下摆/侧影）
-    if (isSide) {
-        // 轻侧视：躯干微收窄(x7-21, 只比正面窄1px) + 单侧光照(前侧高光/后侧阴影)
-        if (R(7, 12, 21, 20, 0, bob)) c = S.shirt;
-        if (R(7, 12, 21, 13, 0, bob)) c = S.shirtLight;   // 肩线高光
-        if (sign < 0) {
-            if (R(7, 13, 10, 17, 0, bob)) c = S.shirtLight;   // 前(左)胸高光
-            if (R(18, 13, 21, 19, 0, bob)) c = S.shirtDark;   // 后(右)背阴影
-        } else {
-            if (R(18, 13, 21, 17, 0, bob)) c = S.shirtLight;  // 前(右)胸高光
-            if (R(7, 13, 10, 19, 0, bob)) c = S.shirtDark;    // 后(左)背阴影
-        }
-        if (R(7, 19, 21, 20, 0, bob)) c = S.shirtDark;        // 下摆暗部
-        if (R(sign < 0 ? 21 : 5, 19, sign < 0 ? 22 : 6, 20, 0, bob)) c = S.shirtDark; // 衣摆向后(背侧)飘出 1px=后摆感
-    } else {
-        if (R(6, 12, 22, 20, 0, bob)) c = S.shirt;
-        if (R(6, 12, 22, 13, 0, bob)) c = S.shirtLight;
-        if (R(9, 14, 19, 16, 0, bob)) c = S.shirtLight;
-        if (R(7, 17, 21, 19, 0, bob)) c = S.shirtDark;
-        if (R(6, 19, 22, 20, 0, bob)) c = S.shirtDark;
-        if ((R(6, 13, 8, 19, 0, bob) || R(20, 13, 22, 19, 0, bob))) c = S.shirtDark;
-    }
-    // 手臂（袖口 + 手；侧视只画**一只手**(行进侧)自然垂于体侧=对照 AI 参考图；
-    // 走路时随步伐轻摆(sw 走±1/跑±2)，挥击时前伸 2px）
-    if (isSide) {
-        const sw = step * amp; // 手摆幅(走 ±1 / 跑 ±2)
-        const armOut = 2 * armFwd;
-        if (sign < 0) {
-            // 朝左：单前手(左,行进侧)
-            if (R(3 + armOut - sw, armY0, 6 + armOut - sw, armY1, 0, bob)) c = S.skin;
-            if (R(3 + armOut - sw, armY0, 6 + armOut - sw, armY0 + 2, 0, bob)) c = S.shirtDark;
-        } else {
-            // 朝右：单前手(右,行进侧)
-            if (R(21 + armOut - sw, armY0, 25 + armOut - sw, armY1, 0, bob)) c = S.skin;
-            if (R(21 + armOut - sw, armY0, 25 + armOut - sw, armY0 + 2, 0, bob)) c = S.shirtDark;
-        }
-    } else {
-        // 正面双臂贴体垂下（贴躯干侧缘，不悬空"张开"）
-        if (R(4, armY0, 6, armY1, adx, bob)) c = S.skin;
-        if (R(22, armY0, 24, armY1, -adx, bob)) c = S.skin;
-        if (R(4, armY0, 6, armY0 + 2, adx, bob)) c = S.shirtDark;
-        if (R(22, armY0, 24, armY0 + 2, -adx, bob)) c = S.shirtDark;
-    }
-    // 脖子深棕横条 + V 形衣领(Minecraft 方块像素风,对照 A 组参考图)
-    if (R(11, 10, 17, 11, 0, bob)) c = S.hairDark;          // 脖子深棕整行
-    if (R(12, 11, 16, 12, 0, bob)) c = S.hairDark;          // V 领外缘深棕
-    if (R(13, 11, 15, 11, 0, bob)) c = S.skin;              // V 领内三角露肤色
-    // 头 + 耳朵（侧视不画耳朵=侧面干净剪影；远耳已由后脑发盖住）
-    if (R(8, 1, 20, 11, 0, bob)) c = S.skin;
-    if (!isSide) {
-        if (R(7, 6, 9, 10, 0, bob)) c = S.skinShade;
-        if (R(19, 6, 21, 10, 0, bob)) c = S.skinShade;
-    }
-    // 头发（侧视头顶冠全覆盖 y0-2 + 后脑半宽 y2-4 露出额头；正面顶发+双鬓角；背面整个后脑）
-    if (isSide) {
-        // 侧视头顶：留 1px bob 余量防露头皮(迈步帧整体上浮)
-        if (R(8, 0, 20, 3, hairSweep, bob)) c = S.hair;          // 头顶冠
-        if (R(8, 1, 20, 3, hairSweep, bob)) c = S.hairLight;
-        if (sign > 0) {
-            if (R(8, 2, 15, 5, hairSweep, bob)) c = S.hair;     // 朝右：后脑在左 x8-15
-            if (R(9, 2, 14, 4, hairSweep, bob)) c = S.hairLight;
-        } else {
-            if (R(13, 2, 20, 5, hairSweep, bob)) c = S.hair;    // 朝左：后脑在右 x13-20
-            if (R(14, 2, 19, 4, hairSweep, bob)) c = S.hairLight;
-        }
-    } else {
-        if (R(8, 0, 20, 4, hairSweep, bob)) c = S.hair;
-        if (R(8, 1, 20, 2, hairSweep, bob)) c = S.hairLight;
-        if (R(8, 4, 10, 8, hairSweep, bob)) c = S.hair;
-        if (R(18, 4, 20, 8, hairSweep, bob)) c = S.hair;
-    }
-    // 发型 1 齐刘海：盖额头的刘海层（止于眉毛上方）+ 两侧披肩长发
-    if (hs === 1) {
-        if (R(9, 3, 19, 5, hairSweep, bob)) c = S.hair;
-        if (R(10, 3, 18, 4, hairSweep, bob)) c = S.hairLight;
-        if (!isUp && R(7, 11, 9, 17, 0, bob)) c = S.hair;
-        if (!isUp && R(19, 11, 21, 17, 0, bob)) c = S.hair;
-        if (!isUp && R(7, 14, 9, 17, 0, bob)) c = S.hairDark;
-        if (!isUp && R(19, 14, 21, 17, 0, bob)) c = S.hairDark;
-    }
-    // 发型 2 双马尾：两侧马尾随步伐摆动（侧面只画朝向侧）——加宽到 6px + 根部高光 + 末梢暗色增加立体感
-    if (hs === 2) {
-        if (!isSide) {
-            if (R(2, 3, 8, 12, 0, tailSway + bob)) c = S.hair;
-            if (R(20, 3, 26, 12, 0, -tailSway + bob)) c = S.hair;
-            if (R(2, 3, 4, 6, 0, tailSway + bob)) c = S.hairLight;       // 左马尾根部高光
-            if (R(24, 3, 26, 6, 0, -tailSway + bob)) c = S.hairLight;     // 右马尾根部高光
-            if (R(2, 10, 8, 12, 0, tailSway + bob)) c = S.hairDark;       // 左马尾末梢暗部
-            if (R(20, 10, 26, 12, 0, -tailSway + bob)) c = S.hairDark;    // 右马尾末梢暗部
-        } else if (sign < 0) {
-            if (R(2, 3, 8, 12, 0, tailSway + bob)) c = S.hair;
-            if (R(2, 3, 4, 6, 0, tailSway + bob)) c = S.hairLight;
-            if (R(2, 10, 8, 12, 0, tailSway + bob)) c = S.hairDark;
-        } else {
-            if (R(20, 3, 26, 12, 0, -tailSway + bob)) c = S.hair;
-            if (R(24, 3, 26, 6, 0, -tailSway + bob)) c = S.hairLight;
-            if (R(20, 10, 26, 12, 0, -tailSway + bob)) c = S.hairDark;
-        }
-    }
-    if (isUp) {
-        if (R(8, 4, 20, 10, 0, bob)) c = S.hair;
-        if (R(8, 4, 20, 5, 0, bob)) c = S.hairLight;
-        // 长发直行：后脑发梢延长至颈
-        if (hs === 1 && R(8, 10, 20, 12, 0, bob)) c = S.hair;
-        if (hs === 1 && R(8, 11, 20, 12, 0, bob)) c = S.hairDark;
-    } else {
+    let grid;
+    if (isUp) grid = BACK_GRID;
+    else if (isSide) grid = SIDE_GRID;
+    else grid = FRONT_GRID;
+
+    // 朝左镜像(整列 x 翻转)
+    let lx = isSide && sign < 0 ? (GRID_W - 1 - px) : px;
+    let ly = py;
+
+    // 走路动画:腿/手 ±1 像素偏移
+    if (moving) {
         if (isSide) {
-            // 侧视 3/4 脸(可见单眼+嘴,与正视图 y 对齐对应):脸占行进侧 x8-13(左)/x15-20(右)
-            const backX0 = sign < 0 ? 12 : 8, backX1 = sign < 0 ? 20 : 16;
-            if (R(backX0, 3, backX1, 11, 0, bob)) c = S.hair;        // 后脑发(留 bob 余量防露头皮)
-            if (R(backX0, 3, backX1, 4, 0, bob)) c = S.hairLight;
-            if (hs === 1 && R(backX0, 9, backX1, 12, 0, bob)) c = S.hair;    // 长发披肩延颈
-            if (hs === 1 && R(backX0, 10, backX1, 12, 0, bob)) c = S.hairDark; // 长发末梢暗
-            // 脸皮肤(行进侧,6px 宽给五官空间)
-            if (sign > 0) {
-                if (R(15, 3, 20, 11, 0, bob)) c = S.skin;
-            } else {
-                if (R(8, 3, 13, 11, 0, bob)) c = S.skin;
-            }
-            // 鼻梁凸出(行进侧最前 1px 深色)
-            if (sign > 0) {
-                if (R(20, 4, 21, 10, 0, bob)) c = S.skinShade;
-            } else {
-                if (R(7, 4, 8, 10, 0, bob)) c = S.skinShade;
-            }
-            // 耳朵(脸后缘=后脑侧中部)
-            if (sign > 0) {
-                if (R(14, 7, 15, 9, 0, bob)) c = S.skinShade;
-            } else {
-                if (R(13, 7, 14, 9, 0, bob)) c = S.skinShade;
-            }
-            // 单眉+单眼+眼高光(与正视图对应:朝左=左眼 x10-12/朝右=右眼 x16-18, y6-8 同高)
-            const eEye = sign > 0 ? 16 : 10;
-            if (R(eEye, 5, eEye + 2, 6, 0, bob)) c = S.hairDark;
-            if (R(eEye, 6, eEye + 2, 8, 0, bob)) c = L.eyes;
-            if (R(eEye, 6, eEye + 1, 7, 0, bob)) c = S.eyeHighlight;
-            // 嘴(与正视图 y8-9 对齐,偏行进侧)
-            const mx = sign > 0 ? 15 : 10;
-            const mw = moving ? (a.run ? 4 : 3) : 3;
-            const mh = moving && a.run ? 2 : 1;
-            if (R(mx, 8, mx + mw, 8 + mh, 0, bob)) c = S.mouth;
-            // 下巴阴影(脸前侧底部收)
-            if (sign > 0) {
-                if (R(17, 10, 20, 11, 0, bob)) c = S.skinShade;
-            } else {
-                if (R(9, 10, 12, 11, 0, bob)) c = S.skinShade;
-            }
+            // 侧视:前手/前腿 朝行进侧 ±1,后手/后腿 反向
+            // 简化:整行 13-31(臂+腿) y 偏移 f,衣身 y 不动
+            if (ly >= 13 && ly <= 31) ly += f;
         } else {
-            // 正脸(Minecraft 方块像素风,对照 A 组参考):双眉 1x1 + 双眼 2x2 精确方块 + 高光点 + 腮红 + 嘴 1x1
-            // 眉(1x1 小方块,与参考图眉毛位置一致)
-            if (R(10, 5, 11, 6, 0, bob)) c = S.hairDark;
-            if (R(16, 5, 17, 6, 0, bob)) c = S.hairDark;
-            if (hs === 1 && R(9, 5, 19, 6, 0, bob)) c = S.hair;
-            // 眼 2x2 精确方块(与参考图黑色眼睛方块一致);眨眼=y6→y7
-            const blink = !moving && a && a.frame === 1;
-            const eyeY = blink ? 7 : 6;
-            if (R(10, eyeY, 12, eyeY + 2, 0, bob)) c = L.eyes;
-            if (R(16, eyeY, 18, eyeY + 2, 0, bob)) c = L.eyes;
-            // 眼高光点(2x2 内左上 1x1 白)
-            if (R(10, eyeY, 11, eyeY + 1, 0, bob)) c = S.eyeHighlight;
-            if (R(16, eyeY, 17, eyeY + 1, 0, bob)) c = S.eyeHighlight;
-            // 腮红(小方块)
-            if (R(9, 8, 10, 9, 0, bob)) c = S.cheek;
-            if (R(18, 8, 19, 9, 0, bob)) c = S.cheek;
-            // 嘴 1x1 小方块(对照参考图小红/暗块)
-            if (atk) { if (R(12, 8, 16, 10, 0, bob)) c = S.mouth; }
-            else if (moving && a.run) { if (R(12, 9, 16, 11, 0, bob)) c = S.mouth; }
-            else if (moving) { if (R(12, 9, 16, 10, 0, bob)) c = S.mouth; }
-            else { if (R(13, 9, 14, 10, 0, bob)) c = S.mouth; }
+            // 正面/背面:左右腿上下交错
+            if (ly >= 21 && ly <= 31) {
+                if (lx < 10) ly += f; else ly -= f;
+            }
+            // 双臂上下交错(站立走路)
+            if (ly >= 13 && ly <= 18) {
+                if (lx < 10) ly += f; else ly -= f;
+            }
         }
     }
-    return c;
+
+    if (ly < 0 || ly >= GRID_H) return null;
+    const row = grid[ly];
+    if (lx < 0 || lx >= row.length) return null;
+    return mcColor(row[lx], S, L);
 }
 
 // 像素小人离屏缓存：每个（外观+动画帧）组合只生成一次位图，之后 drawImage 整帧贴出。
 const _bodySpriteCache = new Map();
 export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, look, anim) {
     const level = (infection || 0) / 100;
-    const x = Math.round(sx - 12), y = Math.round(sy - 17);
-    const width = 28, height = 33;
+    const x = Math.round(sx - 10), y = Math.round(sy - 16);
+    const width = 20, height = 32;
     if (level <= 0.01) {
         const L = look || {};
         const key = [color, L.skin, L.hair, L.pants, L.shoes, L.eyes, L.hairStyle,

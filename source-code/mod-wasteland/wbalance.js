@@ -56,13 +56,13 @@ export const Z_WANDER_SPEED = 0.45;
 // ---------- 天气系统（§13.1 数值收口 / §13.6 概率表权重和 = 1，smoke 断言） ----------
 // sv._weather 每天 8:00 由 weatherAt(seed, day) 确定性切换（§13.2：世界状态禁 Math.random）；
 // 单机/联机 host 同一公式，guest 经 wsync 快照同步（§5.1 零差异）。
-// particles: 0 无粒子 / 1 雨 / 2 雪 / 3 雾（层）/ 4 沙尘
+// particles: 0 无粒子 / 1 雨 / 2 雪 / 3 雾（层）/ 4 沙尘；icon 用于切换公告
 export const WX_TABLE = {
-    clear:     { name: '晴朗',   color: '#E8E4D0', weight: 0.38, speedMul: 1.0, particles: 0, desc: '万里无云，视野开阔' },
-    rain:      { name: '细雨',   color: '#6FA8D8', weight: 0.20, speedMul: 1.0, particles: 1, desc: '雨丝斜织，地面湿润' },
-    snow:      { name: '飘雪',   color: '#E8F2FF', weight: 0.12, speedMul: 0.9, particles: 2, desc: '雪花纷飞，行动迟缓' },
-    fog:       { name: '大雾',   color: '#B8C4C8', weight: 0.16, speedMul: 0.9, particles: 3, desc: '浓雾弥漫，视野受限' },
-    sandstorm: { name: '沙尘暴', color: '#D8B878', weight: 0.14, speedMul: 0.7, particles: 4, desc: '狂风卷沙，行动困难' },
+    clear:     { name: '晴朗',   color: '#E8E4D0', weight: 0.38, speedMul: 1.0, particles: 0, icon: '☀', desc: '万里无云，视野开阔' },
+    rain:      { name: '细雨',   color: '#6FA8D8', weight: 0.20, speedMul: 1.0, particles: 1, icon: '🌧', desc: '雨丝斜织，地面湿润' },
+    snow:      { name: '飘雪',   color: '#E8F2FF', weight: 0.12, speedMul: 0.9, particles: 2, icon: '❄', desc: '雪花纷飞，行动迟缓' },
+    fog:       { name: '大雾',   color: '#B8C4C8', weight: 0.16, speedMul: 0.9, particles: 3, icon: '🌫', desc: '浓雾弥漫，视野受限' },
+    sandstorm: { name: '沙尘暴', color: '#D8B878', weight: 0.14, speedMul: 0.7, particles: 4, icon: '🌪', desc: '狂风卷沙，行动困难' },
 };   // 权重和 = 0.38+0.20+0.12+0.16+0.14 = 1.00
 export function wxInfo(key) { return WX_TABLE[key] || WX_TABLE.clear; }
 // 确定性哈希（内联纯函数，wbalance 无外部依赖）：weatherAt(seed, day) 每天固定
@@ -112,7 +112,8 @@ export function wxLevelCur(sv) {
     return (sv && sv._wxLevel != null) ? sv._wxLevel : wxLevelAt(sv.world.seed, sv.day);
 }
 export function wxIntensity(type, level) {
-    const arr = WX_INTENSITY[type] || WX_INTENSITY.rain;
+    const arr = WX_INTENSITY[type];
+    if (!arr) return { name: wxInfo(type).name, density: 0, mul: 1 };   // clear/fog 无强度档→返回类型名自身（避免 fallback 到 rain 的"小雨/阵雨"误显）
     const l = Math.max(0, Math.min(arr.length - 1, level || 0));
     return arr[l];
 }
