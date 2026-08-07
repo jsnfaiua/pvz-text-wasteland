@@ -17,6 +17,21 @@ import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BO
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
 export { TS };
 
+// ============================================================
+// 角色 sprite:参考图(A 组 Minecraft 三视图)1:1 提取,一个像素不少。
+// 3 个方向:front(正面) / side(侧视,朝左/右镜像) / back(背面)。
+// 渲染直接 drawImage 原始像素,无网格化、无缩放、无动画简化。
+// ============================================================
+const _mcSprites = { front: null, side: null, back: null };
+(() => {
+    const base = new URL('.', import.meta.url);
+    for (const n of ['front', 'side', 'back']) {
+        const img = new Image();
+        img.onload = () => { _mcSprites[n] = img; };
+        img.src = new URL('sprites/sprite-' + n + '.png', base).href;
+    }
+})();
+
 // 建造件定义（survival.js 建造逻辑与建造栏渲染共用）
 export const BUILD_ITEMS = [
     // 墙升级链（B1）：选「木墙」对准已有墙再放 → 升级 石墙(lv2)→金属墙(lv3)
@@ -455,298 +470,298 @@ function lookShades(bodyColor, L) {
 //   'N' hairDark (深棕脖/领) / 'G' shirt / 'g' shirtDark / 'B' pants / 'b' pantsDark
 //   'k' shoes / 'K' shoesDark / 'E' eyes (需查 L.eyes)
 const FRONT_GRID = [
-  '............hhhhhhhhhhhhhhhhhhhhhh..............',
-  '............hhhhhhhhhhhhhhhhhhhhhh..............',
-  '..........NNhhhhhhhhhhhhhhhhhhhhhhhhh...........',
-  '..........NNhhhhhhhhhhhhhhhhhhhhhhhhh...........',
-  '........NNNNhhhhhhNNhhhhhhhhNNhhhhhhhNN.........',
-  '........NNhhhhhhhhNNhhhhhhhhNNNhhhhhhNN.........',
-  '........NNNhhhhhNNNNhhhhhNNNNNNhhhhHHNN.........',
-  '........NNhhhhhhNNNNhhhhhNNNNNNhhhhHHNN.........',
-  '........NNNNhhNNsssshhhhhNNssssNNhhNNNN.........',
-  '........NNNNhhNNssssshhhhNNssssNNhhNNNN.........',
-  '........NNNNNNsssssssssHHssssssssNNNNNN.........',
-  '........NNNNNNsssssssssHHssssssssNNNNNN.........',
-  '........MMMNssssNNNNssssssssNEEssssNNSS.........',
-  '........MMMNssssNNNNssssssssEEEssssNNSS.........',
-  '........MMMNssssNNNNssssssssEENssssNNSS.........',
-  '........MMkkssssssssssssssssssssssssMSS.........',
-  '........MMkkssssssssssssssssssssssssMSS.........',
-  '..........EEssssssssSSSSSSssssssssssH...........',
-  '..........EEsssssssssSSSSsssssssssssH...........',
-  '............ssssssssssssssssssssssss............',
-  '............ssssssssssssssssssssssss............',
-  '............ssssssssssssssssssssssss............',
-  '..................MMMMMMMMMMMM..................',
-  '..................SSSSSSSSSSSS..................',
-  'GGGGGGGGGGgggggg..SSSSSSSSSSSS..ggggggGGGGGGGGGG',
-  'GGGGGGGGGGggggggg.GGGSSSSSSSGG..ggggggGGGGGGGGGG',
-  'GGGGGGGGGGggggggggGGSSSSSSSSGGggggggggGGGGGGGGGG',
-  'GGGGGGGGGGggggggggggMMMMMMMM.gggggggggGGGGGGGGGG',
-  'GGGGGGGGGGgggggggggggMMMMMMMggggggggggGGGGGGGGGG',
-  'GGGGGGGGGGggggggggggg......gggggggggggGGGGGGGGGG',
-  'GGGGGGGGGGggggggggggggggggggggggggggggGGGGGGGGGG',
-  'GGGGGGGGGGGgggggggggggggggggggggggggg.GGGGGGGGGG',
-  'GGGGGGGGGGG.ggggggggggggggggggggggggg.GGGGGGGGGG',
-  'GGGGGGGGGGG.ggggggggggggggggggggggggggGGGGGGGGGG',
-  'GGGGGGGGGGG.ggggggggggggggggggggggggg.GGGGGGGGGG',
-  'GGGGGGGGGGG.ggggggggggggggggggggggggg.GGGGGGGGGG',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggggggggggggggggggggggggg.ssssssssss',
-  'sssssssssss.ggbBBBBBBBBBBBBBBBBBBBggg.ssssssssss',
-  'sssssssssss.ggBBBBbBBbBbbBbbBbbBbbbgg.ssssssssss',
-  'sssssssssss.ggBBBBBBbBbBBbBBbbbBBbbgg.ssssssssss',
-  'sssssssssssgggBbbBBbbbbBbBBbbbbbbbbgggssssssssss',
-  '..........ggbbbbBBbBBbbBbbbbbbbbbbbbbgg.........',
-  '..........ggbbbbbbbbBBBbbbbbbbbbbbbbggg.........',
-  '..........ggbbbbBBBBBBB...bbbbbbbbbbggg.........',
-  '..........ggbbbbbbBBBBB...bbbbbbbbbbbgg.........',
-  '............bbbbbBbBBBB...bbbbbbbbBBB...........',
-  '..........g.bbbbbbBBBBB...bbbbbbbBbBB...........',
-  '............bbbbbBbBBBB...bbbbbbbBBBB...........',
-  '............bbbbbbBBBBB...bbbbbbBbBBB...........',
-  '............bbbbbbbBBBBg..bbbbbbbBBBB...........',
-  '..........g.bbbbbbbbBBBg..bbbbbbbBBBB...........',
-  '..........g.bbbbbbbbBBBg.gbbbbbbbbBBb...........',
-  '..........g.bbbbbbbbBBBg..bbbBbbbBBBb...........',
-  '..........g.BbbbbbbbbBBg.gbbbbbBbbBbb...........',
-  '..........g.bbbbbbbBBBBg..BbbbBBBbbbb...........',
-  '..........g.bBBBBBBBBBb..ggBBBBBBBBBb...........',
-  '..........g....ggg..gg.g.g........g.............',
-  '..........g.bbbbbbbbbbbg.gBbbbbbBbbbb...........',
-  '..........ggbbbbbbbbbbbg.ggbbbbbbbbbb...........',
-  '..........g.bbbbbbbbbbbg.ggbbBbbbBBBb.g.........',
-  '..........ggbbbbbbbbbbBg.ggbbbbbbbbBb...........',
-  '..........ggbbbbbbbbBbBg.ggbbbbbbBBbb...........',
-  '..........ggbbbbbbBbbBbg.ggbbBbbbbbBb.g.........',
-  '..........ggbbbbbbbbBbBg.ggbbBbBBBBBb...........',
-  '..........ggbbbbbbbbbBBg.ggbbBbbBBBBb...........',
-  '..........g.bbbbbbbbBbBg.ggbbbbbbbBBb...........',
-  '..........g.bbbbbbbbbbBg.gggggggggggg...........',
-  '..........g.bbbbbbbbbbBg.gggggggggggg.g.........',
-  '..........ggbbbHbHbHHbBg.gggggggHggHggg.........',
-  '............HHHHHHHHHHH...EHHHHHHHHHH...........',
-  '............HHHHHHHHHHH...EHHHHHHHHHH...........',
-  '............NNEEEEEEHHH...EHHEEEEEENN...........',
-  '.........HHHHNEEEEEEHHH...EHHEEEEEHNHHHH........',
-  '.........HHHHHHHHHHHHHH...EHHHHHHHHHHHHH........',
-  '.........HHHHHHHHHHHHHH...HHHHHHHHHHHHHH........',
-  '.........HHHHHHHHHHHHHH...NHHHHHHHHHHHHE........',
-  '.........K.EEEEEE.........EEEEEEEEEEEEEE........',
-  '.........KKEEEEEEE....E...EEEEEEEEEEEEEE........',
-  '............ggbg................................',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........sssssssssssEEEsssssEEEssssssssss........',
+  '........sssssssssssEEEsssssEEEssssssssss........',
+  '........ssssssssssssssssssssssssssssssss........',
+  '........ssssssssssssssssssssssssssssssss........',
+  '........ssssssssssssssssssssssssssssssss........',
+  '........ssssssssssssssssssssssssssssssss........',
+  '........ssssssssssssssssssssssssssssssss........',
+  '........ssssssssssssssssssssssssssssssss........',
+  '........ssssssssssssssssssssssssssssssss........',
+  '........ssssssssssssssMMMMssssssssssssss........',
+  '........ssssssssssssssMMMMssssssssssssss........',
+  '..............NNNNNNNNNNNNNNNNNNNN..............',
+  '..............NNNNNNNNNNNNNNNNNNNN..............',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............KKKKKKKKKKKKKKKKKKKK..............',
+  '..............KKKKKKKKKKKKKKKKKKKK..............',
+  '..............KKKKKKKKKKKKKKKKKKKK..............',
+  '..............KKKKKKKKKKKKKKKKKKKK..............',
 ];
 const BACK_GRID = [
-  '..........Nhhhhhhhhhhhhhhhhhhh..................',
-  '..........hhhhhhhhhhhhhhhhhhhh..................',
-  '........hhhhNNhhhhhhhhhhhhNhhhh.................',
-  '........hhhhNNNhhhhhhhhhhhNNhhh.................',
-  '......NNhhhhhhhhhhhhhhhNNNhhNNNNN...............',
-  '......NNNhhhhhhhhhhhhhhNNNhhNNNNN...............',
-  '......NNNNNNNhhNhhhhhhhNNNhhNNNNN...............',
-  '......NNNNNNNhhNhhhhhhhhhhhNNNNNH...............',
-  '......NNNNNNNhhNhhhhhhhhhhNNNNNNN...............',
-  '......NNNNNNNhhNhhhhhhhhhhNNNNNNN...............',
-  '......NNNNNNNhhNhhhhhhhhhhNNNNNNN...............',
-  '.......MMMNNNNNNNNhhhhhNNNNNNNKMM...............',
-  '.......kMMNNNNNNNNhhhhhNNNNNNHKMM...............',
-  '.......kMMNNNNNNNNhhhhhNNNNNNHKMM...............',
-  '.......kMMNNNNNNNNhhNNNNNNNNNHHMM...............',
-  '.......kMNNNNNNNNNNNNNNNNNNNNNEMM...............',
-  '...........NNNNNNNNNNNNNNNNNNEE.................',
-  '...........NNNNMNNNNNNNNMNNNMME.................',
-  '...........NNNNMNNNNNNNNMMNMMM..................',
-  '...........MMMMMNNNNNNNNMMMMMM..................',
-  '...........MMMMSSSSSSSSSSMMMMM..................',
-  '..............SSSSSSSSSSSS......................',
-  'GGGGGGGGggggggssssssssssssgggggGGGGGGGG.........',
-  'GGGGGGGGgggggggGGGGGGGGGGggggggGGGGGGGG.........',
-  'GGGGGGGGgggggggGGGGGGGGGGggggggGGGGGGGG.........',
-  'GGGGGGGGgggggggggggggggggggggggGGGGGGGG.........',
-  'GGGGGGGGgggggggggggggggggggggggGGGGGGGG.........',
-  'GGGGGGGGgggggggggggggggggggggggGGGGGGGG.........',
-  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
-  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
-  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
-  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
-  'GGGGGGGGGggggggggggggggggggggggGGGGGGGG.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggEssssssss.........',
-  'sssssssssgggggggggggggggggggggkssssssss.........',
-  'sssssssssgggggggggggggggggggggkssssssss.........',
-  'sssssssssBBBbbbbBbBbbbBbbBbBBBkssssssss.........',
-  'sssssssssBbbbbbBbbbbbbbbbbbBBBkssssssss.........',
-  'sssssssssbbBbBBBBbbbbbbbbbbBBbkssssssss.........',
-  'sssssssssbbbbbbBbbbbbbbbbbbbbBkssssssss.........',
-  '.........bbbBBBBbbbbbbBbbbbBbb..................',
-  '.........bbbbBbBbbBBBbbbbbbbbbg.................',
-  '.........bbBbbBBbb...bbbbbbBbb..................',
-  '.........bbbbbbbbb...bbbbbbbbb..................',
-  '.........bbbbbbbbbg..bbbbbbBbB..................',
-  '.........bbbbbbbbbg..bbbbbbbbb..................',
-  '.........bbbbbbbbbg..bbbbbbbbb..................',
-  '.........bbbbbbbbbg..bbbbbbbbb..................',
-  '.........bbbbbbbbbg..bbbbbbbbb..................',
-  '.........bbbbbbBbbg..bbbbbbbbb..................',
-  '.........bbbbbBBbbg..bbbbbbbbB..................',
-  '.........bbbbbbBbbg..bbbbbbBbb..................',
-  '.........bbbbbbBBbg..BBBBbbBbb..................',
-  '.........bbbbgggggg..ggggggggg..................',
-  '.........bbbbbbgbgg..bBBBBBBBb..................',
-  '.........bbbbbbbbbg..bbbBbbbBB..................',
-  '.........bbbbBBBbbg..bbbBBBBBB..................',
-  '.........bbbbbBBBbg.gbbbBbBBbB..................',
-  '.........bbbbBbBbbg..bbbBBBBBB..................',
-  '.........bbbbbbbBbg.gbbbBBBBbB..................',
-  '.........bbbbbbBbbg..bBBBBBBBB..................',
-  '.........bbbbbBBBbg..bBBBBBBBB..................',
-  '.........bbbbbbBbbg..bBBBBBBBb..................',
-  '.........bgggggggb...gBggggggg..................',
-  '.........ggggggggg...ggggggggg..................',
-  '........ggHHHHHHHHg.gHHHHHHHHH..................',
-  '.........HHHHHHHHH...HHHHHHHHH..................',
-  '.........HHHHHHHHH...HHHHHHHHH..................',
-  '.........HHHHHHHHH...HHHHHHHHH..................',
-  '.......HHHHHHHHHHH...HHHHHHHHHH.................',
-  '.......HHHHHHHHHHH...HHHHHHHHHH.................',
-  '.......HHHHHHHHHHH...HHHHHHHHHH.................',
-  '.......EEEEEEEEEEE...KKKKKKE..K.................',
-  '.......EEEEEEEEEEE...KKKKEEEEKK.................',
-  '................................................',
-  '................................................',
-  '..............................................k.',
-  '.....................................M...b....b.',
-  '....................................Mk......MkBk',
-  '...................................MMGk.....BMM.',
-  '...................................M.MMk.MbbbbMk',
-  '....................................kMMMMbMMBkM.',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '..............NNNNNNNNNNNNNNNNNNNN..............',
+  '..............NNNNNNNNNNNNNNNNNNNN..............',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '........GGGGGggggggggggggggggggggggGGGGG........',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '......ssssssssggggggggggggggggggggssssssss......',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............bbbbbbbbbBBBbbbbbbbbb.............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............kkkkkkkkkkkkkkkkkkkk..............',
+  '..............KKKKKKKKKKKKKKKKKKKK..............',
+  '..............KKKKKKKKKKKKKKKKKKKK..............',
+  '..............KKKKKKKKKKKKKKKKKKKK..............',
+  '..............KKKKKKKKKKKKKKKKKKKK..............',
 ];
 const SIDE_GRID = [
-  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh......',
-  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh......',
-  '..Nhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh...',
-  '..HhhhhhhhhNNNNNNhhhhhhhhhhhhhNNNNhhhhhhhhhhh...',
-  'hhhhhhhhhhhNNNNNNhhhhhhhhhhhhhNNNhhhhhhhhhhhhHHH',
-  'hhhhhhNNhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhHHH',
-  'hhhhhhNNhhhhhhhhhHHHhhNNNNNhhhhhhhhhNNNhhhhhhHHH',
-  'hhhhhhNNhhhhhhhhhHHHKKNNNNNhhhhhhhhhhNNhhhhhhHHH',
-  'hhhNNsssNNhhhhNNNHHHNNNNNNNNNNNNNNhhhNNhhhhhhHHH',
-  'hhhNNsssNNEhhNNNNNNNNNNNNNNNNNNNNNhhNNNhhhhhhHHH',
-  'hhhNNsssssshhNNNNNNNNNNNNNNNNNNNNNhhNNNhhhhhhHHH',
-  'hhhNNsssssshhNNNNNNNNNNNNNNNNNNNNNhhNNNhhhhhhHHH',
-  '..SsssNNssssssNNNNNNsssssssNNNNNNNNNNNNNNNNNNHHH',
-  '..MsssNNsssssNNNNNNNsssssssNNNNNNNNNNNNNNNNNNHHH',
-  '..MsssNNssssssNNNNNNsssssssNNNNNNNNNNNNNNNNNNHHH',
-  '..MssssssssssssssNNNsssssssNNNNNNNNNNNNNNNNNN...',
-  '..MssssssssssssssNNNsssssssNNNNNNNNNNNNNNNNNN...',
-  '..SssssssssssssssssssSSSKHHNNNNNNNNNNNNNNN......',
-  '..MssssssssssssssssssSSSHHHNNNNNNNNNNNNNNNEEE...',
-  '.....ssssssssssssssssssssssNNNNNNNNNNEEK.ENNN...',
-  '.....ssssssssssssssssssssssMNNNNNNNNNkk..NNNN...',
-  '.....ssssssssssssssssssssssMMMMMNNNNkkk.........',
-  '.....sssssssssssMMMMMMMMMMMMMMMMMMMMMMM.........',
-  '................MMMMMMMMMMMMMMMMMMMMM...........',
-  '........ggggggggMMMMMsssssssssSSSSSSS...........',
-  '........ggggggggggggggggggGGGGGGGGGGG...........',
-  '........ggggggggggggggggggGGGGGGGGGGG...........',
-  '...ggGGGGGGGGGGGGGGGGgggggggggggggggg...........',
-  '..gggGGGGGGGGGGGGGGGGgggggggggggggggg...........',
-  '..ggggGGGGGGGGGGGGGGGgggggggggggggggg...........',
-  '...gggGGGGGGGGGGGGGGGgggggggggggggggg...........',
-  '...gggGGGGGGGGGGGGGGGgggggggggggggggg...........',
-  '...gggGGGGGGGGGGGGGGGgggggggggggggggg...........',
-  '...gggGGGGGGGGGGGGGGGgggggggggggggggg...........',
-  '...ggGGGGGGGGGGGGggggGGgggggggggggggg...........',
-  '...ggGGGGGGGGGGGGggggGGGggggggggggggg...........',
-  '.....ssssssssssssssssGGgggggggggggggg...........',
-  '.....sssssssssssssssss.gggggggggggggg...........',
-  '.....sssssssssssssssss.gggggggggggggg...........',
-  '.....sssssssssssssssss.gggggggggggggg...........',
-  '.....sssssssssssssssss.gggggggggggggg...........',
-  '.....sssssssssssssssss.gggggggggggggg...........',
-  '.....sssssssssssssssss.gggggggggggggg...........',
-  '.....Sssssssssssssssss.gggggggggggggg...........',
-  '...sSssssssssssssssssgggggggggggggggg...........',
-  '...ssssssssssssssssMMgggggggggggggggg...........',
-  '...SsssssssssssssssMMgggggggggggggggg...........',
-  '...ssssssssssssssssMMgggggggggggggggg...........',
-  '...ssssssssssssssssMMgggggggggggggggg...........',
-  '...ssssssssssssssssMMgggggggggggggggg...........',
-  '...MsssssssssssssssMMgggggggggggggggg...........',
-  '...ssssssssssssssssMMgggggggggggggggg...........',
-  '..MssssssssssssssssMMgggggggggggggggg...........',
-  '..MssssssssssssssssMMgggggggggggggggb...........',
-  '..KssssssssssssssssMMgggggggggggggggb...........',
-  '..kssssssssssssssssMMbbbbbbbbbbbbbggb...........',
-  '..kssssssssssssssssMMgbbbbbbbbbbbbbgb...........',
-  '.....ssssssssssssssMMgbbbbbbbbbbbbbgb...........',
-  '.....ssssssssssssssMMbbbbbbbbbbbbbggb...........',
-  '..........g.ggg.gbbbbbbbbbbbbbbbbb..............',
-  '..........ggg.gggbbbbbbbbbbbBBbBBbg.............',
-  '...........ggggggbbbbbbbbbbb....................',
-  '..........bbbbbbbbbbbbbbbbbb...bbb.g............',
-  '..........bbbbbbbbbbbbbbbbbB...bbb..............',
-  '..........bBbbbbbbbbbbbbbbbB...bbb..............',
-  '..........bBbbbBbbbbbbbbbbbB...bbb..............',
-  '..........bBbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bBbbbbbbbbbbbbbbbb..gbbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bBbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '.............bbbbbbbbbbbbbg.....................',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bBbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb...bbb..............',
-  '..........bbbbbbbbbbbbbbbbbb....g...............',
-  '..........bbbbbbbbbbbbbbbbbbEEEEgg..............',
-  '..........HHHHHHHHHHHHHHHHHHEEEENN..............',
-  '..........NHHHHHHHHHHHHHHHHHEKEENN..............',
-  '.....EEEEEEEEEHHHHHHHHHHHHHHEKEENN..............',
-  '..EEEEEEEEEEEEHHHHHHHHHHHHHHEKEENN..............',
-  '..NNNHHHHHHHHHHHHHHHHHHHHHHHEKKENN..............',
-  '..NNNHHHHHHHHHHHHHHHHHHHHHHHKKKENN..............',
-  '..NNNHHHHHHHHHHHHHHHHHHHHHHHEKEENN..............',
-  '..KE.EEEEEEEEEEEEE...EEEEEEE....EE..............',
-  '.....EEEEEEEEEEEEE..KEEEEEEE...EEE..............',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH........',
+  '........HHHHHHHHHHHHHHHHHsssssEEEsssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssEEEsssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssssssssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssssssssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssssssssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssssssssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssssssssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssssssssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssssssssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssMMMMssssss........',
+  '........HHHHHHHHHHHHHHHHHsssssMMMMssssss........',
+  '.........................NNNNNNNNNNNNNNN........',
+  '.........................NNNNNNNNNNNNNNN........',
+  '........ggggggggggggggGGGGGGGGGGGGGGGGGG........',
+  '........ggggggggggggggGGGGGGGGGGGGGGGGGG........',
+  '........ggggggggggggggGGGGGGGGGGGGGGGGGG........',
+  '........ggggggggggggggGGGGGGGGGGGGGGGGGG........',
+  '........ggggggggggggggGGGGGGGGGGGGGGGGGG........',
+  '........ggggggggggggggGGGGGGGGGGGGGGGGGG........',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '..............gggggggggggggggggggggggssssssss...',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................bbbbbbbbbbb.................',
+  '....................kkkkkkkkkkkk................',
+  '....................kkkkkkkkkkkk................',
+  '....................kkkkkkkkkkkk................',
+  '....................kkkkkkkkkkkk................',
+  '....................kkkkkkkkkkkk................',
+  '....................kkkkkkkkkkkk................',
+  '....................KKKKKKKKKKKK................',
+  '....................KKKKKKKKKKKK................',
+  '....................KKKKKKKKKKKK................',
+  '....................KKKKKKKKKKKK................',
 ];
 function mcColor(ch, S, L) {
   switch (ch) {
@@ -823,59 +838,63 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     return mcColor(row[lx], S, L);
 }
 
-// 像素小人离屏缓存：每个（外观+动画帧）组合只生成一次位图，之后 drawImage 整帧贴出。
-const _bodySpriteCache = new Map();
+// 角色渲染:参考图 1:1 sprite(无动画,静态站立;染病态逐像素侵蚀)
 export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, look, anim) {
     const level = (infection || 0) / 100;
-    const x = Math.round(sx - 24), y = Math.round(sy - 48);
-    const width = 48, height = 96;
-    if (level <= 0.01) {
-        const L = look || {};
-        const key = [color, L.skin, L.hair, L.pants, L.shoes, L.eyes, L.hairStyle,
-            anim && anim.dir, anim && (anim.moving ? 'm' : 's'), anim && anim.frame,
-            anim && anim.run ? 'r' : 'w', anim && anim.atk ? 'a' : 'n'].join('|');
-        let cv = _bodySpriteCache.get(key);
-        if (!cv) {
-            cv = makeOffscreen(width, height);
-            const octx = cv.getContext('2d');
-            octx.imageSmoothingEnabled = false;
-            for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
-                const c = playerBodyColorAt(px, py, color, look, anim);
-                if (c) { octx.fillStyle = c; octx.fillRect(px, py, 1, 1); }
-            }
-            if (_bodySpriteCache.size < 1600) _bodySpriteCache.set(key, cv);
-        }
-        ctx.drawImage(cv, x, y);
-        return;
-    }
-    const textPixels = getTextSet('人', width, height, 1, 0);
-    const transitionColor = '#4a5a50', textColor = '#a0b8a8';
-    const seed = 0x91D7;
+    const dir = anim && anim.dir;
+    const sprKey = dir === 'up' ? 'back' : (dir === 'left' || dir === 'right') ? 'side' : 'front';
+    const img = _mcSprites[sprKey];
+    if (!img) return; // sprite 未加载完,跳过本帧
+    const w = img.width, h = img.height;
+    const dx = Math.round(sx - w / 2), dy = Math.round(sy - h);
     ctx.save();
     ctx.imageSmoothingEnabled = false;
-    for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
-        const entityColor = playerBodyColorAt(px, py, color, look, anim);
-        const isTextPixel = textPixels.has(px * 100 + py);
-        if (!entityColor && !isTextPixel) continue;
-        const edge = Math.min(px / (width - 1), (width - 1 - px) / (width - 1),
-            py / (height - 1), (height - 1 - py) / (height - 1));
+    if (dir === 'left') { // 朝左镜像
+        ctx.translate(sx, 0);
+        ctx.scale(-1, 1);
+        ctx.translate(-sx, 0);
+    }
+    if (level <= 0.01) {
+        ctx.drawImage(img, dx, dy);
+        ctx.restore();
+        return;
+    }
+    // 染病:读 sprite 像素逐像素侵蚀(边缘 peel + 人字浮现)
+    const cv = makeOffscreen(w, h);
+    const octx = cv.getContext('2d');
+    octx.drawImage(img, 0, 0);
+    const imgData = octx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+    const textPixels = getTextSet('人', w, h, 1, 0);
+    const transitionColor = '#4a5a50', textColor = '#a0b8a8';
+    const seed = 0x91D7;
+    for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
+        const i = (py * w + px) * 4;
+        if (d[i + 3] === 0) continue;
+        const edge = Math.min(px / (w - 1), (w - 1 - px) / (w - 1),
+            py / (h - 1), (h - 1 - py) / (h - 1));
         const noise = hash2(seed ^ 0x51A9, px, py);
         const peelAt = .04 + edge * 1.24 + noise * .36;
         const frontier = .06;
-        let c = null;
-        if (level < peelAt - frontier) {
-            if (entityColor) c = entityColor;
-        } else if (level < peelAt) {
-            const t = (level - (peelAt - frontier)) / frontier;
-            if (entityColor) c = mixHexColor(entityColor, transitionColor, t);
-            else if (isTextPixel) c = mixHexColor(transitionColor, textColor, t);
-        } else {
-            if (isTextPixel) c = textColor;
+        if (level >= peelAt - frontier) {
+            const isText = textPixels.has(px * 100 + py);
+            if (level < peelAt) {
+                const t = (level - (peelAt - frontier)) / frontier;
+                const rgb = mixHexColor('#' + hex2(d[i]) + hex2(d[i + 1]) + hex2(d[i + 2]), transitionColor, t);
+                d[i] = parseInt(rgb.slice(1, 3), 16); d[i + 1] = parseInt(rgb.slice(3, 5), 16); d[i + 2] = parseInt(rgb.slice(5, 7), 16);
+            } else if (isText) {
+                d[i] = 0xa0; d[i + 1] = 0xb8; d[i + 2] = 0xa8;
+            } else {
+                d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
+            }
         }
-        if (c) { ctx.fillStyle = c; ctx.fillRect(x + px, y + py, 1, 1); }
     }
+    octx.putImageData(imgData, 0, 0);
+    ctx.drawImage(cv, dx, dy);
     ctx.restore();
 }
+
+function hex2(v) { return (v < 16 ? '0' : '') + v.toString(16); }
 
 function plantBodyColorAt(px, py, color, sunflower) {
     let c = null;
@@ -1096,9 +1115,9 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
         p.x = camX + (c.gx + 0.5) * (W / c.cols) + (Math.random() - 0.5) * 20;
         p.y = camY - 30 - Math.random() * 50;   // 顶部边界上方进入
     };
-    if (wx.particles === 1) {   // 雨：斜线下落（侧风），世界坐标，同速
+    if (wx.particles === 1) {   // 雨：斜线下落（侧风），世界坐标；速度/长度/粗细随强度
         ctx.strokeStyle = 'rgba(140,180,220,0.55)';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度（小雨 0.8 / 雷阵雨 1.6）
         for (let i = 0; i < n; i++) {
             const p = parts[i];
             if (p.kind !== partKind || !p.spd) {
@@ -1121,7 +1140,7 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
             ctx.lineTo(sx - p.len * 0.28, sy - p.len);
             ctx.stroke();
         }
-    } else if (wx.particles === 2) {   // 雪：慢速飘落小点 + 左右摇摆，世界坐标，同速
+    } else if (wx.particles === 2) {   // 雪：慢速飘落小点 + 左右摇摆；速度/大小随强度
         ctx.fillStyle = 'rgba(238,246,255,0.85)';
         const pSize = 1.5 + level * 0.5;   // 雪花大小随强度（小雪 1.5 / 大雪 2.5）
         for (let i = 0; i < n; i++) {
@@ -1140,9 +1159,9 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
             p.x += Math.sin(sv.now * 1.2 + p.seed) * 16 * fdt;
             ctx.fillRect(p.x - camX, p.y - camY, pSize, pSize);
         }
-    } else if (wx.particles === 4) {   // 沙尘：横向快速飞沙（沙尘暴），世界坐标，同速
+    } else if (wx.particles === 4) {   // 沙尘：横向快速飞沙（沙尘暴）；速度/长度/粗细随强度
         ctx.strokeStyle = 'rgba(205,175,115,0.5)';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 0.8 + level * 0.2;   // 飞沙粗细随强度（扬沙 0.8 / 强沙暴 1.6）
         for (let i = 0; i < n; i++) {
             const p = parts[i];
             if (p.kind !== partKind || !p.spd) {
@@ -1301,7 +1320,7 @@ function drawCollectible(ctx, sx, sy, text, color, now, tx, ty, highlight) {
             const pulse = 0.4 + Math.sin(now * 2.5 + tx * 1.7 + ty * 2.3) * 0.3;
             ctx.globalAlpha = pulse;
             ctx.strokeStyle = color;
-            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+            ctx.lineWidth = 1;
             ctx.strokeRect(bx - 1, by - 1, bw + 2, bh + 2);
             ctx.globalAlpha = 1;
         }
@@ -1334,7 +1353,7 @@ function drawCollectible(ctx, sx, sy, text, color, now, tx, ty, highlight) {
             ctx.fillStyle = '#5a5a5a'; ctx.fillRect(px + 2, py + 5, 5, 3); ctx.fillRect(px + 9, py + 4, 4, 3);
             ctx.fillStyle = '#707070'; ctx.fillRect(px + 4, py + 6, 2, 1); ctx.fillRect(px + 12, py + 5, 2, 1);
             ctx.strokeStyle = 'rgba(30,28,26,0.5)';
-            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+            ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(px + 2, py + 11); ctx.lineTo(px + 8, py + 7); ctx.lineTo(px + 15, py + 10);
             ctx.stroke();
@@ -1425,7 +1444,7 @@ function drawStreetContainer(ctx, sx, sy, text, now, tx, ty, highlight) {
         const pulse = 0.4 + Math.sin(now * 2.5 + tx * 1.7 + ty * 2.3) * 0.3;
         ctx.globalAlpha = pulse;
         ctx.strokeStyle = '#E8C46A';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.strokeRect(x0 + 4.5, y0 + 3.5, TS - 8, TS - 8);
         ctx.globalAlpha = 1;
     }
@@ -1492,7 +1511,7 @@ function drawBuilt(ctx, sx, sy, text, now, tx, ty) {
         ctx.fillStyle = '#55a54d'; ctx.fillRect(x0 + 10, y0 + 7, 5, 4); ctx.fillRect(x0 + 16, y0 + 5, 5, 4);
     } else {
         ctx.fillStyle = 'rgba(15,25,40,0.6)'; ctx.fillRect(x0 + 2, y0 + 2, TS - 4, TS - 4);
-        ctx.strokeStyle = '#7799BB'; ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度 ctx.setLineDash([3, 2]);
+        ctx.strokeStyle = '#7799BB'; ctx.lineWidth = 1; ctx.setLineDash([3, 2]);
         ctx.strokeRect(x0 + 2, y0 + 2, TS - 4, TS - 4); ctx.setLineDash([]);
         ctx.fillStyle = '#AACCEE'; ctx.font = 'bold 11px "Microsoft YaHei", monospace';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, sx, sy);
@@ -1566,7 +1585,7 @@ function drawCar(ctx, tileX, tileY, dir, opt) {
         ctx.fill();
         // 车门缝（车顶两侧各 2 条竖线 = 4 门分隔）
         ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         for (const dx of [-hl * 0.05, hl * 0.28]) {
             ctx.beginPath();
             ctx.moveTo(dx, -hw); ctx.lineTo(dx, -hw * 0.7);
@@ -1589,7 +1608,7 @@ function drawCar(ctx, tileX, tileY, dir, opt) {
     } else {
         // 残骸：破裂纹 + 歪斜车顶
         ctx.strokeStyle = '#2a2a2a';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(-hl * 0.3, -hw * 0.5); ctx.lineTo(hl * 0.2, hw * 0.3);
         ctx.moveTo(hl * 0.1, -hw * 0.4); ctx.lineTo(-hl * 0.2, hw * 0.5);
@@ -1622,7 +1641,7 @@ function drawCar(ctx, tileX, tileY, dir, opt) {
         const tw = ctx.measureText(label).width + 10;
         ctx.fillStyle = 'rgba(0,0,0,0.75)';
         ctx.fillRect(cx - tw / 2, cy - TS / 2 - 18, tw, 15);
-        ctx.strokeStyle = col; ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.strokeStyle = col; ctx.lineWidth = 1;
         ctx.strokeRect(cx - tw / 2, cy - TS / 2 - 18, tw, 15);
         ctx.fillStyle = col;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -1790,7 +1809,7 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
             const v = ((s >> (i * 7)) & 0x7F);
             const dx = (v % (TS - 4)) + 2, dy = ((v >> 3) % (TS - 4)) + 2;
             ctx.strokeStyle = i % 2 ? 'rgba(56,76,52,0.35)' : 'rgba(20,32,20,0.28)';
-            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+            ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(x0 + dx, y0 + dy);
             ctx.lineTo(x0 + dx + (i % 2 ? 2 : -2), y0 + dy - 2);
@@ -1861,7 +1880,7 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
             }
             if (n2 > 0.4) {
                 ctx.strokeStyle = 'rgba(20,18,16,0.5)';
-                ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+                ctx.lineWidth = 1;
                 ctx.beginPath();
                 const cx0 = x0 + Math.floor(n * 20), cy0 = y0 + Math.floor(n2 * 16);
                 ctx.moveTo(cx0, cy0); ctx.lineTo(cx0 + 6, cy0 + 8); ctx.lineTo(cx0 + 2, cy0 + 14);
@@ -1987,7 +2006,7 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
         const isWalkLook = v => v === T.SIDEWALK || v === T.TRASHBIN || v === T.CARDBOX || v === T.HYDRANT || v === T.NEWSSTAND || v === T.TIRES || v === T.CAR || v === T.CARWRECK;
         const walkUnderAt = (gx, gy) => isWalkLook(getTile(sv, gx, gy)) || groundTypeAt(sv, gx, gy) === T.SIDEWALK;
         ctx.strokeStyle = 'rgba(42,40,34,0.5)';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;   // 地块边线固定 1px（sed 误伤修复：drawGroundTile 无 level 变量）
         ctx.beginPath();
         ctx.moveTo(x0 + TS, y0); ctx.lineTo(x0 + TS, y0 + 18);          // 右缘（第一行段）
         ctx.moveTo(x0, y0 + TS); ctx.lineTo(x0 + TS, y0 + TS);          // 下缘（全段）
@@ -2002,7 +2021,7 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
         // 废墟人行道：破损裂纹 + 缺角，与城区完整人行道区分
         if (biome === 3) {
             ctx.strokeStyle = 'rgba(30,26,22,0.55)';
-            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+            ctx.lineWidth = 1;
             ctx.beginPath();
             const cx0 = x0 + 4 + Math.floor(n * 20), cy0 = y0 + 4 + Math.floor(n2 * 18);
             ctx.moveTo(cx0, cy0); ctx.lineTo(cx0 + 5, cy0 + 6);
@@ -2080,7 +2099,7 @@ function drawWorldDynamic(ctx, sv, camX, camY, W, H, dyn) {
         const pulse = 0.4 + Math.sin(sv.now * 2.5 + p.tx * 1.7 + p.ty * 2.3) * 0.3;
         ctx.globalAlpha = pulse;
         ctx.strokeStyle = p.kind === 'box' ? p.color : '#E8C46A';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         if (p.kind === 'box') ctx.strokeRect(sx - TS / 2 + 5, sy - TS / 2 + 7, 26, 22);
         else ctx.strokeRect(sx - TS / 2 + 4.5, sy - TS / 2 + 3.5, TS - 8, TS - 8);
         ctx.globalAlpha = 1;
@@ -2762,7 +2781,7 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         ctx.fillStyle = isRuins ? '#1a1512' : '#2a2018';
                         ctx.fillRect(doorX, doorY, 6, 16);
                         ctx.strokeStyle = isRuins ? '#4a3a2a' : '#8a6a42';
-                        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+                        ctx.lineWidth = 1;
                         ctx.strokeRect(doorX - 0.5, doorY - 0.5, 7, 17);
                         ctx.fillStyle = '#c8a860';
                         ctx.fillRect(doorX + 4, doorY + 7, 2, 2);
@@ -2782,7 +2801,7 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         ctx.fillStyle = isRuins ? '#1a1512' : '#2a2018';
                         ctx.fillRect(doorX, doorY, 6, 16);
                         ctx.strokeStyle = isRuins ? '#4a3a2a' : '#8a6a42';
-                        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+                        ctx.lineWidth = 1;
                         ctx.strokeRect(doorX - 0.5, doorY - 0.5, 7, 17);
                         ctx.fillStyle = '#c8a860';
                         ctx.fillRect(doorX + 1, doorY + 7, 2, 2);
@@ -2793,7 +2812,7 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         ctx.fillStyle = isRuins ? '#1a1512' : '#2a2018';
                         ctx.fillRect(rx0 + 10, ry0 + 1, 16, 8);
                         ctx.strokeStyle = isRuins ? '#4a3a2a' : '#8a6a42';
-                        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+                        ctx.lineWidth = 1;
                         ctx.strokeRect(rx0 + 9.5, ry0 + 0.5, 17, 9);
                         ctx.fillStyle = 'rgba(0,0,0,0.15)';
                         ctx.fillRect(rx0, ry0 + 9, TS + 1, 2);
@@ -2822,7 +2841,7 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
                         ctx.fill();
                     }
                     ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-                    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+                    ctx.lineWidth = 1;
                     ctx.strokeRect(bx + 1.5, by + 3.5, TS - 3, TS - 7);
                 } else if (COLLECT_INFO[t]) {
                     const ci = COLLECT_INFO[t];
@@ -3032,7 +3051,7 @@ function drawZombieTelegraph(ctx, z, sx, sy) {
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.strokeStyle = `rgba(200,60,60,${0.15 + prog * 0.2})`;
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.arc(sx, sy, Z_FLAG_AURA_RANGE * (TS / 12), 0, Math.PI * 2);
         ctx.stroke();
@@ -3433,7 +3452,7 @@ function drawSickPlayerFX(ctx, sv, px, py) {
         // 热浪：头顶正弦波纹 + 汗珠
         ctx.strokeStyle = col;
         ctx.globalAlpha = 0.6;
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         for (let i = 0; i < 3; i++) {
             const wy = py - TS / 2 - 18 - i * 4;
             ctx.beginPath();
@@ -3480,7 +3499,7 @@ function drawDriveHUD(ctx, sv, W) {
         ctx.fillStyle = color;
         ctx.fillRect(x + 2, by + 2, 88 * clamp(ratio, 0, 1), 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.strokeRect(x + 2, by + 2, 88, 10);
         ctx.fillStyle = '#DDDDDD';
         ctx.fillText(label, x + 94, by + 7);
@@ -3505,7 +3524,7 @@ function drawCampFlag(ctx, sv, camX, camY) {
     const fx = camp.x - camX, fy = camp.y - camY;
     // 领地范围圈（淡金色，常驻低透明度）
     ctx.strokeStyle = 'rgba(255,215,0,0.10)';
-    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+    ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(fx, fy, CAMP_RADIUS * TS, 0, Math.PI * 2);
     ctx.stroke();
@@ -3544,7 +3563,7 @@ function drawTeamPanel(ctx, sv, W, H) {
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.strokeStyle = 'rgba(255,215,0,0.45)';
-    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+    ctx.lineWidth = 1;
     ctx.stroke();
     // 标题
     ctx.font = 'bold 12px "Microsoft YaHei", monospace';
@@ -3559,7 +3578,7 @@ function drawTeamPanel(ctx, sv, W, H) {
             ctx.fillStyle = 'rgba(57,217,138,0.10)';
             ctx.fill();
             ctx.strokeStyle = 'rgba(57,217,138,0.35)';
-            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+            ctx.lineWidth = 1;
             ctx.stroke();
         }
         // 第一行：名字 + 武器（名字右边）+ 状态徽标
@@ -3835,7 +3854,7 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
         roundRectPath(ctx, 8, 34, w, 20, 5);
         ctx.fill();
         ctx.strokeStyle = 'rgba(77,163,255,0.5)';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.stroke();
         ctx.fillStyle = '#7fd6ff';
         ctx.fillText(label, 14, 44);
@@ -3950,7 +3969,7 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
     ctx.fillStyle = 'rgba(8,20,32,0.82)';
     ctx.fill();
     ctx.strokeStyle = 'rgba(77,163,255,0.5)';
-    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+    ctx.lineWidth = 1;
     ctx.stroke();
     ctx.fillStyle = '#7fd6ff';
     ctx.fillText(name, sx, sy - 32);
@@ -4094,7 +4113,7 @@ function drawPlayerZombieGuide(ctx, sv, W, H, sharedDrawn) {
         roundRectPath(ctx, px2 - lw / 2, py2 + 24, lw, 18, 4);
         ctx.fill();
         ctx.strokeStyle = PZ_GUIDE_COLOR;
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.stroke();
         ctx.fillStyle = '#C9A6FF';
         ctx.fillText(label, px2, py2 + 33);
@@ -4162,7 +4181,7 @@ function drawLegacyDropGuide(ctx, sv, W, H, sharedDrawn) {
     roundRectPath(ctx, px2 - lw / 2, py2 + 24, lw, 18, 4);
     ctx.fill();
     ctx.strokeStyle = LEGACY_GUIDE_COLOR;
-    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+    ctx.lineWidth = 1;
     ctx.stroke();
     ctx.fillStyle = '#FFE98A';
     ctx.fillText(label, px2, py2 + 33);
@@ -4225,7 +4244,7 @@ function drawHotbar(ctx, sv, W, H) {
         ctx.fillStyle = 'rgba(10,14,10,0.82)';
         ctx.fillRect(x, y, size, size);
         ctx.strokeStyle = id ? '#3a5a3a' : '#222';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.strokeRect(x, y, size, size);
         ctx.textAlign = 'left';
         ctx.font = '9px Consolas, monospace';
@@ -4289,7 +4308,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
     ctx.fillStyle = sv.exhausted ? '#AA2222' : '#CCDD44';
     ctx.fillRect(10, 42, 76 * clamp((sv.stamina || 0) / (sv.maxStamina || 100), 0, 1), 10);
     ctx.strokeStyle = '#334455';
-    ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+    ctx.lineWidth = 1;
     ctx.strokeRect(10, 42, 76, 10);
     ctx.textAlign = 'left';
     ctx.fillStyle = sv.exhausted ? '#FF6666' : '#AADDFF';
@@ -4307,7 +4326,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillStyle = flash ? '#FF3333' : (sv.food < 30 ? '#C46A2A' : '#E8A33D');
         ctx.fillRect(10, fy, 76 * fr, 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.strokeRect(10, fy, 76, 10);
         ctx.fillStyle = sv.food <= 0 ? '#FF8866' : (sv.food < 30 ? '#FFB37A' : '#FFE4B0');
         ctx.fillText(sv.food <= 0 ? '饥饿' : `饱食 ${Math.round(sv.food)}`, 90, fy + 5);
@@ -4325,7 +4344,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillStyle = flash ? '#FF3333' : (sv.water < 30 ? '#3A6A9A' : '#4E9AE8');
         ctx.fillRect(10, wy, 76 * wr, 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.strokeRect(10, wy, 76, 10);
         ctx.fillStyle = sv.water <= 0 ? '#66CCFF' : (sv.water < 30 ? '#7AB6E8' : '#BFE4FF');
         ctx.fillText(sv.water <= 0 ? '缺水' : `水分 ${Math.round(sv.water)}`, 90, wy + 5);
@@ -4344,7 +4363,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillStyle = pulse ? '#9b2d3a' : (infEff.stage >= 4 ? '#6b1d2a' : infEff.stage >= 2 ? '#5a3040' : '#4a3548');
         ctx.fillRect(10, iy, 76 * ir, 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.strokeRect(10, iy, 76, 10);
         ctx.fillStyle = infEff.stage >= 4 ? '#FF6688' : infEff.stage >= 2 ? '#CC8899' : '#AA99AA';
         ctx.fillText(`感染 ${infEff.name}`, 90, iy + 5);
@@ -4364,7 +4383,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillRect(10, sy, 76, 10);
         ctx.globalAlpha = 1;
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.strokeRect(10, sy, 76, 10);
         ctx.fillStyle = col;
         ctx.fillText(`染病：${s.name}`, 90, sy + 5);
@@ -4383,7 +4402,7 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
         ctx.fillStyle = '#6b1d1d';
         ctx.fillRect(10, by, 76, 10);
         ctx.strokeStyle = '#334455';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+        ctx.lineWidth = 1;
         ctx.strokeRect(10, by, 76, 10);
         ctx.fillStyle = '#FF8866';
         ctx.fillText('武器损坏', 90, by + 5);
@@ -4508,7 +4527,7 @@ function drawInterior(ctx, sv, W, H) {
             ctx.fillStyle = `rgb(${44 + n},${36 + n},${28 + n})`;
             ctx.fillRect(px0, py0, TS + 1, TS + 1);
             ctx.strokeStyle = 'rgba(90,70,50,0.15)';
-            ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+            ctx.lineWidth = 1;
             ctx.strokeRect(px0 + 0.5, py0 + 0.5, TS, TS);
             drawInteriorWeathering(ctx, px0, py0, 'floor', age, sv.world.seed ^ worldX ^ (worldY << 8));
         } else if (t === IT.WALL) {
@@ -4534,7 +4553,7 @@ function drawInterior(ctx, sv, W, H) {
                 ctx.fillStyle = '#3a3a42';
                 ctx.fillRect(px0, py0, TS + 1, TS + 1);
                 ctx.strokeStyle = 'rgba(20,20,26,0.9)';
-                ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度
+                ctx.lineWidth = 1;
                 ctx.strokeRect(px0 + 0.5, py0 + 0.5, TS, TS);
                 drawInteriorWeathering(ctx, px0, py0, 'wall', age, sv.world.seed ^ worldX ^ (worldY << 8));
             }
