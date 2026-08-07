@@ -1292,10 +1292,8 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
     if (t === T.GROUND || t === T.WEED) {
         // 草地（独立模块 wgrass.js）：biome 平滑 + 季节背景 + 颗粒 + 低对比噪声
         WGRASS.grassRenderGround(ctx, sv, tx, ty, x0, y0);
-        // 草地→相邻表面（路面/人行道）边缘 4px 渐变混合带：
-        // 起始色用 wgrass 实际基底色（grassGroundColor），避免写死 (42,56,42) 与基底不匹配 → 草地块四周色差框线
-        const gc = WGRASS.grassGroundColor(sv, tx, ty);
-        drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, gc[0], gc[1], gc[2], t);
+        // 草地格【不画】边缘渐变：渐变带画在草地格上 = 草地块四周一圈色带（横竖分割线）。
+        // 草地↔路面过渡由路面/人行道格自己的边缘渐变承担（路面侧 4px 向草地色过渡）→ 草地保持完整无框线。
         return;
     } else {
         const vary = Math.floor(n * 6) - 3;
