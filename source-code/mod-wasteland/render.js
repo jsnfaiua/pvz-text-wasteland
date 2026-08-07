@@ -912,8 +912,8 @@ let wxParticles = null;
 function ensureWxParticles() {
     if (!wxParticles) {
         wxParticles = [];
-        for (let i = 0; i < WX_PART_MAX; i++) wxParticles.push({ x: 0, y: 0, spd: 0, len: 3, seed: 0 });
-        // spd=0 → 首帧 move 循环 !p.spd 触发重置（§7 正确性兜底）
+        for (let i = 0; i < WX_PART_MAX; i++) wxParticles.push({ x: 0, y: 0, spd: 0, len: 3, seed: 0, kind: 0 });
+        // spd=0 & kind=0 → 首帧 move 循环触发重置（§7 正确性兜底）
     }
     return wxParticles;
 }
@@ -944,12 +944,15 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
         ctx.lineWidth = 1;
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            if (!p.spd || p.y > camY + H + 30 || p.y < camY - 80 || p.x < camX - 60 || p.x > camX + W + 60) {
+            // kind 标记：切换天气（rain→snow 等）时旧天气粒子立即重置，防速度/参数残留
+            // （旧版：池复用导致切换后先飘一阵"用旧天气速度的粒子"，越界才纠正）
+            if (p.kind !== wx.particles || !p.spd || p.y > camY + H + 30 || p.y < camY - 80 || p.x < camX - 60 || p.x > camX + W + 60) {
                 const g = gridOf(i, n, W, H);
                 p.x = camX + (g.gx + 0.5) * (W / g.cols) + (Math.random() - 0.5) * 20;
                 p.y = camY - 60 + (g.gy + 0.5) * ((H + 120) / g.rows) + (Math.random() - 0.5) * 20;
                 p.spd = WX_PART_SPEED.rain * (0.94 + Math.random() * 0.12);   // 统一基准 ±6%
                 p.len = 7 + Math.random() * 8;
+                p.kind = wx.particles;
             }
             p.y += p.spd * fdt;
             p.x -= p.spd * 0.28 * fdt;
@@ -963,12 +966,13 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
         ctx.fillStyle = 'rgba(238,246,255,0.85)';
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            if (!p.spd || p.y > camY + H + 30 || p.y < camY - 80 || p.x < camX - 40 || p.x > camX + W + 40) {
+            if (p.kind !== wx.particles || !p.spd || p.y > camY + H + 30 || p.y < camY - 80 || p.x < camX - 40 || p.x > camX + W + 40) {
                 const g = gridOf(i, n, W, H);
                 p.x = camX + (g.gx + 0.5) * (W / g.cols) + (Math.random() - 0.5) * 20;
                 p.y = camY - 40 + (g.gy + 0.5) * ((H + 80) / g.rows) + (Math.random() - 0.5) * 20;
                 p.spd = WX_PART_SPEED.snow * (0.94 + Math.random() * 0.12);
                 p.seed = Math.random() * 6.28;
+                p.kind = wx.particles;
             }
             p.y += p.spd * fdt;
             p.x += Math.sin(sv.now * 1.2 + p.seed) * 16 * fdt;
@@ -979,12 +983,13 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
         ctx.lineWidth = 1;
         for (let i = 0; i < n; i++) {
             const p = parts[i];
-            if (!p.spd || p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {
+            if (p.kind !== wx.particles || !p.spd || p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {
                 const g = gridOf(i, n, W, H);
                 p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
                 p.y = camY + (g.gy + 0.5) * (H / g.rows) + (Math.random() - 0.5) * 16;
                 p.spd = WX_PART_SPEED.sand * (0.94 + Math.random() * 0.12);
                 p.len = 4 + Math.random() * 7;
+                p.kind = wx.particles;
             }
             p.x += (Math.random() < 0.5 ? 1 : -1) * p.spd * fdt;
             p.y += (Math.random() - 0.5) * 50 * fdt;
