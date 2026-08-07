@@ -109,6 +109,19 @@ assert(typeof B.PLAYER_SPEED === 'number', 'wbalance.PLAYER_SPEED');
         fakeSv._wxLevel = 5;
         assert(B.wxLevelCur(fakeSv) === 5, 'balance:wxLevelCur dev override wins');
     }
+    // 强度联动：雨/雪粒子速度系数（强度越大越快）、沙尘移速系数、雾可视半径、hint 文案
+    assert(B.WX_INTENSITY.rain[0].speedMul < B.WX_INTENSITY.rain[5].speedMul, 'balance:rain speedMul grows with intensity');
+    assert(B.WX_INTENSITY.snow[0].speedMul < B.WX_INTENSITY.snow[2].speedMul, 'balance:snow speedMul grows');
+    assert(B.wxSpeedMul('rain', 5) > B.wxSpeedMul('rain', 0), 'balance:wxSpeedMul rain intensity');
+    assert(B.WX_INTENSITY.sandstorm[2].moveMul < B.WX_INTENSITY.sandstorm[0].moveMul, 'balance:sandstorm moveMul shrinks with intensity');
+    assert(B.wxMoveMul('sandstorm', 2) < B.wxMoveMul('sandstorm', 0), 'balance:wxMoveMul sandstorm intensity');
+    assert(B.wxMoveMul('snow', 1) === 0.9, 'balance:wxMoveMul snow uses speedMul');
+    assert(B.fogRadius('fog', 2) < B.fogRadius('fog', 0), 'balance:fog radius shrinks with intensity');
+    assert(B.fogRadius('fog', 1) === 10, 'balance:fog radius mid 10');
+    assert(B.fogRadius('clear', 0) === 0, 'balance:fog radius clear 0');
+    for (const k in B.WX_TABLE) assert(typeof B.WX_TABLE[k].hint === 'string' && B.WX_TABLE[k].hint.length > 4, `balance:WX_TABLE.${k} hint`);
+    assert(typeof B.windDirAt === 'function' && B.windDirAt(666002, 1) === B.windDirAt(666002, 1), 'balance:windDirAt deterministic');
+    assert(typeof B.WX_WIND_PUSH === 'number' && B.WX_WIND_PUSH > 0, 'balance:WX_WIND_PUSH');
 }
 
 // wconst

@@ -13,7 +13,7 @@ import { drawMsg } from './wmsg.js';
 import { TS } from './wconst.js';
 import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H } from './windoor.js';
 import { districtAt, districtProfile, infectionAt } from './wdistrict.js';
-import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED } from './wbalance.js';
+import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED, wxSpeedMul, fogRadius } from './wbalance.js';
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
 export { TS };
 
@@ -455,103 +455,202 @@ function lookShades(bodyColor, L) {
 //   'N' hairDark (深棕脖/领) / 'G' shirt / 'g' shirtDark / 'B' pants / 'b' pantsDark
 //   'k' shoes / 'K' shoesDark / 'E' eyes (需查 L.eyes)
 const FRONT_GRID = [
-  '..HHHHHHHHHHHHHHHH..',
-  '.HHHHHHHHHHHHHHHHHH.',
-  'HHHHHHHHHHHHHHHHHHHH',
-  'HHHHHHHHHHHHHHHHHHHH',
-  '.HHssssssssssssssHH.',
-  '.HsEEsssssssssEEssH.',
-  '.Hssssssssssssssssh.',
-  '.Hssssssssssssssssh.',
-  '.NNssssssssssssssNN.',
-  'NNNsssssssssssssNNN.',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'SgGGGGGGGGGGGGGGGSgG',
-  'SgsGGGGGGGGGGGGGSgsg',
-  'SgsGGGGGGGGGGGGGSgsg',
-  'SgsGGGGGGGGGGGGGSgsg',
-  'SgsGGGGGGGGGGGGGSgsg',
-  'SgsGGGGGGGGGGGGGSgsg',
-  'SgsGGGGGGGGGGGGGSgsg',
-  'bbbBBBBBBBBBBBBBBbbb',
-  'bBBBBBBBBBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'kkkkkkkkkkkkkkkkkkkk',
-  'kkkkkkkkkkkkkkkkkkkk',
-  'KKKKKKK..KKKKKKKKKK',
+  '........hhhhhhhhhhhhhhh.........',
+  '......NNhhhhhhhhhhhhhhhhh.......',
+  '......NNhhhhhhhhhhhhhhhhh.......',
+  '.....NNhhhhhNNhhhhNNhhhhNN......',
+  '.....NNhhhhNNNhhhNNNhhhHNN......',
+  '.....NNNhhNsshhhhNNsNhhNNN......',
+  '.....NNNhNNssshhhNsssNhNNN......',
+  '.....NNNNssssssHssssssNNNN......',
+  '.....MMNsssNNssssssENssNSS......',
+  '.....MMNsssNNsssssEENssNSS......',
+  '.....MMkssssssssssssssssSS......',
+  '.....hKEssssssSSSsssssssKh......',
+  '.......EssssssssssssssssN.......',
+  '........ssssssssssssssss........',
+  '........ssssssssssssssss........',
+  '............MMMMMMMM............',
+  'GGGGGGGgggg.GSSSSSSG.gggggGGGGGG',
+  'GGGGGGGgggggGGSSSSSGggggggGGGGGG',
+  'GGGGGGGggggggMMMMMMgggggggGGGGGG',
+  'GGGGGGGgggggggMMMMggggggggGGGGGG',
+  'GGGGGGGggggggggggggggggggGGGGGGG',
+  'GGGGGGG.gggggggggggggggggGGGGGGG',
+  'GGGGGGG.gggggggggggggggggGGGGGGG',
+  'GGGGGGG.gggggggggggggggggGGGGGGG',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssss.gggggggggggggggggsssssss',
+  'sssssssggggggggggggggggggsssssss',
+  'sssssss.ggBBBBBBBBBBBBbggsssssss',
+  'sssssssggBBBBbbBbBbbbBbggsssssss',
+  'sssssssggbbBbBbBBBbbbbbggsssssss',
+  '......ggbbbbBBBBbbbbbbbbgg......',
+  '......ggbbbbBBB..Bbbbbbbgg......',
+  '........bbbBBBB..bbbbbbBB.......',
+  '.......gbbbbbBB..bbbbbbBB.......',
+  '........bbbbbBB..bbbbbBBB.......',
+  '........bbbbbBBg.bbbbbBBB.......',
+  '.......gbbbbbBBggbbbbbBBB.......',
+  '.......gbbbbbBBg.bbbbBBBb.......',
+  '.......gbbbbbBBg.BbbbBbbb.......',
+  '.......gBBBBBBB.ggBBBBBBB.......',
+  '.......gbbbbbbbggBbbbbbbb.......',
+  '.......gbbbbbbbgggbbbbbbb.......',
+  '.......gbbbbbbbgggbbbbbBb.......',
+  '.......gbbbbbBBgggbbbbBBb.......',
+  '.......gbbbbbbBgggbbbbbBb.......',
+  '.......gbbbbbBBgggbbbBbBb.......',
+  '.......gbbbbbBbgggbBBBBBg.......',
+  '.......gbbbbbbbggggggggggg......',
+  '.......gHHHHHHHg.EHHHHHHHg......',
+  '........HHHHHHH..EHHHHHHH.......',
+  '......HHNEEEEHH..EHEEEENNHH.....',
+  '......HHHHHHHHH..HHHHHHHHHH.....',
+  '......HHHHHHHHH..NHHHHHHHHH.....',
+  '......KEEEEE..E..EEEEEEEEEE.....',
+  '......E.gbg...E..EEEEEEEEEE.....',
 ];
 const BACK_GRID = [
-  '..HHHHHHHHHHHHHHHH..',
-  '.HHHHHHHHHHHHHHHHHH.',
-  'HHHHHHHHHHHHHHHHHHHH',
-  'HHHHHHHHHHHHHHHHHHHH',
-  'HHHHHHHHHHHHHHHHHHHH',
-  'HHHHHHHHHHHHHHHHHHHH',
-  'HHHHHHHHHHHHHHHHHHHH',
-  'HHHHHHHHHHHHHHHHHHHH',
-  '.Hssssssssssssssssh.',
-  'NNNsssssssssssssNNN.',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GSGGGGGGGGGGGGGGGSGG',
-  'GSsGGGGGGGGGGGGGSgsg',
-  'GSsGGGGGGGGGGGGGSgsg',
-  'GSsGGGGGGGGGGGGGSgsg',
-  'GSsGGGGGGGGGGGGGSgsg',
-  'GSsGGGGGGGGGGGGGSgsg',
-  'GSsGGGGGGGGGGGGGSgsg',
-  'bbbBBBBBBBBBBBBBBbbb',
-  'bBBBBBBBBBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'kkkkkkkkkkkkkkkkkkkk',
-  'kkkkkkkkkkkkkkkkkkkk',
-  'KKKKKKK..KKKKKKKKKK',
+  '.......hhhhhhhhhhhhh............',
+  '.....hhhNhhhhhhhhhhhh...........',
+  '....NhhhNNhhhhhhhNhhhN..........',
+  '....NNhhhhhhhhhNNhhNNN..........',
+  '....NNNNNhNhhhhNNhhNNN..........',
+  '....NNNNNhNhhhhhhNNNNN..........',
+  '....NNNNNhNhhhhhhNNNNN..........',
+  '....NMNNNNNNhhhhNNNNNM..........',
+  '.....MNNNNNNhhhNNNNNMM..........',
+  '.....MNNNNNNhNNNNNNNMM..........',
+  '.....MNNNNNNNNNNNNNNEM..........',
+  '.......NNNNNNNNNNNNNE...........',
+  '.......ENMMNNNNNMNMM............',
+  '........MMMSNNSSMMMM............',
+  '.........SSSSsSSS...............',
+  'GGGGGGggggGGGGGGGggggGGGGG......',
+  'GGGGGGggggGGGGGGgggggGGGGG......',
+  'GGGGGGgggggggggggggggGGGGG......',
+  'GGGGGGgggggggggggggggGGGGG......',
+  'GGGGGGggggggggggggggGGGGGG......',
+  'GGGGGGggggggggggggggGGGGGG......',
+  'GGGGGGggggggggggggggGGGGGG......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggEsssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssggggggggggggggssssss......',
+  'ssssssBbbbBbbbbbbbBBssssss......',
+  'ssssssbbbBbbbbbbbbbBssssss......',
+  '......bbbBBbbbbbbbBbg...........',
+  '......bbbBBb..bbbbBb............',
+  '......bbbbbb..bbbbBb............',
+  '......bbbbbbg.bbbbbb............',
+  '......bbbbbbg.bbbbbb............',
+  '......bbbBbbg.bbbbbb............',
+  '......bbbBBbg.BbbbBB............',
+  '......bbbBBbg.BBbbBb............',
+  '......bbbBBbg.BBBBBb............',
+  '......bbbgBgg.BBBBBB............',
+  '......bbbbbbg.BbbBBB............',
+  '......bbbBBbg.BBbBBB............',
+  '......bbbBBbg.BBBBBB............',
+  '......bbbbbbg.BBBBBB............',
+  '......bbbbbBg.BBBBBB............',
+  '......bbbBBbg.BBBBBg............',
+  '......gggggggggggggg............',
+  '......HHHHHH..HHHHHH............',
+  '......HHHHHH..HHHHHH............',
+  '.....HHHHHHH..HHHHHHH...........',
+  '.....HHHHHHH..HHHHHHH...........',
+  '.....EEEEEEE..HHHHHHH...........',
+  '.....EEEEEEE..KKKEE.K...........',
+  '................................',
+  '................................',
+  '........................M.....M.',
+  '.......................MM......k',
+  '.........................MkMbbbM',
 ];
 const SIDE_GRID = [
-  '..HHHHHHHHHHHHHHHH..',
-  '.HHHHHHHHHHHHHHHHHH.',
-  'HHHHHHHHHHHHHHHHHHHH',
-  'HHHHHHHHHHHHHHHHHHHH',
-  'HHHHHHHsssssHHHHHHHH',
-  'HHHHHHssEEssHHHHHHHH',
-  'HHHHHHssssssHHHHHHHH',
-  'HHHHHHsssMssHHHHHHHH',
-  '.HHHsssssssssssHHHH.',
-  '.NNsssssssssssssNN..',
-  'GGggGGGGGGGGGGGGGggG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'GGGGGGGGGGGGGGGGGGGG',
-  'sGGGGGGGGGGGGGGGGGgs',
-  'bbbBBBBBBBBBBBBBBbbb',
-  'bBBBBBBBBBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'bBBBBBBbBBBBBBBBBbB',
-  'skkkkkkkkkkkkkkkkkks',
-  'skkkkkkkkkkkkkkkkkks',
-  'sKKKKKKKKKKKKKKKKKKs',
+  '.....hhhhhhhhhhhhhhhhhhhhhhh....',
+  '.Nhhhhhhhhhhhhhhhhhhhhhhhhhhhh..',
+  '.HhhhhhNNNNNhhhhhhhhNNhhhhhhhh..',
+  'hhhhNhhhhhhhhhhhhhhhhhhhhhhhhhHH',
+  'hhhhNhhhhhhhHKhNNNhhhhhhNNhhhhHH',
+  'hhNNsNhhhNNHHHNNNNNNNNhhNNhhhhHH',
+  'hhNNssNhhNNNNNNNNNNNNNNhNNhhhhHH',
+  'hhNsssshhNNNNNNNNNNNNNNhNNhhhhHH',
+  '.SssNssssNNNNsssssNNNNNNNNNNNNHH',
+  '.MssNssssNNNNsssssNNNNNNNNNNNNHH',
+  '.MsssssssssNNsssssNNNNNNNNNNNN..',
+  '.MssssssssssssSSKHNNNNNNNNNNNN..',
+  '.MssssssssssssSSsHNNNNNNNNNNNN..',
+  '...sssssssssssssssNNNNNNEE.NNN..',
+  '...sssssssssssssssMMMMNNkk......',
+  '...........MMMMMMMMMMMMMM.......',
+  '.....ggggggMMMssssssSSSSS.......',
+  '.....ggggggggggggGGGGGGGG.......',
+  '..ggGGGGGGGGGGggggggggggg.......',
+  '.gggGGGGGGGGGGggggggggggg.......',
+  '..ggGGGGGGGGGGggggggggggg.......',
+  '..ggGGGGGGGGGGggggggggggg.......',
+  '..ggGGGGGGGGGGggggggggggg.......',
+  '...GGGGGGGGgggGGggggggggg.......',
+  '...sssssssssssGgggggggggg.......',
+  '...ssssssssssssgggggggggg.......',
+  '...ssssssssssssgggggggggg.......',
+  '...ssssssssssssgggggggggg.......',
+  '...ssssssssssssgggggggggg.......',
+  '..Ssssssssssssggggggggggg.......',
+  '..sssssssssssMggggggggggg.......',
+  '..sssssssssssMggggggggggg.......',
+  '..sssssssssssMggggggggggg.......',
+  '..sssssssssssMggggggggggg.......',
+  '..sssssssssssMggggggggggg.......',
+  '.MsssssssssssMggggggggggg.......',
+  '.KsssssssssssMggggggggggb.......',
+  '.ksssssssssssMgbbbbbbbbgb.......',
+  '...ssssssssssMgbbbbbbbbgb.......',
+  '...ssssssssbbbbbbbbbbbbbb.......',
+  '.......ggggbbbbbbbBBBBB.........',
+  '.......BbbbbbbbbbbB..bbg........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......Bbbbbbbbbbbb..bb.........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......bbbbbbbbbbbB.gbb.........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......Bbbbbbbbbbbb..bb.........',
+  '.........bbbbbbbbg..............',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......Bbbbbbbbbbbb.gbb.........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......bbbbbbbbbbbb..bb.........',
+  '.......bbbbbbbbbbbbEENH.........',
+  '.......HHHHHHHHHHHHEENN.........',
+  '...EEEEEEHHHHHHHHHHKENN.........',
+  '.NNHEEEEHHHHHHHHHHHEENN.........',
+  '.NNNHHHHHHHHHHHHHHHKENN.........',
+  '.NNNHHHHHHHHHHHHHHEKENN.........',
+  '...EEEEEEEEE.KEEEEE..E..........',
 ];
 function mcColor(ch, S, L) {
   switch (ch) {
@@ -585,7 +684,7 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     const sign = a && a.dir === 'right' ? 1 : -1;
     const f = moving ? (a.frame === 0 ? 1 : a.frame === 2 ? -1 : 0) : 0; // ±1
     const amp = a && a.run ? 2 : 1;
-    const GRID_W = 20, GRID_H = 31;
+    const GRID_W = 32, GRID_H = 64;
 
     let grid;
     if (isUp) grid = BACK_GRID;
@@ -596,20 +695,20 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
     let lx = isSide && sign < 0 ? (GRID_W - 1 - px) : px;
     let ly = py;
 
-    // 走路动画:腿/手 ±1 像素偏移
+    // 走路动画:真正的前后腿交替 + 手臂反相位摆动(4 拍循环)
+    // 32x64 网格分区:y0-15 头 / y16-23 肩颈 / y24-35 衣+臂 / y36+ 腿+鞋
     if (moving) {
+        const st = amp * f; // 迈步幅度(跑 ±2 / 走 ±1)
         if (isSide) {
-            // 侧视:前手/前腿 朝行进侧 ±1,后手/后腿 反向
-            // 简化:整行 13-31(臂+腿) y 偏移 f,衣身 y 不动
-            if (ly >= 13 && ly <= 31) ly += f;
+            // 侧视:腿区(含鞋)随迈步整体微抬,衣身不动;手臂反相位摆动
+            if (ly >= 36) ly += st;          // 腿+鞋(侧视单列腿,迈步整体抬起)
+            else if (ly >= 24 && ly <= 35) ly += -st; // 手臂反相位
         } else {
-            // 正面/背面:左右腿上下交错
-            if (ly >= 21 && ly <= 31) {
-                if (lx < 10) ly += f; else ly -= f;
-            }
-            // 双臂上下交错(站立走路)
-            if (ly >= 13 && ly <= 18) {
-                if (lx < 10) ly += f; else ly -= f;
+            // 正面/背面:左右腿上下交错(左迈右收),左右臂反相位
+            if (ly >= 36) {
+                if (lx < 16) ly += st; else ly -= st; // 左腿 +st / 右腿 -st
+            } else if (ly >= 24 && ly <= 35) {
+                if (lx < 16) ly += -st; else ly += st; // 左臂反相位
             }
         }
     }
@@ -624,8 +723,8 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
 const _bodySpriteCache = new Map();
 export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, look, anim) {
     const level = (infection || 0) / 100;
-    const x = Math.round(sx - 10), y = Math.round(sy - 16);
-    const width = 20, height = 32;
+    const x = Math.round(sx - 16), y = Math.round(sy - 32);
+    const width = 32, height = 64;
     if (level <= 0.01) {
         const L = look || {};
         const key = [color, L.skin, L.hair, L.pants, L.shoes, L.eyes, L.hairStyle,
@@ -826,12 +925,13 @@ function drawWeatherOverlay(ctx, sv, W, H) {
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, W, H);
     } else if (sv._weather === 'fog') {
-        // 大雾：全屏灰白薄雾 + 边缘更浓（视距受限感）× 强度
-        ctx.fillStyle = `rgba(190,202,206,${((0.15 + 0.05 * breathe) * mul).toFixed(3)})`;
-        ctx.fillRect(0, 0, W, H);
-        const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.9);
-        g.addColorStop(0, 'rgba(210,220,224,0)');
-        g.addColorStop(1, `rgba(176,190,196,${((0.22 + 0.08 * breathe) * mul).toFixed(3)})`);
+        // 大雾：可视半径（近清远朦，超距白蒙）——以角色（屏幕中心）为中心，radius 按强度
+        const rPx = fogRadius(sv._weather, level) * TS;
+        const aFull = Math.min(0.85, (0.35 + 0.10 * breathe) * mul);
+        const g = ctx.createRadialGradient(W / 2, H / 2, rPx, W / 2, H / 2, Math.max(rPx + 40, rPx * 1.35));
+        g.addColorStop(0, 'rgba(226,232,236,0)');                              // 可视半径内：清楚
+        g.addColorStop(0.75, `rgba(226,232,236,${(aFull * 0.55).toFixed(3)})`); // 边缘渐变朦胧
+        g.addColorStop(1, `rgba(226,232,236,${aFull.toFixed(3)})`);             // 超距：白蒙蒙
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, W, H);
     } else if (sv._weather === 'rain' || sv._weather === 'snow') {
@@ -897,7 +997,7 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
                 // ① 切换/初始化：撒全屏（立即均匀）
                 const c = colsOf(i, n, W, H);
                 spawnFull(p, c, i, n, W, H, camX, camY);
-                p.spd = WX_PART_SPEED.rain * (0.94 + Math.random() * 0.12);   // 统一基准 ±6%
+                p.spd = WX_PART_SPEED.rain * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);   // 基准×强度系数 ±6%
                 p.len = 7 + Math.random() * 8;
                 p.kind = wx.particles;
             } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 60 || p.x > camX + W + 60) {
@@ -920,7 +1020,7 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
             if (p.kind !== wx.particles || !p.spd) {
                 const c = colsOf(i, n, W, H);
                 spawnFull(p, c, i, n, W, H, camX, camY);
-                p.spd = WX_PART_SPEED.snow * (0.94 + Math.random() * 0.12);
+                p.spd = WX_PART_SPEED.snow * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
                 p.seed = Math.random() * 6.28;
                 p.kind = wx.particles;
             } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 40 || p.x > camX + W + 40) {
@@ -940,7 +1040,7 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
                 const c = colsOf(i, n, W, H);
                 p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
                 p.y = camY + Math.random() * H;
-                p.spd = WX_PART_SPEED.sand * (0.94 + Math.random() * 0.12);
+                p.spd = WX_PART_SPEED.sand * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
                 p.len = 4 + Math.random() * 7;
                 p.kind = wx.particles;
             } else if (p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {

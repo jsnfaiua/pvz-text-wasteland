@@ -443,7 +443,13 @@ function updateEvents(sv, dt) {
 function updateWeather(sv) {
     const hour = (sv.t / sv.dayLen) * 24;
     // dev 手动设了天气 + 强度后锁定（applyWxSet 设 _devWxLock=true），不被每天 8:00 自动覆盖
-    if (sv._devWxLock) { sv._lastWxHour = hour; return; }
+    if (sv._devWxLock) { sv._lastWxHour = hour; sv._lastHintHour = hour; return; }
+    // 预兆暗示（每天 7:00，切换前 1 游戏小时）：角色隐约感知即将来袭的天气（hint 文案，双端 log）
+    if ((sv._lastHintHour == null || (sv._lastHintHour < 7 && hour >= 7)) && hour < 8) {
+        const hintWx = B.weatherAt(sv.world.seed, sv.day);
+        if (hintWx !== sv._weather) log(B.wxInfo(hintWx).hint, '#B0B0C0');
+    }
+    sv._lastHintHour = hour;
     if (sv._lastWxHour != null && sv._lastWxHour < 8 && hour >= 8) {
         const wx = B.weatherAt(sv.world.seed, sv.day);
         if (wx !== sv._weather) {
@@ -452,8 +458,8 @@ function updateWeather(sv) {
             const inten = B.wxIntensity(wx, level);
             sv._weather = wx;
             // 大字公告（提示与天气改变同刻，host 端设 → wsync 快照 announce 双端显示）：
-            // 「接下来：雷阵雨 ⚡」——预告即将到来的天气
-            sv.announce = { text: `${info.icon} 接下来：${inten.name}${inten.flash ? ' ⚡' : ''}`, t: 2.8, color: info.color };
+            // 「🌧 雷阵雨 ⚡ 即将来袭」
+            sv.announce = { text: `${info.icon} ${inten.name}${inten.flash ? ' ⚡' : ''}即将来袭`, t: 2.8, color: info.color };
             log(`${inten.name}：${info.desc}`, info.color);   // 强度名（小雨/中雨…大雪/浓雾）+ 描述，host 广播 msg 双端可见
             if (wx === 'sandstorm' || inten.flash) AudioSystem.playWaveWarning();
         }
@@ -682,7 +688,7 @@ function update(dt) {
             mx /= len; my /= len;
             sv.faceX = mx; sv.faceY = my;
             const infEff = playerInfectionEffects(sv.infection || 0);
-            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * B.wxInfo(sv._weather).speedMul;   // 天气减速（沙尘暴 0.7 / 雪雾 0.9）
+            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * B.wxMoveMul(sv._weather, B.wxLevelCur(sv));   // 天气移速系数（沙尘暴按强度 moveMul，雪雾 speedMul）
             const nx = sv.px + mx * spd * dt;
             const ny = sv.py + my * spd * dt;
             if (canStand(nx, sv.py)) sv.px = nx;
@@ -704,6 +710,16 @@ function update(dt) {
         } else {
             sv.animMoving = false;  // 静止回站立帧
         }
+    }
+    // 沙尘暴风力推挤（被风吹着走；强度越大推力越强，风向按天确定性 —— 站着也会缓慢滑行）
+    if (sv._weather === 'sandstorm' && !sv.driving) {
+        const itnW = B.wxIntensity('sandstorm', B.wxLevelCur(sv));
+        const push = B.WX_WIND_PUSH * (itnW.mul || 1) * dt;
+        const wd = B.windDirAt(sv.world.seed, sv.day);
+        const wxp = sv.px + Math.cos(wd) * push;
+        const wyp = sv.py + Math.sin(wd) * push;
+        if (canStand(wxp, sv.py)) sv.px = wxp;
+        if (canStand(sv.px, wyp)) sv.py = wyp;
     }
     unstickPlayer();
 
@@ -870,7 +886,7 @@ function updateGuest(dt) {
             mx /= len; my /= len;
             sv.faceX = mx; sv.faceY = my;
             const infEff = playerInfectionEffects(sv.infection || 0);
-            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * B.wxInfo(sv._weather).speedMul;   // 天气减速（沙尘暴 0.7 / 雪雾 0.9）
+            const spd = B.PLAYER_SPEED * WA.moveMul(sv) * infEff.speedMul * (getTile(sv, Math.floor(sv.px / TS), Math.floor(sv.py / TS)) === T.ROAD ? B.ROAD_SPEED : 1) * B.wxMoveMul(sv._weather, B.wxLevelCur(sv));   // 天气移速系数（沙尘暴按强度 moveMul，雪雾 speedMul）
             const nx = sv.px + mx * spd * dt;
             const ny = sv.py + my * spd * dt;
             if (canStand(nx, sv.py)) sv.px = nx;

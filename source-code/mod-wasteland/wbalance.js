@@ -58,11 +58,11 @@ export const Z_WANDER_SPEED = 0.45;
 // 单机/联机 host 同一公式，guest 经 wsync 快照同步（§5.1 零差异）。
 // particles: 0 无粒子 / 1 雨 / 2 雪 / 3 雾（层）/ 4 沙尘；icon 用于切换公告
 export const WX_TABLE = {
-    clear:     { name: '晴朗',   color: '#E8E4D0', weight: 0.38, speedMul: 1.0, particles: 0, icon: '☀', desc: '万里无云，视野开阔' },
-    rain:      { name: '细雨',   color: '#6FA8D8', weight: 0.20, speedMul: 1.0, particles: 1, icon: '🌧', desc: '雨丝斜织，地面湿润' },
-    snow:      { name: '飘雪',   color: '#E8F2FF', weight: 0.12, speedMul: 0.9, particles: 2, icon: '❄', desc: '雪花纷飞，行动迟缓' },
-    fog:       { name: '大雾',   color: '#B8C4C8', weight: 0.16, speedMul: 0.9, particles: 3, icon: '🌫', desc: '浓雾弥漫，视野受限' },
-    sandstorm: { name: '沙尘暴', color: '#D8B878', weight: 0.14, speedMul: 0.7, particles: 4, icon: '🌪', desc: '狂风卷沙，行动困难' },
+    clear:     { name: '晴朗',   color: '#E8E4D0', weight: 0.38, speedMul: 1.0, particles: 0, icon: '☀', desc: '万里无云，视野开阔', hint: '云层渐渐散开，看来会是个好天气。' },
+    rain:      { name: '细雨',   color: '#6FA8D8', weight: 0.20, speedMul: 1.0, particles: 1, icon: '🌧', desc: '雨丝斜织，地面湿润', hint: '空气潮乎乎的，好像快下雨了呢……' },
+    snow:      { name: '飘雪',   color: '#E8F2FF', weight: 0.12, speedMul: 0.9, particles: 2, icon: '❄', desc: '雪花纷飞，行动迟缓', hint: '风里透着凉意，怕是要下雪了……' },
+    fog:       { name: '大雾',   color: '#B8C4C8', weight: 0.16, speedMul: 0.9, particles: 3, icon: '🌫', desc: '浓雾弥漫，视野受限', hint: '远处的景色越来越模糊，似乎要起雾了……' },
+    sandstorm: { name: '沙尘暴', color: '#D8B878', weight: 0.14, speedMul: 0.7, particles: 4, icon: '🌪', desc: '狂风卷沙，行动困难', hint: '风声渐大，黄沙的气息越来越重……' },
 };   // 权重和 = 0.38+0.20+0.12+0.16+0.14 = 1.00
 export function wxInfo(key) { return WX_TABLE[key] || WX_TABLE.clear; }
 // 确定性哈希（内联纯函数，wbalance 无外部依赖）：weatherAt(seed, day) 每天固定
@@ -79,34 +79,58 @@ export function weatherAt(seed, day) {
     return 'clear';
 }
 
-// ---------- 天气强度分级（用户：强度只影响疏密/浓度，不影响粒子速度） ----------
-// density = 粒子密度倍数（雾无粒子，用 mul 缩放覆盖层）；mul = 覆盖层浓度倍数
+// ---------- 天气强度分级（强度影响：疏密 density / 覆盖层 mul / 粒子速度 speedMul / 沙尘移速 moveMul / 雾可视半径 radius） ----------
 // flash = 雷阵雨闪电闪光标记（渲染端确定性触发，双端同步）
 export const WX_INTENSITY = {
     rain: [
-        { name: '小雨', density: 0.45, mul: 0.7 },
-        { name: '中雨', density: 1.0, mul: 1.0 },
-        { name: '大雨', density: 1.6, mul: 1.35 },
-        { name: '暴雨', density: 2.3, mul: 1.7 },
-        { name: '阵雨', density: 1.2, mul: 1.1 },
-        { name: '雷阵雨', density: 2.0, mul: 1.5, flash: true },
+        { name: '小雨', density: 0.45, mul: 0.7, speedMul: 0.7 },
+        { name: '中雨', density: 1.0, mul: 1.0, speedMul: 1.0 },
+        { name: '大雨', density: 1.6, mul: 1.35, speedMul: 1.3 },
+        { name: '暴雨', density: 2.3, mul: 1.7, speedMul: 1.6 },
+        { name: '阵雨', density: 1.2, mul: 1.1, speedMul: 1.1 },
+        { name: '雷阵雨', density: 2.0, mul: 1.5, speedMul: 1.8, flash: true },
     ],
     snow: [
-        { name: '小雪', density: 0.5, mul: 0.7 },
-        { name: '中雪', density: 1.0, mul: 1.0 },
-        { name: '大雪', density: 1.8, mul: 1.4 },
+        { name: '小雪', density: 0.5, mul: 0.7, speedMul: 0.7 },
+        { name: '中雪', density: 1.0, mul: 1.0, speedMul: 1.0 },
+        { name: '大雪', density: 1.8, mul: 1.4, speedMul: 1.5 },
     ],
     fog: [
-        { name: '薄雾', density: 0, mul: 0.6 },
-        { name: '中雾', density: 0, mul: 1.0 },
-        { name: '浓雾', density: 0, mul: 1.5 },
+        { name: '薄雾', density: 0, mul: 0.6, radius: 14 },   // radius = 可视半径（格），近清远朦
+        { name: '中雾', density: 0, mul: 1.0, radius: 10 },
+        { name: '浓雾', density: 0, mul: 1.5, radius: 6 },
     ],
     sandstorm: [
-        { name: '扬沙', density: 0.6, mul: 0.7 },
-        { name: '沙尘暴', density: 1.0, mul: 1.0 },
-        { name: '强沙暴', density: 1.7, mul: 1.4 },
+        { name: '扬沙', density: 0.6, mul: 0.7, speedMul: 0.7, moveMul: 0.85 },   // moveMul = 玩家移速系数
+        { name: '沙尘暴', density: 1.0, mul: 1.0, speedMul: 1.0, moveMul: 0.7 },
+        { name: '强沙暴', density: 1.7, mul: 1.4, speedMul: 1.4, moveMul: 0.55 },
     ],
 };
+// 沙尘暴风力推挤强度（px/s，被风吹着走；× 强度 mul）
+export const WX_WIND_PUSH = 26;
+// 风向（确定性，§13.2）：每天固定风向
+export function windDirAt(seed, day) {
+    return wxHash(seed, day | 0, 0x77C1) * Math.PI * 2;
+}
+// 粒子速度系数（雨/雪/沙按强度；fog 无粒子、clear 无档 → 1）
+export function wxSpeedMul(type, level) {
+    const arr = WX_INTENSITY[type];
+    const t = arr ? arr[Math.max(0, Math.min(arr.length - 1, level || 0))] : null;
+    return t && t.speedMul ? t.speedMul : 1;
+}
+// 玩家移速系数：沙尘暴按 moveMul（强度越大越慢），雪/雾按类型 speedMul 固定
+export function wxMoveMul(type, level) {
+    const arr = WX_INTENSITY[type];
+    const t = arr ? arr[Math.max(0, Math.min(arr.length - 1, level || 0))] : null;
+    if (t && t.moveMul) return t.moveMul;
+    return wxInfo(type).speedMul || 1;
+}
+// 雾可视半径（格）：薄雾 14 / 中雾 10 / 浓雾 6
+export function fogRadius(type, level) {
+    const arr = WX_INTENSITY[type];
+    const t = arr ? arr[Math.max(0, Math.min(arr.length - 1, level || 0))] : null;
+    return t && t.radius ? t.radius : 0;
+}
 // 当前实际强度档（dev 手动覆盖 _wxLevel 优先，否则按天确定性派生）
 export function wxLevelCur(sv) {
     return (sv && sv._wxLevel != null) ? sv._wxLevel : wxLevelAt(sv.world.seed, sv.day);
