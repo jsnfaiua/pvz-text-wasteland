@@ -1206,7 +1206,10 @@ function tileSurfaceColor(sv, gx, gy) {
 // 邻居表面为人行道/路面即参与；物体格不绘制任何背景带，只叠加在地面上。
 function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
     if (t === T.SIDEWALK) return;
-    if (getTile(sv, tx, ty - 1) !== t) {
+    // 草地类（GROUND/WEED）互为同类：相邻不画渐变（否则每块杂草被深色渐变框围住 = 草地分割成方框块）
+    const isGrassLike = v => v === T.GROUND || v === T.WEED;
+    const same = v => isGrassLike(t) ? isGrassLike(v) : v === t;
+    if (!same(getTile(sv, tx, ty - 1))) {
         const nc = tileSurfaceColor(sv, tx, ty - 1);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
             const mix = (GROUND_EDGE_BLEND - i) / (GROUND_EDGE_BLEND + 1);
@@ -1214,7 +1217,7 @@ function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
             ctx.fillRect(x0, y0 + i, TS + 1, 1);
         }
     }
-    if (getTile(sv, tx, ty + 1) !== t) {
+    if (!same(getTile(sv, tx, ty + 1))) {
         const nc = tileSurfaceColor(sv, tx, ty + 1);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
             const mix = (GROUND_EDGE_BLEND - i) / (GROUND_EDGE_BLEND + 1);
@@ -1222,7 +1225,7 @@ function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
             ctx.fillRect(x0, y0 + TS - i, TS + 1, 1);
         }
     }
-    if (getTile(sv, tx - 1, ty) !== t) {
+    if (!same(getTile(sv, tx - 1, ty))) {
         const nc = tileSurfaceColor(sv, tx - 1, ty);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
             const mix = (GROUND_EDGE_BLEND - i) / (GROUND_EDGE_BLEND + 1);
@@ -1230,7 +1233,7 @@ function drawSurfaceEdgeBlend(ctx, sv, tx, ty, x0, y0, r, g, b, t) {
             ctx.fillRect(x0 + i, y0, 1, TS + 1);
         }
     }
-    if (getTile(sv, tx + 1, ty) !== t) {
+    if (!same(getTile(sv, tx + 1, ty))) {
         const nc = tileSurfaceColor(sv, tx + 1, ty);
         if (nc) for (let i = 0; i < GROUND_EDGE_BLEND; i++) {
             const mix = (GROUND_EDGE_BLEND - i) / (GROUND_EDGE_BLEND + 1);
