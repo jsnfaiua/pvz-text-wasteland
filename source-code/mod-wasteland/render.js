@@ -877,29 +877,32 @@ export function playerBodyColorAt(px, py, bodyColor, look, anim) {
 // 替换时按"原像素亮度 / 部位主色亮度"缩放,保留 sprite 明暗层次。
 // ============================================================
 // 每个部位多色(主色+亮/暗变体)覆盖 sprite 中各层次像素
+// 颜色值来自 2026-08-09 用户素材实测（sprite-front/back/side + walk 帧）：
+//   skin  [247,205,155] 浅肤  | hair [55,36,21]/[74,46,22]/[100,66,31] 深棕
+//   shirt [18,43,26] 深绿     | pants [28,48,66] 深蓝
+//   shoes [109,66,32]/[39,25,15] 棕 + 深色鞋底
 const MC_PAL = {
-    skin:  [[248, 208, 152], [200, 160, 120], [216, 176, 136]],
-    hair:  [[96, 64, 32], [72, 48, 24], [200, 160, 120], [56, 40, 24]],
-    shirt: [[40, 80, 40], [24, 56, 24], [56, 96, 56], [16, 40, 24]],
-    pants: [[32, 48, 72], [24, 40, 56], [48, 64, 88], [16, 32, 48]],
-    // 加入暗色变体 [26,26,26] / [40,28,16] 等，吸收 sprite 中鞋底缝线/深灰阴影
-    // （距离 [104,72,40] < 70 的暗色），避免被判给 eyes 跳过染色导致"鞋子内部杂色"
-    shoes: [[104, 72, 40], [80, 56, 32], [56, 40, 24], [136, 88, 48], [26, 26, 26], [40, 28, 16], [50, 35, 22], [72, 50, 32]],
+    skin:  [[247, 205, 155], [200, 160, 120], [216, 176, 136]],
+    hair:  [[55, 36, 21], [74, 46, 22], [100, 66, 31], [56, 40, 24]],
+    shirt: [[18, 43, 26], [20, 45, 24], [24, 56, 24], [40, 80, 40]],
+    pants: [[28, 48, 66], [41, 62, 81], [48, 64, 88], [16, 32, 48]],
+    shoes: [[109, 66, 32], [39, 25, 15], [120, 67, 25], [136, 88, 48], [72, 43, 22]],
     eyes:  [[28, 24, 20]],
 };
 const MC_KEYS = Object.keys(MC_PAL);
 const _tintCache = new Map();
 
-// 收紧颜色匹配阈值：只替换与部位主色足够接近的像素（发/鞋等"纯部位色"），
-// 阴影/描边/渐变等杂色不再被强行染成玩家色 → 消除头发/鞋子上的杂色颗粒。
-// 原 12000(≈RGB 距离 109) 过宽；降至 7000(≈84) 保留明暗变体、滤除远处杂色。
-//
-// 位置软约束（仅对 shoes）：鞋子在角色中只出现在底部（ny≈0.85-1.0）。
-// 当 sprite 头顶/中部的亮棕色像素 [129,83,39]（距 shoes[0]=[104,72,40] 仅 ~750）
-// 被 nearestPart 误判为 shoes 时，染成玩家鞋色 → 形成"头顶杂色"（用户反馈
-// "往东往西走头顶有杂色"）。若 best=shoes 但 ny<0.55，重选非 shoes 部位最近者。
-// 只对 shoes 加约束：hair/pants/skin 位置多样（侧面头发、手臂、长袍下摆），
-// 对它们加禁区会破坏正常像素（之前实验已证）。
+// 部位判定：用"最近匹配"找像素所属部位，再用位置软约束裁决歧义。
+// 核心目标（用户 2026-08-09 明确）：
+//   ① 不改 sprite 原图（只换色，不篡改形状/明暗）
+//   ② 所有捏脸配色下都不出现杂色
+// 设计：
+//   - 主判定：最近 MC_PAL 参考色（素材实测色板，见 MC_PAL）
+//   - 阈值：bestD < 12000（RGB 距离 < 109.5），远处杂色不染色（保留原像素）
+//   - 位置软约束仅处理"明显错位"的歧义：
+//       * 头顶（ny<0.55）被判为 shoes → 改判最近的非 shoes 部位（防"头顶鞋色"）
+//       * 底部（ny>0.80）被判为 hair → 改判 shoes（防"鞋底变发色"）
+//     hair 色 [55,36,21] 与鞋底暗棕 [39,25,15] 接近，无位置约束时随机配色会互相污染
 function nearestPart(r, g, b, ny = 0.5) {
     let best = null, bestD = 1e9;
     for (const k of MC_KEYS) {
@@ -908,24 +911,14 @@ function nearestPart(r, g, b, ny = 0.5) {
             if (d < bestD) { bestD = d; best = k; }
         }
     }
-    if (bestD >= 12000) return null; // 阈值放宽到原值：保留鞋子内部高光/缝线等细节（距 ~100），不替换远处杂色
-    if (best === 'shoes' && ny < 0.55) {
-        // 上半身被判为 shoes：错位，重选非 shoes 部位最近者
-        let alt = null, altD = 1e9;
-        for (const k of MC_KEYS) {
-            if (k === 'shoes') continue;
-            for (const p of MC_PAL[k]) {
-                const d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b);
-                if (d < altD) { altD = d; alt = k; }
-            }
-        }
-        return altD < 7000 ? alt : null;
-    }
-    // 底部 hair→shoes 裁决：鞋底/鞋跟区域的"棕色像素"（如 [72,43,22] 距 hair[1]=[72,48,24] 仅 29）
-    // 会被判给 hair → 随机到黑发时鞋底全黑。但角色底部（ny>0.72）不应出现头发色——
-    // 这些是鞋子的暗棕变体，改判 shoes 染成玩家鞋色。
-    // 鞋底保留少量描边/缝线深色（[26,26,26] 等已在 shoes 色板中）是可接受的。
-    if (best === 'hair' && ny > 0.72) return 'shoes';
+    if (bestD >= 12000) return null; // 远处杂色不染色
+    // shoes 位置硬约束（用户 2026-08-09 明确）：棕色像素只在鞋区（ny>=0.78）才判为 shoes，
+    // 其他位置的棕色像素是 sprite 设计层的"杂色"——不染色（保留原色），
+    // 避免"裤子上闪棕色杂色"（用户反馈）。这也防止"头顶冒出鞋色"。
+    if (best === 'shoes' && ny < 0.78) return null;
+    // hair 在底部（ny>0.80）：鞋底暗棕 [39,25,15] 距 hair[0]=[55,36,21] 极近（d²≈540），
+    // 随机黑发时鞋底全黑。底部只能是鞋，改判 shoes 保持鞋底可见为玩家色。
+    if (best === 'hair' && ny > 0.80) return 'shoes';
     return best;
 }
 function hexRgb(hex) {
@@ -936,44 +929,16 @@ function hexRgb(hex) {
     if (isNaN(n)) return null;
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
-// 邻域投票修复：sprite 内部未染色像素（被判为 eyes 或距离过远的杂色），
-// 用 8 邻域内已染色像素的 RGB 平均值替换。第一遍循环前先把"被 nearestPart 染色"
-// 的像素和"未染色"的像素分别记录。
-// 仅当像素被多数（>=5/8）邻域包围且 RGB 距离邻域平均 < 阈值时修复，避免
-// 跨区域错误扩散（如裤子像素扩展到衣服区）。
-function fixByNeighborhood(d, sw, sh) {
-    const N = sw * sh;
-    const tagged = new Uint8Array(N);  // 1=已染色，0=未染色
-    // 第一步：扫描哪些像素已经过 nearestPart 染色（即 R/G/B 都"看起来像玩家色"）。
-    // 但实际上无法直接区分已染/未染（都是写后的 RGB）。改用：所有不透明像素中，
-    // 满足"RGB 在 [玩家色 ±50]"范围的算"已染"，否则算"未染"。
-    // 简化方案：直接用 alpha>10 + RGB 距离"最常见邻域色" < 阈值 判定。
-    // 工程做法：先标记"被 nearestPart 写过"的位置——但 tintSprite 没标记，改用：
-    // 把所有"距离玩家色 < 阈值"的像素视为"已染"，否则视为"未染"。
-    // 我们没有传入玩家色，所以改用：所有不透明像素都参与邻域检查，
-    // 用 8 邻域 RGB 平均替换 离平均 > 阈值 的"孤立体素"。
-    // 触发条件：原 RGB 与 8 邻域平均色 RGB 距离 > 150（强烈反差）
-    for (let y = 1; y < sh - 1; y++) {
-        for (let x = 1; x < sw - 1; x++) {
-            const i = (y * sw + x) * 4;
-            if (d[i + 3] === 0) continue;
-            // 收集 8 邻域 RGB（跳过透明）
-            let rr = 0, gg = 0, bb = 0, n = 0;
-            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-                if (dx === 0 && dy === 0) continue;
-                const j = ((y + dy) * sw + (x + dx)) * 4;
-                if (d[j + 3] === 0) continue;
-                rr += d[j]; gg += d[j + 1]; bb += d[j + 2]; n++;
-            }
-            if (n < 4) continue;
-            rr = (rr / n) | 0; gg = (gg / n) | 0; bb = (bb / n) | 0;
-            const dr = d[i] - rr, dg = d[i + 1] - gg, db = d[i + 2] - bb;
-            const dist2 = dr * dr + dg * dg + db * db;
-            if (dist2 > 40000) {  // RGB 距离 > 200（仅处理极度异常的孤立深色，不擦掉正常鞋底阴影）
-                d[i] = rr; d[i + 1] = gg; d[i + 2] = bb;
-            }
+// 返回与像素 RGB 距离最近的 MC_PAL 参考色（用于亮度缩放基准）
+function nearestPalRef(r, g, b) {
+    let best = MC_PAL.skin[0], bestD = 1e9;
+    for (const k of MC_KEYS) {
+        for (const p of MC_PAL[k]) {
+            const d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b);
+            if (d < bestD) { bestD = d; best = p; }
         }
     }
+    return best;
 }
 // 去除 sprite 中的孤立脏块（连通分量面积 < 阈值则整块 mask 透明）。
 // 根因：walk-side-f0/f2、walk-back-f0 头顶有"飞起来"的小棕色块，walk-front-f1/f2/f3
@@ -1049,18 +1014,16 @@ export function tintSprite(img, look) {
         if (!part || part === 'eyes') continue; // 眼睛/深阴影保持原色
         const t = hexRgb(L[part]);
         if (!t) continue;
-        const base = MC_PAL[part];
-        const baseLum = base[0] * 0.299 + base[1] * 0.587 + base[2] * 0.114;
+        // 用"该像素最近匹配的参考色"做亮度基准，保留原图明暗层次：
+        // f = 原像素亮度 / 匹配参考色亮度 → 染成玩家色后明暗层次与素材一致
+        const base = nearestPalRef(r, g, b);
+        const baseLum = (base[0] * 0.299 + base[1] * 0.587 + base[2] * 0.114);
         const lum = r * 0.299 + g * 0.587 + b * 0.114;
         const f = baseLum > 1 ? lum / baseLum : 1;
         d[i] = Math.max(0, Math.min(255, Math.round(t[0] * f)));
         d[i + 1] = Math.max(0, Math.min(255, Math.round(t[1] * f)));
         d[i + 2] = Math.max(0, Math.min(255, Math.round(t[2] * f)));
     }
-    // 邻域投票修复：填补未染色像素（眼睛/远处杂色被跳过）—— sprite 内部阴影/缝线等
-    // 深色细节被判给 eyes 而跳过染色，邻域多数色投票染色。避免"鞋子内部/头发深色阴影"
-    // 等杂色残留。
-    fixByNeighborhood(d, sw, sh);
     ctx.putImageData(id, 0, 0);
     if (_tintCache.size < 200) _tintCache.set(key, cv);
     return cv;
