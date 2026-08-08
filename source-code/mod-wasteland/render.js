@@ -962,7 +962,7 @@ function maskIsolatedPixels(d, sw, sh) {
         }
         sizes[lab] = size;
     }
-    const THRESHOLD = 8;   // 小于 8 像素的连通分量视为孤立脏块
+    const THRESHOLD = 4;   // 小于 4 像素的连通分量视为孤立脏块（原 8 用户反馈"像素点缺少"过头）
     for (let i = 0; i < N; i++) {
         const lab = labels[i];
         if (lab > 0 && sizes[lab] < THRESHOLD) d[i * 4 + 3] = 0;
@@ -1080,7 +1080,7 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
     const dx = Math.round(sx - dw / 2), dy = Math.round(sy - dh);
     ctx.save();
     ctx.imageSmoothingEnabled = false;
-    if (dir === 'right') { // 朝右 = side sprite(本身朝左)水平镜像;朝左直接用原图
+    if (dir === 'left') { // 用户的 side sprite 本身是朝东视角（玩家面部朝东），朝东=不镜像，朝西=水平镜像显示反向
         ctx.translate(sx, 0);
         ctx.scale(-1, 1);
         ctx.translate(-sx, 0);
