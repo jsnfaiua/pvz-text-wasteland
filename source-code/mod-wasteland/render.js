@@ -888,18 +888,16 @@ const MC_PAL = {
 const MC_KEYS = Object.keys(MC_PAL);
 const _tintCache = new Map();
 
-// 每个部位在角色 bbox 内的"位置禁区"（归一化，0=顶 1=底）。
-// 仅对纵向分布明确、主区集中在单端的部位启用：hair 顶、pants 中下、shoes 底。
-// 逻辑：当像素颜色被最近匹配到该部位、但实际纵向位置已完全超出其合理区（属于该部位不可能），
-// 则视为跨部位的描边/阴影污染 → 不染色（保留 sprite 原色），消除"发区冒出鞋色/鞋区冒出发色"等杂点。
-// skin/shirt 位置多样（脸/手/衣/臂），不设禁区，避免误伤手臂等正常像素。
-const PART_RANGE = {
-    hair:  [0.00, 0.45],
-    pants: [0.46, 0.95],
-    shoes: [0.70, 1.00],
-};
-
-function nearestPart(r, g, b, ny = 0.5) {
+// 收紧颜色匹配阈值：只替换与部位主色足够接近的像素（发/鞋等"纯部位色"），
+// 阴影/描边/渐变等杂色不再被强行染成玩家色 → 消除头发/鞋子上的杂色颗粒。
+// 原 12000(≈RGB 距离 109) 过宽；降至 7000(≈84) 保留明暗变体、滤除远处杂色。
+//
+// 历史教训：曾加过 PART_RANGE 位置禁区（hair 顶/pants 中下/shoes 底），试图消除
+// "发区冒鞋色/鞋区冒发色"的跨部位描边杂点。但禁区对头发侧面(脸颊、太阳穴)的
+// hair 色像素（ny 0.45-0.55）一刀切 mask 掉，导致这些像素保留 sprite 原棕色 →
+// 形成新的"棕色斑块"杂点（用户反馈"杂点没解决"）。已撤掉禁区，纯靠 maskIsolatedPixels
+// 解决孤立小块（这是杂点的真正主因）。
+function nearestPart(r, g, b) {
     let best = null, bestD = 1e9;
     for (const k of MC_KEYS) {
         for (const p of MC_PAL[k]) {
@@ -907,19 +905,7 @@ function nearestPart(r, g, b, ny = 0.5) {
             if (d < bestD) { bestD = d; best = k; }
         }
     }
-    if (!best) return null;
-    // 收紧阈值：只替换与部位主色足够接近的像素（发/鞋等"纯部位色"），
-    // 阴影/描边/渐变等杂色不再被强行染成玩家色 → 消除头发/鞋子上的杂色颗粒。
-    // 原 12000(≈RGB 距离 109) 过宽；降至 7000(≈84) 保留明暗变体、滤除远处杂色。
-    if (bestD >= 7000) return null;
-    // 位置禁区（硬约束）：判定的部位若在该纵向位置"完全不可能出现"，
-    // 则不染色（返回 null 保留 sprite 原色）。这是消除"发区冒出鞋色/鞋区冒出发色"
-    // 等跨部位描边杂点的关键——描边/阴影像素本就不该染成玩家部位色。
-    // 仅对纵向分布明确、且主区集中在单端（hair 顶 / shoes 底 / pants 下）的部位启用，
-    // 避免误伤中部手臂(皮肤)等正常像素。正常像素都在各自区间内，完全不受影响。
-    const rng = PART_RANGE[best];
-    if (rng && (ny < rng[0] || ny > rng[1])) return null;
-    return best;
+    return bestD < 7000 ? best : null; // 阈值收紧：远处(杂色/渐变)不替换
 }
 function hexRgb(hex) {
     if (!hex || typeof hex !== 'string') return null;
@@ -928,6 +914,45 @@ function hexRgb(hex) {
     const n = parseInt(h, 16);
     if (isNaN(n)) return null;
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+// 去除 sprite 中的孤立脏块（连通分量面积 < 阈值则整块 mask 透明）。
+// 根因：walk-side-f0/f2、walk-back-f0 头顶有"飞起来"的小棕色块，walk-front-f1/f2/f3
+// 边缘有错位孤立像素；这些脏块被 tintSprite 染色后就是用户看到的"行走杂点"。
+// 阈值 8 像素：保留眼睛(≈16px)等真正细节，去除飞起来的孤立脏块。
+// 站立用 idle 帧(无脏块)不受影响；行走用 walk 帧时孤立脏块被静默去除。
+// 算法：BFS 标记 4 邻域连通分量，记录面积，< 阈值则整块透明。一次性扫描，缓存后无重复开销。
+function maskIsolatedPixels(d, sw, sh) {
+    const N = sw * sh;
+    const labels = new Int32Array(N);
+    for (let i = 0; i < N; i++) labels[i] = -1;
+    const sizes = [];
+    let nextLabel = 0;
+    const stack = [];
+    for (let start = 0; start < N; start++) {
+        const i4 = start * 4;
+        if (d[i4 + 3] === 0) { labels[start] = 0; continue; }
+        if (labels[start] !== -1) continue;
+        const lab = ++nextLabel;
+        let size = 0;
+        stack.length = 0;
+        stack.push(start);
+        labels[start] = lab;
+        while (stack.length) {
+            const cur = stack.pop();
+            size++;
+            const cx = cur % sw, cy = (cur / sw) | 0;
+            if (cx > 0) { const n = cur - 1; if (labels[n] === -1 && d[n * 4 + 3] !== 0) { labels[n] = lab; stack.push(n); } }
+            if (cx < sw - 1) { const n = cur + 1; if (labels[n] === -1 && d[n * 4 + 3] !== 0) { labels[n] = lab; stack.push(n); } }
+            if (cy > 0) { const n = cur - sw; if (labels[n] === -1 && d[n * 4 + 3] !== 0) { labels[n] = lab; stack.push(n); } }
+            if (cy < sh - 1) { const n = cur + sw; if (labels[n] === -1 && d[n * 4 + 3] !== 0) { labels[n] = lab; stack.push(n); } }
+        }
+        sizes[lab] = size;
+    }
+    const THRESHOLD = 8;   // 小于 8 像素的连通分量视为孤立脏块
+    for (let i = 0; i < N; i++) {
+        const lab = labels[i];
+        if (lab > 0 && sizes[lab] < THRESHOLD) d[i * 4 + 3] = 0;
+    }
 }
 // 返回调色后的 canvas(per img+look 缓存);look 缺失或 img 不可用时返回原 img
 // 性能优化:先缩放到 0.25x(原图 749×1846 → 187×461 ≈ 8 万像素),再 tint,几 ms 完成
@@ -950,15 +975,12 @@ export function tintSprite(img, look) {
     ctx.drawImage(img, 0, 0, sw, sh);
     const id = ctx.getImageData(0, 0, sw, sh);
     const d = id.data;
-    // 像素纵向位置（相对 bbox，0=顶 1=底）：用于部位软区域约束（仅颜色判定有歧义时裁决）
-    const bb = getSpriteBBox(img);
-    const bbH = Math.max(1, bb.h);
+    // 先 mask 孤立脏块（去除 sprite 中"飞起来"的小色块，是行走杂点的直接来源）
+    maskIsolatedPixels(d, sw, sh);
     for (let i = 0; i < d.length; i += 4) {
         if (d[i + 3] === 0) continue;
-        const idx = i / 4;
         const r = d[i], g = d[i + 1], b = d[i + 2];
-        const ny = ((idx / sw | 0) - bb.y) / bbH;   // 像素行号 = Math.floor(idx / sw)
-        const part = nearestPart(r, g, b, ny);
+        const part = nearestPart(r, g, b);
         if (!part || part === 'eyes') continue; // 眼睛/深阴影保持原色
         const t = hexRgb(L[part]);
         if (!t) continue;
