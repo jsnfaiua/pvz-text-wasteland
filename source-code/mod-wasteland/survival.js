@@ -701,7 +701,7 @@ function update(dt) {
                 const isSide = Math.abs(sv.faceX || 0) > 0.7;
                 sv.stepT = (sv.stepT || 0) - dt;
                 if (sv.stepT <= 0) {
-                    sv.stepT = run ? (isSide ? 0.16 : 0.24) : (isSide ? 0.18 : 0.36);
+                    sv.stepT = run ? 0.24 : 0.36;   // 走路周期统一 1.44s（0.36s×4 帧），跑步 0.96s（0.24s×4）——2026-08-08 用户要求
                     sv.stepSide = !sv.stepSide;
                     sv.animFrame = ((sv.animFrame || 0) + 1) % (isSide ? 4 : 4);   // 动画换帧与脚步同频；side 2 帧循环、front/back 4 帧
                     if (onGrass) AudioSystem.playWalkGrass();
@@ -927,7 +927,7 @@ function updateGuest(dt) {
                 const isSide = Math.abs(sv.faceX || 0) > 0.7;
                 sv.stepT = (sv.stepT || 0) - dt;
                 if (sv.stepT <= 0) {
-                    sv.stepT = run ? (isSide ? 0.16 : 0.24) : (isSide ? 0.18 : 0.36);
+                    sv.stepT = run ? 0.24 : 0.36;   // 走路周期统一 1.44s（0.36s×4 帧），跑步 0.96s（0.24s×4）——2026-08-08 用户要求
                     sv.stepSide = !sv.stepSide;
                     sv.animFrame = ((sv.animFrame || 0) + 1) % (isSide ? 4 : 4);
                     if (onGrass) AudioSystem.playWalkGrass();
