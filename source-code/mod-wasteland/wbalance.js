@@ -8,7 +8,7 @@ import { ZOMBIES, WEAPONS, AMMO_INFO } from '../core/constants.js';
 // ---------- 全局 ----------
 export const DAY_LEN = 3600;    // 1 现实小时 = 1 游戏天（昼夜系统时间流速）
 export const MAX_HP = 100;
-export const PLAYER_SPEED = 112;   // 玩家移速(px/s),2026-08-08 调慢 ~14%(用户:偏快)
+export const PLAYER_SPEED = 56;   // 玩家移速(px/s),2026-08-08 减半(用户:移动速度减半,配合闪避) 原 112
 export const HOTBAR_SIZE = 6;
 export const SAVE_INTERVAL = 20;
 export const PICKUP_RADIUS = 26;

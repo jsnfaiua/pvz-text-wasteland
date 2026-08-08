@@ -15,8 +15,18 @@ const REGEN_NORMAL = 14;    // 正常回复速率 /s
 const REGEN_EXHAUST = 10;   // 力竭期回复速率 /s（比正常略慢，不再久拖不动）
 const GUARD_DRAIN = 8;      // 架盾持续耗体力 /s
 const SPRINT_DRAIN = 6;     // 奔跑持续耗体力 /s
-const DASH_COST = 12;       // 闪现消耗
+const DASH_COST = 8;        // 闪避消耗（2026-08-08 由闪现 12 改：短距离闪避更便宜）
 const GUARD_COST = 6;       // 格挡起手消耗
+
+// ═══ 闪避（2026-08-08 用户需求：删远距离闪现 → 短距离任意方向闪避 + 完美闪避子弹时间）═══
+// 距离 = DODGE_SPEED × DODGE_DURATION；无敌帧 DODGE_INVULN；完美窗口 = 闪避开始后 _dodgePerfectWindow 内被攻击
+const DODGE_SPEED = 320;    // 闪避速度(px/s) —— 原闪现 900，缩短为短距离翻滚
+const DODGE_DURATION = 0.20;   // 闪避时长 —— 原 0.16 略长
+const DODGE_INVULN = 0.30;     // 闪避无敌帧 —— 原 0.22 加长（更有安全感）
+const DODGE_CD = 0.50;         // 闪避冷却 —— 原 0.8 更频繁
+const DODGE_PERFECT_WINDOW = 0.25;  // 完美闪避窗口：闪避开始后 0.25s 内被攻击触发子弹时间
+export const BULLET_TIME_DURATION = 1.2;   // 完美闪避子弹时间时长(s)
+export const BULLET_TIME_SCALE = 0.2;      // 子弹时间倍速（0.2 = 5 倍慢放）
 
 // 移动输入（WASD + 方向键，与单机一致）
 export function moveInput(sv) {
@@ -45,16 +55,19 @@ export function spendStamina(sv, cost) {
     return true;
 }
 
-// ---------- 闪现（Q）：残影 + 无敌帧，移植单机 startDash ----------
+// ---------- 闪避（Q 键 / 任意方向）：短距离快速位移 + 无敌帧，完美闪避触发子弹时间 ----------
+// 2026-08-08 用户需求：删掉远距离闪现 → 闪避结合方向键（currentMoveDir 读 WASD/方向键，任意方向），
+// 完美闪避（闪避开始后 0.25s 内被攻击）→ 1.2s 子弹时间（全局 0.2 倍慢动作）
 export function startDash(sv) {
     if (sv.dashCooldown > 0 || sv.dashing) return false;
     if (!spendStamina(sv, DASH_COST)) return false;
     sv.dashing = true;
-    sv.dashTimer = ACTION.dashDuration;
-    sv.dashDir = currentMoveDir(sv);
-    sv.dashCooldown = ACTION.dashCooldown;
-    sv.invuln = Math.max(sv.invuln, ACTION.dashInvuln);
+    sv.dashTimer = DODGE_DURATION;
+    sv.dashDir = currentMoveDir(sv);   // 任意方向：WASD/方向键 → 闪避方向；无输入用面向
+    sv.dashCooldown = DODGE_CD;
+    sv.invuln = Math.max(sv.invuln, DODGE_INVULN);
     sv.dashGhosts = [];
+    sv._dodgePerfectWindow = DODGE_PERFECT_WINDOW;   // 完美闪避窗口开启
     return true;
 }
 
@@ -106,13 +119,14 @@ export function updateActions(sv, dt, canStand) {
     // 奔跑（Shift）：力竭或体力空时无法奔跑
     sv.sprinting = !!sv.keys['shift'] && !sv.exhausted && (sv.stamina || 0) > 0;
 
-    // 闪现中：高速冲刺 + 残影
+    // 闪避中：短距离快速位移 + 残影
     if (sv.dashing) {
         sv.dashTimer -= dt;
+        if (sv._dodgePerfectWindow > 0) sv._dodgePerfectWindow -= dt;
         sv.dashGhosts.push({ x: sv.px, y: sv.py - sv.jumpOffset, alpha: 0.55 });
         if (sv.dashGhosts.length > 6) sv.dashGhosts.shift();
-        const nx = sv.px + sv.dashDir.x * ACTION.dashSpeed * dt;
-        const ny = sv.py + sv.dashDir.y * ACTION.dashSpeed * dt;
+        const nx = sv.px + sv.dashDir.x * DODGE_SPEED * dt;
+        const ny = sv.py + sv.dashDir.y * DODGE_SPEED * dt;
         if (canStand(nx, sv.py)) sv.px = nx;
         if (canStand(sv.px, ny)) sv.py = ny;
         if (sv.dashTimer <= 0) sv.dashing = false;
@@ -226,7 +240,16 @@ export function resetActions(sv) {
 
 // 命中玩家：跳跃/无敌帧闪避、格挡、完美防反
 export function resolvePlayerHit(sv, z, dmg, canStand) {
-    if (sv.isJumping || sv.invuln > 0) return;
+    if (sv.isJumping) return;
+    if (sv.invuln > 0) {
+        // 完美闪避（2026-08-08）：闪避无敌帧内（闪避开始后 0.25s 内）被僵尸攻击 → 触发子弹时间（时停）
+        if (sv.dashing && sv._dodgePerfectWindow > 0 && !sv._bulletT) {
+            sv._bulletT = BULLET_TIME_DURATION;
+            sv.perfectFlash = 0.35;
+            sv.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.35, maxLife: 0.35, label: '完美闪避' });
+        }
+        return;
+    }
     if (sv.guarding) {
         if (inPerfectGuard(sv)) {
             z.stunT = ACTION.perfectStunTime;

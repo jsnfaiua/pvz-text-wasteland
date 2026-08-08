@@ -385,7 +385,8 @@ let bgTimer = null;
 
 function loop(now) {
     if (!sv || !sv.active) return;
-    const dt = Math.min((now - sv.last) / 1000, 0.05);
+    let dt = Math.min((now - sv.last) / 1000, 0.05);
+    if (sv._bulletT > 0) { sv._bulletT -= dt; dt *= WA.BULLET_TIME_SCALE; }   // 完美闪避子弹时间(0.2x 慢动作)
     sv.last = now;
     carBodyCache = null;   // 帧级车体占位缓存：每帧失效（地形可能被改动）
     // 搜索界面打开时游戏不暂停：世界（僵尸/昼夜/饱食）继续运行；
@@ -407,7 +408,8 @@ function startBgKeepAlive() {
     bgTimer = setInterval(() => {
         if (!sv || !sv.active || !document.hidden) return;
         const now = performance.now();
-        const dt = Math.min((now - sv.last) / 1000, 0.05);
+        let dt = Math.min((now - sv.last) / 1000, 0.05);
+    if (sv._bulletT > 0) { sv._bulletT -= dt; dt *= WA.BULLET_TIME_SCALE; }   // 完美闪避子弹时间(0.2x 慢动作)
         sv.last = now;
         if (!Panel.isChestOpen() && !pauseOpen && !sv.dead) update(dt);
         else sv.now += dt;
