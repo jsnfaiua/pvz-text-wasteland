@@ -17,7 +17,7 @@
 //   wrejoin guest→host ×1  {}                                        客人断线重连后请求状态重同步
 // ============================================================
 
-import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName } from './survival.js';
+import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, updateLootDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName } from './survival.js';
 import AudioSystem from '../systems/audio.js';
 import * as WDEV from './wdev.js';
 import { newSeed } from './world.js';
@@ -479,6 +479,9 @@ function dispatchWevt(evt, meta) {
         } else if (evt.type === 'pickup') {
             // guest 拾取了掉落：host 移除对应掉落（下次 wsync 双端一致）
             removeDrop(evt.x, evt.y, evt.id);
+        } else if (evt.type === 'lootupdate') {
+            // guest 搜索战利品后 contents 变更：host 更新对应掉落（空则移除）
+            updateLootDrop(evt.x, evt.y, evt.id, evt.contents);
         } else if (evt.type === 'drop') {
             // guest 丢出的掉落：host 权威入库（wsync 下发双端一致）
             addDrop(evt.x, evt.y, evt.id, evt.n);

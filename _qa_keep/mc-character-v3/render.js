@@ -35,27 +35,18 @@ export { _mcSprites, _mcWalk }; // 导出给捏脸界面 wlook.js 用(显示 4 �
         img.src = new URL('sprites/sprite-' + n + '.png', base).href;
     }
     // walk 帧加载:正面 = 用户逐帧图 f2(迈左脚)/f3(迈右脚)两帧交替;
-    // 待机仍是 sprite-front.png(初始站立)。side 走路 = 用户给的朝东 4 帧动画（f0=1.png、f1=2.png、f2=3.png、f3=4.png）按 1→2→3→4 循环；
-    // back 仍走原 4 帧。步频：side 0.18s/帧（survival.js 单独维护 stepT），4 帧循环周期 0.72s。
+    // 待机仍是 sprite-front.png(初始站立)。side/back 沿用原 4 帧。
     const WALK_FRAME_FILES = {
         front: ['walk-front-f2.png', 'walk-front-f3.png', 'walk-front-f2.png', 'walk-front-f3.png'],
-        side: ['walk-side-f0.png', 'walk-side-f1.png', 'walk-side-f2.png', 'walk-side-f3.png'],   // 朝东 4 帧（用户图 1/2/3/4.png），
-                                                                                    // 加载时每帧镜像成"反方向"，朝东=整体镜像→原图、朝西=不镜像→镜像图
+        side: ['walk-side-f0.png', 'walk-side-f1.png', 'walk-side-f2.png', 'walk-side-f3.png'],
         back: ['walk-back-f0.png', 'walk-back-f1.png', 'walk-back-f2.png', 'walk-back-f3.png'],
     };
     for (const n of ['front', 'side', 'back']) {
-        const files = WALK_FRAME_FILES[n];
-        for (let f = 0; f < files.length; f++) {
+        for (let f = 0; f < 4; f++) {
             const img = new Image();
             const idx = f;
-            img.onload = () => {
-                _mcWalk[n][idx] = img;
-                // side 方向（2026-08-08 16:54 修复）：用户给的 4 帧是"朝东行走"参考图。
-                // 存储**原图**，不镜像。渲染层 dir==='right'(朝东) 整体水平镜像 → 显示镜像图（朝东迈步 view），
-                // 朝西不镜像 → 显示原图。与待机 sprite-side 方向一致（朝东=镜像、朝西=原图）。
-                // 之前 onload 对 side 帧做了镜像存储，叠加渲染层镜像导致朝东/朝西装反，已修正。
-            };
-            img.src = new URL('sprites/' + files[f], base).href;
+            img.onload = () => { _mcWalk[n][idx] = img; };
+            img.src = new URL('sprites/' + WALK_FRAME_FILES[n][f], base).href;
         }
     }
 })();
@@ -950,23 +941,13 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
     const moving = !!(a.moving);
     const dir = a.dir;
     const sprKey = dir === 'up' ? 'back' : (dir === 'left' || dir === 'right') ? 'side' : 'front';
-    // 走路时按 anim.frame 选 walk 帧（精确像素平移动画）
-    // side 走路 = 用户给的朝东 4 帧动画按 1→2→3→4 循环（f0/f1/f2/f3 加载时各自镜像）：
-    //   frame % 4 → 0/1/2/3 = _mcWalk.side[0/1/2/3]
-    // 朝东=渲染层整体镜像（显示原图）、朝西=不镜像（显示镜像图）——镜像顺序一致
+    // 走路时按 anim.frame 选 walk 帧(精确像素平移动画)
     let img = _mcSprites[sprKey];
-    if (moving && a.frame != null) {
-        if (sprKey === 'side') {
-            const fi = a.frame % 4;
-            if (_mcWalk.side[fi]) img = _mcWalk.side[fi];
-        } else if (_mcWalk[sprKey][a.frame]) {
-            img = _mcWalk[sprKey][a.frame];
-        }
+    if (moving && a.frame != null && _mcWalk[sprKey][a.frame]) {
+        img = _mcWalk[sprKey][a.frame];
     }
     if (!img) return; // sprite 未加载完,跳过本帧
-    // 捏脸调色：仅当玩家在捏脸界面设置了 shirt（明确换衣色）才 tint；
-    // 否则（默认外观/用户自定义 sprite）直接用原图，避免 tint 缩小 4x 造成细节丢失（2026-08-08 用户反馈"像素点缺失"）
-    if (look && look.shirt) img = tintSprite(img, look);
+    img = tintSprite(img, look); // 捏脸调色(sprite 固定色 → 捏脸选色)
     const w = img.width, h = img.height;
     const TARGET_H = 48; // 玩家渲染高度(面积≈僵尸体量)
     const scale = TARGET_H / h;
@@ -3903,8 +3884,10 @@ function drawPlayer(ctx, sv, camX, camY) {
     const lookShirt = (sv.character && sv.character.shirt) || '#39d98a';
     const playerColor = (sv.hurtT > 0 && Math.floor(sv.now * 10) % 2 === 0) ? '#FF4444' : lookShirt;
     // 光晕跟衣服色走且减弱，避免绿色光盖住捏脸外观
-    // 玩家本体：无光晕（2026-08-08 用户反馈"衣服什么颜色发什么光"——去掉 shadowBlur 渐变光，保留原图色彩）
+    ctx.shadowColor = lookShirt;
+    ctx.shadowBlur = 4;
     drawPixelPlayerBody(ctx, px, py, playerColor, sv.infection, sv.character, anim);
+    ctx.shadowBlur = 0;
     ctx.globalAlpha = 1;
 
     // 患病表现：按病种差异化视觉（病色晕染 + 发抖/滴血/干呕/冒星/热浪 + 呼吸病标）

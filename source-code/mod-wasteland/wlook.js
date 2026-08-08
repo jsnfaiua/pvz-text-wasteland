@@ -2,12 +2,12 @@
 // 【无尽植僵荒原】模组 · 角色捏脸（像素风格）
 // 新世界进入前选择肤色/发色/上衣/裤子/鞋子/瞳色六组色板，
 // 每组另可自定义任意颜色；预览即游戏内像素小人。
-// 外观存 sv.character（随存档持久化），渲染层 playerBodyColorAt 按外观取色；
+// 外观存 sv.character（随存档持久化），渲染层用参考图 sprite（_mcSprites）；
 // 确认后的外观会记忆为"上次外观"，新世界默认继承（随时可改）。
 // ============================================================
 
-import { playerBodyColorAt } from './render.js';
 import AudioSystem from '../systems/audio.js';
+import { tintSprite } from './render.js';
 import { getStorage, setStorage } from '../persistence/storage.js';
 
 const LAST_LOOK_KEY = 'wasteland_last_look';
@@ -19,11 +19,9 @@ export const LOOK_DEFAULTS = {
     hairStyle: 0, // 0 短发 / 1 齐刘海长发 / 2 双马尾
 };
 
-// 发型选项：渲染层 playerBodyColorAt 按 hairStyle 切换像素布局
+// 发型选项：暂时只有短发(2026-08-08 用户要求,等 sprite 多发型变体再做)
 export const HAIR_STYLES = [
     { id: 0, label: '短发' },
-    { id: 1, label: '长发' },
-    { id: 2, label: '双马尾' },
 ];
 
 export const LOOK_PALETTES = {
@@ -69,47 +67,42 @@ function saveLastLook(look) { setStorage(LAST_LOOK_KEY, look); }
 
 let lookEl = null;
 let lookAnimRaf = 0;
-// 预览离屏缓存：每个外观只生成 2 帧位图（站立/呼吸），RAF 循环仅 drawImage，不再逐像素重绘。
-const _previewCache = new Map();
-function previewCacheKey(look) {
-    return [look.skin, look.hair, look.shirt, look.pants, look.shoes, look.eyes, look.hairStyle].join('|');
-}
-function buildPreviewFrames(look) {
-    return [0, 1].map(frame => {
-        const cv = document.createElement('canvas');
-        cv.width = 28; cv.height = 33;
-        const octx = cv.getContext('2d');
-        const anim = { dir: 'down', frame, moving: false };
-        for (let py = 0; py < 33; py++) for (let px = 0; px < 28; px++) {
-            const c = playerBodyColorAt(px, py, look.shirt, look, anim);
-            if (c) { octx.fillStyle = c; octx.fillRect(px, py, 1, 1); }
-        }
-        return cv;
-    });
-}
+let lastPreviewLook = null; // sprite 异步加载完成后重绘静态预览用的最近外观
 
-// 预览画布：直接用与游戏一致的像素取色绘制 28×33 小人；
-// 带轻微呼吸动画（站立帧 0↔1 交替上浮，约 0.3s 一拍），捏脸所见即游戏所现。
+// 预览画布：静态显示游戏内正式 sprite(调色后),不做呼吸 bob 动画(用户:预览不要抽搐)
 function drawPreview(look) {
+    lastPreviewLook = look || lastPreviewLook || {};
     const canvas = lookEl && lookEl.querySelector('.wsl-look-preview');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const key = previewCacheKey(look);
-    let frames = _previewCache.get(key);
-    if (!frames) {
-        frames = buildPreviewFrames(look);
-        if (_previewCache.size < 60) _previewCache.set(key, frames);
-    }
     cancelAnimationFrame(lookAnimRaf);
-    let t = 0, acc = 0;
-    const loop = () => {
-        acc++;
-        if (acc >= 10) { acc = 0; t = (t + 1) % 2; } // 约 0.33s 一拍呼吸
-        ctx.clearRect(0, 0, 28, 33);
-        ctx.drawImage(frames[t], 0, 0);
-        lookAnimRaf = requestAnimationFrame(loop);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const raw = _thumbSprites.front;
+    if (raw) {
+        const sp = tintSprite(raw, look); // 按当前捏脸选色调色
+        ctx.imageSmoothingEnabled = false;
+        const scale = canvas.height / sp.height;
+        const dw = sp.width * scale;
+        const dx = (canvas.width - dw) / 2;
+        ctx.drawImage(sp, dx, 0, dw, canvas.height);
+    }
+}
+
+// ====== 主预览 sprite(只正面;侧视/背面已移除 2026-08-08)======
+const _thumbSprites = { front: null };
+function loadThumbSprites() {
+    if (_thumbSprites.front) return;
+    // 用 new URL 解析为当前页面 origin + 相对路径,避免子目录页面下相对路径失效
+    const url = new URL('source-code/mod-wasteland/sprites/sprite-front.png', window.location.href).href;
+    const img = new Image();
+    img.onload = () => {
+        _thumbSprites.front = img;
+        drawPreview(lastPreviewLook || {}); // sprite 就绪后重绘静态预览
     };
-    lookAnimRaf = requestAnimationFrame(loop);
+    img.onerror = (e) => {
+        if (typeof console !== 'undefined') console.warn('[wlook] sprite 加载失败,URL=', url, e);
+    };
+    img.src = url;
 }
 
 // 一次性构建所有色板行（色块按钮 + 自定义取色入口 + 发型选择行），之后只切换选中态
@@ -172,9 +165,9 @@ export function showLookCreator(onConfirm, initialLook) {
             <div class="wsl-look-title">◈ 角色定制 ◈</div>
             <div class="wsl-look-sub">像素幸存者 · 外观只影响形象，不影响属性 · 彩虹块可自定义任意颜色</div>
             <div class="wsl-look-body">
-                <div class="wsl-look-stage">
-                    <canvas class="wsl-look-preview" width="28" height="33"></canvas>
-                    <div class="wsl-look-info">
+<div class="wsl-look-stage">
+                <canvas class="wsl-look-preview" width="48" height="96"></canvas>
+                <div class="wsl-look-info">
                         <div class="wsl-look-info-row"><i style="background:${look.skin};"></i><span>肤色</span></div>
                         <div class="wsl-look-info-row"><i style="background:${look.hair};"></i><span>发色</span></div>
                         <div class="wsl-look-info-row"><i style="background:${look.shirt};"></i><span>上衣</span></div>
@@ -192,6 +185,7 @@ export function showLookCreator(onConfirm, initialLook) {
     document.body.appendChild(lookEl);
     syncRows(look);
     drawPreview(look);
+    loadThumbSprites(); // 打开捏脸立即加载 sprite(首次打开即显示预览)
 
     const confirm = () => {
         const finalLook = { ...look };

@@ -2342,6 +2342,12 @@ body {
 .wsl-save-btn.danger { background: #241210; color: #d08f8f; border-color: #5c2d2d; }
 .wsl-save-btn.danger:hover { border-color: #e04646; color: #f0c8c8; }
 .wsl-save-empty { color: #5a6a5a; font-size: 12px; text-align: center; padding: 18px 10px; letter-spacing: 1px; }
+/* 快捷选择删除：勾选框 + 批量操作条 */
+.wsl-save-check { flex-shrink: 0; width: 15px; height: 15px; accent-color: #46c846; cursor: pointer; }
+.wsl-save-selbar { display: flex; gap: 8px; padding: 2px 4px 6px; border-bottom: 1px dashed #2a3d2a; margin-bottom: 2px; }
+.wsl-save-selbar .wsl-save-btn { flex: 1; }
+.wsl-save-selbar .danger { background: #241210; color: #d08f8f; border-color: #5c2d2d; }
+.wsl-save-selbar .danger:hover { border-color: #e04646; color: #f0c8c8; }
 
 /* ================= 荒原模组 · 开发者调试台（F9） ================= */
 .wsl-dev {
@@ -2735,8 +2741,8 @@ body {
     pointer-events: none;
 }
 .wsl-look-preview {
-    width: 168px;
-    height: 198px;
+    width: 144px;
+    height: 288px;
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     position: relative;

@@ -503,8 +503,10 @@ function renderSaveList(mod) {
         return;
     }
     const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // 快捷选择删除：每项勾选框 + 顶部全选/删除选中（批量管理，避免逐项确认）
     const roleHtml = roles.map(r => `
         <div class="wsl-save-item${r.isCur ? ' cur' : ''}">
+            <input type="checkbox" class="wsl-save-check" data-kind="character" data-name="${esc(r.name)}" title="选择删除">
             <div class="wsl-save-meta">
                 <span class="wsl-save-name">${esc(r.name)}${r.isCur ? ' · 当前' : ''}</span>
                 <span class="wsl-save-sub">背包 ${r.invN} 件 · HP ${r.hp}</span>
@@ -516,6 +518,7 @@ function renderSaveList(mod) {
         </div>`).join('');
     const worldHtml = worlds.map(w => `
         <div class="wsl-save-item${w.isCur ? ' cur' : ''}">
+            <input type="checkbox" class="wsl-save-check" data-kind="world" data-seed="${esc(w.seed)}" title="选择删除">
             <div class="wsl-save-meta">
                 <span class="wsl-save-name">世界 #${esc(w.seed)}${w.isCur ? ' · 当前' : ''}</span>
                 <span class="wsl-save-sub">第 ${w.day} 天 · 存活 ${w.mins} 分钟${w.zN ? ` · 尸化的自己 ×${w.zN}` : ''}</span>
@@ -525,11 +528,56 @@ function renderSaveList(mod) {
                 <button class="menu-btn wsl-save-btn danger" data-act="del" data-kind="world" data-seed="${esc(w.seed)}">删除</button>
             </div>
         </div>`).join('');
-    el.innerHTML = (roles.length ? `<div class="wsl-save-group">角色（${roles.length}）</div>${roleHtml}` : '') +
+    const selbar = `
+        <div class="wsl-save-selbar">
+            <button class="menu-btn wsl-save-btn" id="ws-save-sel-all">全选</button>
+            <button class="menu-btn wsl-save-btn danger" id="ws-save-sel-del">删除选中(0)</button>
+        </div>`;
+    el.innerHTML = selbar +
+        (roles.length ? `<div class="wsl-save-group">角色（${roles.length}）</div>${roleHtml}` : '') +
         (worlds.length ? `<div class="wsl-save-group">世界（${worlds.length}）</div>${worldHtml}` : '');
 
+    // 批量选择：计数 / 全选 / 删除选中
+    const updateSelCount = () => {
+        const n = el.querySelectorAll('.wsl-save-check:checked').length;
+        const b = el.querySelector('#ws-save-sel-del');
+        if (b) b.textContent = `删除选中(${n})`;
+    };
+    el.querySelectorAll('.wsl-save-check').forEach(cb => cb.addEventListener('change', updateSelCount));
+    el.querySelector('#ws-save-sel-all')?.addEventListener('click', () => {
+        const checks = [...el.querySelectorAll('.wsl-save-check')];
+        const allOn = checks.length > 0 && checks.every(c => c.checked);
+        checks.forEach(c => { c.checked = !allOn; });
+        updateSelCount();
+    });
+    el.querySelector('#ws-save-sel-del')?.addEventListener('click', () => {
+        const sel = [...el.querySelectorAll('.wsl-save-check:checked')];
+        if (!sel.length) { hintMsg('未勾选任何存档'); return; }
+        if (!confirm(`⚠ 删除选中的 ${sel.length} 个存档？此操作不可恢复。\n\n（角色档：背包/属性；世界档：该世界全部地形/箱子/尸化自己）`)) return;
+        sel.forEach(cb => {
+            const kind = cb.dataset.kind;
+            const fullKey = kind === 'character'
+                ? `${prefix}character_${cb.dataset.name}`
+                : `${prefix}world_${cb.dataset.seed}`;
+            localStorage.removeItem(fullKey);
+            if (kind === 'character') {
+                const cl = getStorage('wasteland_characters', { names: [] });
+                cl.names = (cl.names || []).filter(n => n !== cb.dataset.name);
+                setStorage('wasteland_characters', cl);
+            }
+            const prof = getStorage('wasteland_profile', null);
+            if (prof && kind === 'character' && prof.characterName === cb.dataset.name) {
+                setStorage('wasteland_profile', { ...prof, characterName: null });
+            } else if (prof && kind === 'world' && String(prof.worldSeed) === cb.dataset.seed) {
+                setStorage('wasteland_profile', { ...prof, worldSeed: null });
+            }
+        });
+        hintMsg(`已删除选中 ${sel.length} 个存档`);
+        renderDetail();   // 重渲染列表
+    });
+
     // 绑定：导出单档（与全量备份同格式 __wslBackup，仅含该键） / 删除单档
-    el.querySelectorAll('.wsl-save-btn').forEach(btn => {
+    el.querySelectorAll('.wsl-save-btn[data-act]').forEach(btn => {
         btn.addEventListener('click', () => {
             const act = btn.dataset.act;
             const kind = btn.dataset.kind;

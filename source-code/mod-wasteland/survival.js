@@ -307,7 +307,7 @@ function walkableAt(gx, gy) {
 }
 
 function canStand(x, y) {
-    const r = 11;
+    const r = 10; // 玩家碰撞半径:贴合参考图 sprite 渲染宽度(~20px),2026-08-08 由 11 调整
     for (let i = 0; i < 4; i++) {
         const cx = x + (i % 2 ? r : -r), cy = y + (i < 2 ? r : -r);
         if (!walkableAt(Math.floor(cx / TS), Math.floor(cy / TS))) return false;
@@ -697,11 +697,13 @@ function update(dt) {
             if (!sv.isJumping) {
                 const onGrass = ft === T.WEED || ft === T.CROP || ft === T.HERB || ft === T.FLOWER;
                 const run = sv.sprinting && (mx || my);
+                // side 走路（东/西向）步频更短、animFrame 只在 0/1 循环，与 front/back 视觉帧频一致（survival.js §P3 升级）
+                const isSide = Math.abs(sv.faceX || 0) > 0.7;
                 sv.stepT = (sv.stepT || 0) - dt;
                 if (sv.stepT <= 0) {
-                    sv.stepT = run ? 0.24 : 0.36;
+                    sv.stepT = run ? (isSide ? 0.16 : 0.24) : (isSide ? 0.18 : 0.36);
                     sv.stepSide = !sv.stepSide;
-                    sv.animFrame = ((sv.animFrame || 0) + 1) % 3;   // 动画换帧与脚步同频
+                    sv.animFrame = ((sv.animFrame || 0) + 1) % (isSide ? 4 : 4);   // 动画换帧与脚步同频；side 2 帧循环、front/back 4 帧
                     if (onGrass) AudioSystem.playWalkGrass();
                     else if (run) AudioSystem.playRunStep(sv.stepSide);
                     else AudioSystem.playWalkStep(sv.stepSide);
@@ -746,15 +748,42 @@ function update(dt) {
         sv.buildOk = WB.buildOkAt(sv, gx, gy);
     } else sv.buildOk = false;
 
+    // 僵尸掉落战利品：走到附近触发搜索界面（动画/进度渐亮与容器一致），不再自动瞬间拾取。
+    // 搜索完成前玩家拿取已揭示物品；关闭时未拿取余量留在原地（重建 contents），掏空则移除掉落。
+    function tryOpenLootSearch(sv, d) {
+        const contents = d.contents || [];
+        if (!contents.length || WSearch.isOpen() || sv.search) return false;
+        const drop = d;
+        WSearch.openSearch(sv, {
+            items: contents.map(it => ({ id: it.id, n: it.n, done: false })),
+            name: '僵尸战利品',
+            gx: Math.floor(d.x / TS), gy: Math.floor(d.y / TS),
+            immediate: false,
+            cap: Math.max(6, contents.length),
+            onClose: (remaining) => {
+                const rest = (remaining || []).filter(it => it && it.n > 0);
+                drop.contents = rest;
+                if (sv.mp && sv.mp.role === 'guest') {
+                    // guest 搜索战利品:contents 变更上报 host(host 权威 drops → wsync 下发),掏空 host 移除
+                    (sv.mpOutbox = sv.mpOutbox || []).push({
+                        type: 'lootupdate', x: drop.x, y: drop.y, id: drop.id,
+                        contents: rest.map(it => ({ id: it.id, n: it.n })),
+                    });
+                } else if (!rest.length) {
+                    // 单机:掏空移除掉落
+                    const idx = sv.drops.indexOf(drop);
+                    if (idx >= 0) sv.drops.splice(idx, 1);
+                }
+            },
+        }, { onUseItem: (i) => useItem(i) });
+        return true;
+    }
+
     for (let i = sv.drops.length - 1; i >= 0; i--) {
         const d = sv.drops[i];
         if (Math.hypot(d.x - sv.px, d.y - sv.py) < B.PICKUP_RADIUS) {
             if (d.id.startsWith('loot:')) {
-                if (Panel.addItemLoot(sv, { id: d.id, n: 1, contents: d.contents || [] })) {
-                    log(`拾取 ${Panel.getItemInfo(d.id).name}`);
-                    playPickupSound(d.id);
-                    sv.drops.splice(i, 1);
-                }
+                tryOpenLootSearch(sv, d); // 战利品 → 搜索动画(与容器一致)
             } else {
                 const it = Panel.getItemInfo(d.id);
                 const left = Panel.addItem(sv, d.id, d.n);
@@ -895,11 +924,12 @@ function updateGuest(dt) {
             if (!sv.isJumping) {
                 const onGrass = ft === T.WEED || ft === T.CROP || ft === T.HERB || ft === T.FLOWER;
                 const run = sv.sprinting && (mx || my);
+                const isSide = Math.abs(sv.faceX || 0) > 0.7;
                 sv.stepT = (sv.stepT || 0) - dt;
                 if (sv.stepT <= 0) {
-                    sv.stepT = run ? 0.24 : 0.36;
+                    sv.stepT = run ? (isSide ? 0.16 : 0.24) : (isSide ? 0.18 : 0.36);
                     sv.stepSide = !sv.stepSide;
-                    sv.animFrame = ((sv.animFrame || 0) + 1) % 3;
+                    sv.animFrame = ((sv.animFrame || 0) + 1) % (isSide ? 4 : 4);
                     if (onGrass) AudioSystem.playWalkGrass();
                     else if (run) AudioSystem.playRunStep(sv.stepSide);
                     else AudioSystem.playWalkStep(sv.stepSide);
@@ -950,16 +980,7 @@ function updateGuest(dt) {
         const d = sv.drops[i];
         if (Math.hypot(d.x - sv.px, d.y - sv.py) < B.PICKUP_RADIUS) {
             if (d.id.startsWith('loot:')) {
-                if (Panel.addItemLoot(sv, { id: d.id, n: 1, contents: d.contents || [] })) {
-                    log(`拾取 ${Panel.getItemInfo(d.id).name}`);
-                    playPickupSound(d.id);
-                    if (sv.mp && sv.mp.role === 'guest') {
-                        (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'pickup', x: d.x, y: d.y, id: d.id });
-                        // 竞态防护：wsync 覆写时按指纹过滤已上报的掉落，防 100ms 窗口重复拾取刷物品
-                        (sv._mpPickedDrops = sv._mpPickedDrops || new Set()).add(d.id + '@' + Math.round(d.x) + ',' + Math.round(d.y));
-                    }
-                    sv.drops.splice(i, 1);
-                }
+                tryOpenLootSearch(sv, d); // 战利品 → 搜索动画(与容器一致)
             } else {
                 const it = Panel.getItemInfo(d.id);
                 const left = Panel.addItem(sv, d.id, d.n);
@@ -1108,6 +1129,16 @@ export function removeDrop(x, y, id) {
 export function addDrop(x, y, id, n) {
     if (!sv) return;
     sv.drops.push({ x, y, id, n });
+}
+
+// host 应用 guest 搜索战利品后的 contents 变更（host 权威 drops → wsync 下发双端一致）
+export function updateLootDrop(x, y, id, contents) {
+    if (!sv || !Array.isArray(sv.drops)) return false;
+    const d = sv.drops.find(d => d && d.id === id && Math.abs(d.x - x) < 12 && Math.abs(d.y - y) < 12);
+    if (!d) return false;
+    if (contents && contents.length) d.contents = contents;
+    else { const i = sv.drops.indexOf(d); if (i >= 0) sv.drops.splice(i, 1); }
+    return true;
 }
 
 // ---- DEV 测试辅助（联机验证脚本用，仅开发期调用） ----
