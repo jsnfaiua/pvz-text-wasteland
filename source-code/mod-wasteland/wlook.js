@@ -93,40 +93,90 @@ let lookEl = null;
 let lookAnimRaf = 0;
 let lastPreviewLook = null; // sprite 异步加载完成后重绘静态预览用的最近外观
 
-// 预览画布：静态显示游戏内正式 sprite(调色后),不做呼吸 bob 动画(用户:预览不要抽搐)
+// 预览画布：循环播放四方向行走动画（朝南→朝东→朝北→朝西，每方向 4 帧）
+// 2026-08-09 用户要求：捏脸界面放四方向行走动画，循环播放，看局内实际效果
 function drawPreview(look) {
     lastPreviewLook = look || lastPreviewLook || {};
     const canvas = lookEl && lookEl.querySelector('.wsl-look-preview');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     cancelAnimationFrame(lookAnimRaf);
+    ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const raw = _thumbSprites.front;
-    if (raw) {
-        const sp = tintSprite(raw, look); // 按当前捏脸选色调色
-        ctx.imageSmoothingEnabled = false;
-        const scale = canvas.height / sp.height;
-        const dw = sp.width * scale;
-        const dx = (canvas.width - dw) / 2;
-        ctx.drawImage(sp, dx, 0, dw, canvas.height);
-    }
+    // 至少需要一帧可渲染才开始动画；全部加载后走 4 方向循环
+    const firstFrame = _thumbSprites.front[0] || _thumbSprites.side[0] || _thumbSprites.back[0];
+    if (!firstFrame) return;
+    const DIRS = ['front', 'side', 'back'];  // 朝南(front) / 朝东(side) / 朝北(back)，朝西复用 side 镜像
+    let lastT = 0;
+    const FRAME_MS = 160;  // ~6fps 走步节奏
+    let frame = 0;
+    let dirIdx = 0;
+    const start = performance.now();
+    const tick = (t) => {
+        if (!lookEl) return;  // 界面已关闭
+        // 每 FRAME_MS 推进一帧；每方向 4 帧后切换下一方向
+        const n = Math.floor((t - start) / FRAME_MS);
+        const totalFrames = DIRS.length * 4;
+        const g = n % totalFrames;
+        dirIdx = Math.floor(g / 4);
+        frame = g % 4;
+        const dir = DIRS[dirIdx];
+        const sprites = _thumbSprites[dir];
+        const raw = sprites[frame] || sprites[0] || _thumbSprites.front[0];
+        if (raw) {
+            const sp = tintSprite(raw, look); // 按当前捏脸选色调色
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const scale = canvas.height / sp.height;
+            const dw = sp.width * scale;
+            const dx = (canvas.width - dw) / 2;
+            ctx.save();
+            // 朝东（side 第3个方向）不镜像（side 帧本身朝西视角，朝东需镜像）——
+            // 与局内逻辑一致：dir==='right' 镜像。预览用朝东=dirIdx 1（side）镜像。
+            if (dirIdx === 1) {
+                ctx.translate(canvas.width / 2, 0);
+                ctx.scale(-1, 1);
+                ctx.translate(-canvas.width / 2, 0);
+            }
+            ctx.drawImage(sp, dx, 0, dw, canvas.height);
+            ctx.restore();
+        }
+        lookAnimRaf = requestAnimationFrame(tick);
+    };
+    lookAnimRaf = requestAnimationFrame(tick);
 }
 
-// ====== 主预览 sprite(只正面;侧视/背面已移除 2026-08-08)======
-const _thumbSprites = { front: null };
+// ====== 主预览 sprite：front/side/back 各方向 walk 帧（4 帧循环）======
+const _thumbSprites = { front: [null, null, null, null], side: [null, null, null, null], back: [null, null, null, null] };
 function loadThumbSprites() {
-    if (_thumbSprites.front) return;
+    if (_thumbSprites._loaded) return;
+    _thumbSprites._loaded = true;
     // 用 new URL 解析为当前页面 origin + 相对路径,避免子目录页面下相对路径失效
-    const url = new URL('source-code/mod-wasteland/sprites/sprite-front.png', window.location.href).href;
-    const img = new Image();
-    img.onload = () => {
-        _thumbSprites.front = img;
-        drawPreview(lastPreviewLook || {}); // sprite 就绪后重绘静态预览
+    const base = new URL('source-code/mod-wasteland/sprites/', window.location.href).href;
+    const WALK_FILES = {
+        front: ['walk-front-f2.png', 'walk-front-f3.png', 'walk-front-f2.png', 'walk-front-f3.png'],
+        side: ['walk-side-f0.png', 'walk-side-f1.png', 'walk-side-f2.png', 'walk-side-f3.png'],
+        back: ['walk-back-f0.png', 'walk-back-f1.png', 'walk-back-f2.png', 'walk-back-f3.png'],
     };
-    img.onerror = (e) => {
-        if (typeof console !== 'undefined') console.warn('[wlook] sprite 加载失败,URL=', url, e);
-    };
-    img.src = url;
+    let pending = 0;
+    for (const dir of Object.keys(WALK_FILES)) {
+        const files = WALK_FILES[dir];
+        for (let i = 0; i < files.length; i++) {
+            const url = base + files[i];
+            pending++;
+            const img = new Image();
+            const idx = i;
+            img.onload = () => {
+                _thumbSprites[dir][idx] = img;
+                pending--;
+                if (pending === 0 && lastPreviewLook) drawPreview(lastPreviewLook);
+            };
+            img.onerror = (e) => {
+                pending--;
+                if (typeof console !== 'undefined') console.warn('[wlook] walk sprite 加载失败,URL=', url, e);
+            };
+            img.src = url;
+        }
+    }
 }
 
 // 一次性构建所有色板行（色块按钮 + 自定义取色入口 + 发型选择行），之后只切换选中态
