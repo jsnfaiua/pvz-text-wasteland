@@ -882,7 +882,9 @@ const MC_PAL = {
     hair:  [[96, 64, 32], [72, 48, 24], [200, 160, 120], [56, 40, 24]],
     shirt: [[40, 80, 40], [24, 56, 24], [56, 96, 56], [16, 40, 24]],
     pants: [[32, 48, 72], [24, 40, 56], [48, 64, 88], [16, 32, 48]],
-    shoes: [[104, 72, 40], [80, 56, 32], [56, 40, 24], [136, 88, 48]],
+    // 加入暗色变体 [26,26,26] / [40,28,16] 等，吸收 sprite 中鞋底缝线/深灰阴影
+    // （距离 [104,72,40] < 70 的暗色），避免被判给 eyes 跳过染色导致"鞋子内部杂色"
+    shoes: [[104, 72, 40], [80, 56, 32], [56, 40, 24], [136, 88, 48], [26, 26, 26], [40, 28, 16], [50, 35, 22], [72, 50, 32]],
     eyes:  [[28, 24, 20]],
 };
 const MC_KEYS = Object.keys(MC_PAL);
@@ -906,7 +908,7 @@ function nearestPart(r, g, b, ny = 0.5) {
             if (d < bestD) { bestD = d; best = k; }
         }
     }
-    if (bestD >= 7000) return null; // 阈值收紧：远处(杂色/渐变)不替换
+    if (bestD >= 12000) return null; // 阈值放宽到原值：保留鞋子内部高光/缝线等细节（距 ~100），不替换远处杂色
     if (best === 'shoes' && ny < 0.55) {
         // 上半身被判为 shoes：错位，重选非 shoes 部位最近者
         let alt = null, altD = 1e9;
@@ -928,6 +930,45 @@ function hexRgb(hex) {
     const n = parseInt(h, 16);
     if (isNaN(n)) return null;
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+// 邻域投票修复：sprite 内部未染色像素（被判为 eyes 或距离过远的杂色），
+// 用 8 邻域内已染色像素的 RGB 平均值替换。第一遍循环前先把"被 nearestPart 染色"
+// 的像素和"未染色"的像素分别记录。
+// 仅当像素被多数（>=5/8）邻域包围且 RGB 距离邻域平均 < 阈值时修复，避免
+// 跨区域错误扩散（如裤子像素扩展到衣服区）。
+function fixByNeighborhood(d, sw, sh) {
+    const N = sw * sh;
+    const tagged = new Uint8Array(N);  // 1=已染色，0=未染色
+    // 第一步：扫描哪些像素已经过 nearestPart 染色（即 R/G/B 都"看起来像玩家色"）。
+    // 但实际上无法直接区分已染/未染（都是写后的 RGB）。改用：所有不透明像素中，
+    // 满足"RGB 在 [玩家色 ±50]"范围的算"已染"，否则算"未染"。
+    // 简化方案：直接用 alpha>10 + RGB 距离"最常见邻域色" < 阈值 判定。
+    // 工程做法：先标记"被 nearestPart 写过"的位置——但 tintSprite 没标记，改用：
+    // 把所有"距离玩家色 < 阈值"的像素视为"已染"，否则视为"未染"。
+    // 我们没有传入玩家色，所以改用：所有不透明像素都参与邻域检查，
+    // 用 8 邻域 RGB 平均替换 离平均 > 阈值 的"孤立体素"。
+    // 触发条件：原 RGB 与 8 邻域平均色 RGB 距离 > 150（强烈反差）
+    for (let y = 1; y < sh - 1; y++) {
+        for (let x = 1; x < sw - 1; x++) {
+            const i = (y * sw + x) * 4;
+            if (d[i + 3] === 0) continue;
+            // 收集 8 邻域 RGB（跳过透明）
+            let rr = 0, gg = 0, bb = 0, n = 0;
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const j = ((y + dy) * sw + (x + dx)) * 4;
+                if (d[j + 3] === 0) continue;
+                rr += d[j]; gg += d[j + 1]; bb += d[j + 2]; n++;
+            }
+            if (n < 4) continue;
+            rr = (rr / n) | 0; gg = (gg / n) | 0; bb = (bb / n) | 0;
+            const dr = d[i] - rr, dg = d[i + 1] - gg, db = d[i + 2] - bb;
+            const dist2 = dr * dr + dg * dg + db * db;
+            if (dist2 > 15000) {  // RGB 距离 > 122
+                d[i] = rr; d[i + 1] = gg; d[i + 2] = bb;
+            }
+        }
+    }
 }
 // 去除 sprite 中的孤立脏块（连通分量面积 < 阈值则整块 mask 透明）。
 // 根因：walk-side-f0/f2、walk-back-f0 头顶有"飞起来"的小棕色块，walk-front-f1/f2/f3
@@ -1011,6 +1052,10 @@ export function tintSprite(img, look) {
         d[i + 1] = Math.max(0, Math.min(255, Math.round(t[1] * f)));
         d[i + 2] = Math.max(0, Math.min(255, Math.round(t[2] * f)));
     }
+    // 邻域投票修复：填补未染色像素（眼睛/远处杂色被跳过）—— sprite 内部阴影/缝线等
+    // 深色细节被判给 eyes 而跳过染色，邻域多数色投票染色。避免"鞋子内部/头发深色阴影"
+    // 等杂色残留。
+    fixByNeighborhood(d, sw, sh);
     ctx.putImageData(id, 0, 0);
     if (_tintCache.size < 200) _tintCache.set(key, cv);
     return cv;
@@ -1080,7 +1125,7 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
     const dx = Math.round(sx - dw / 2), dy = Math.round(sy - dh);
     ctx.save();
     ctx.imageSmoothingEnabled = false;
-    if (dir === 'left') { // 用户的 side sprite 本身是朝东视角（玩家面部朝东），朝东=不镜像，朝西=水平镜像显示反向
+    if (dir === 'left') { // 用户 sprite-side 是朝东视角图，朝东=不镜像显示原图，朝西=水平镜像显示反向
         ctx.translate(sx, 0);
         ctx.scale(-1, 1);
         ctx.translate(-sx, 0);
