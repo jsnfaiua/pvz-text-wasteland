@@ -892,12 +892,13 @@ const _tintCache = new Map();
 // 阴影/描边/渐变等杂色不再被强行染成玩家色 → 消除头发/鞋子上的杂色颗粒。
 // 原 12000(≈RGB 距离 109) 过宽；降至 7000(≈84) 保留明暗变体、滤除远处杂色。
 //
-// 历史教训：曾加过 PART_RANGE 位置禁区（hair 顶/pants 中下/shoes 底），试图消除
-// "发区冒鞋色/鞋区冒发色"的跨部位描边杂点。但禁区对头发侧面(脸颊、太阳穴)的
-// hair 色像素（ny 0.45-0.55）一刀切 mask 掉，导致这些像素保留 sprite 原棕色 →
-// 形成新的"棕色斑块"杂点（用户反馈"杂点没解决"）。已撤掉禁区，纯靠 maskIsolatedPixels
-// 解决孤立小块（这是杂点的真正主因）。
-function nearestPart(r, g, b) {
+// 位置软约束（仅对 shoes）：鞋子在角色中只出现在底部（ny≈0.85-1.0）。
+// 当 sprite 头顶/中部的亮棕色像素 [129,83,39]（距 shoes[0]=[104,72,40] 仅 ~750）
+// 被 nearestPart 误判为 shoes 时，染成玩家鞋色 → 形成"头顶杂色"（用户反馈
+// "往东往西走头顶有杂色"）。若 best=shoes 但 ny<0.55，重选非 shoes 部位最近者。
+// 只对 shoes 加约束：hair/pants/skin 位置多样（侧面头发、手臂、长袍下摆），
+// 对它们加禁区会破坏正常像素（之前实验已证）。
+function nearestPart(r, g, b, ny = 0.5) {
     let best = null, bestD = 1e9;
     for (const k of MC_KEYS) {
         for (const p of MC_PAL[k]) {
@@ -905,7 +906,20 @@ function nearestPart(r, g, b) {
             if (d < bestD) { bestD = d; best = k; }
         }
     }
-    return bestD < 7000 ? best : null; // 阈值收紧：远处(杂色/渐变)不替换
+    if (bestD >= 7000) return null; // 阈值收紧：远处(杂色/渐变)不替换
+    if (best === 'shoes' && ny < 0.55) {
+        // 上半身被判为 shoes：错位，重选非 shoes 部位最近者
+        let alt = null, altD = 1e9;
+        for (const k of MC_KEYS) {
+            if (k === 'shoes') continue;
+            for (const p of MC_PAL[k]) {
+                const d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b);
+                if (d < altD) { altD = d; alt = k; }
+            }
+        }
+        return altD < 7000 ? alt : null;
+    }
+    return best;
 }
 function hexRgb(hex) {
     if (!hex || typeof hex !== 'string') return null;
@@ -977,10 +991,15 @@ export function tintSprite(img, look) {
     const d = id.data;
     // 先 mask 孤立脏块（去除 sprite 中"飞起来"的小色块，是行走杂点的直接来源）
     maskIsolatedPixels(d, sw, sh);
+    // 像素纵向位置（相对 bbox，0=顶 1=底）：供 nearestPart 位置软约束使用
+    const bb = getSpriteBBox(img);
+    const bbH = Math.max(1, bb.h);
     for (let i = 0; i < d.length; i += 4) {
         if (d[i + 3] === 0) continue;
+        const idx = i / 4;
         const r = d[i], g = d[i + 1], b = d[i + 2];
-        const part = nearestPart(r, g, b);
+        const ny = ((idx / sw | 0) - bb.y) / bbH;
+        const part = nearestPart(r, g, b, ny);
         if (!part || part === 'eyes') continue; // 眼睛/深阴影保持原色
         const t = hexRgb(L[part]);
         if (!t) continue;
