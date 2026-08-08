@@ -914,6 +914,16 @@ function nearestPart(r, g, b, ny = 0.5) {
             if (d < bestD) { bestD = d; best = k; }
         }
     }
+    // 头发区域色相硬约束（用户 2026-08-09 反馈"侧面头发色差大"）：
+    // 头部区域（ny<0.42）内，任何"暖棕发色系"像素（R>G>B，R 60-170，G 40-115，B 15-70）
+    // 强制判给 hair。侧视 sprite 头发高光/发丝颜色范围广（[126,82,43]/[129,83,39]/
+    // [135,89,47]/[136,86,38] 等），逐个加 MC_PAL 变体永远列不完，用色相+位置双重约束。
+    // 必须在 shoes 位置约束之前：否则这些发丝被判给 shoes 后被
+    // "best==='shoes' && ny<0.78 → null" 挡住 → 保留原棕 → "不管什么配色头顶都是棕色"（用户反馈）
+    // 皮肤色（[247,205,155] R/G/B 都亮）与衣色（[18,43,26] G>R）不受影响。
+    if (ny < 0.42 && r > g && g > b && r >= 60 && r <= 170 && g >= 40 && g <= 115 && b >= 15 && b <= 70) {
+        return 'hair';
+    }
     if (bestD >= 12000) return null; // 远处杂色不染色
     // shoes 位置硬约束（用户 2026-08-09 明确）：棕色像素只在鞋区（ny>=0.78）才判为 shoes，
     // 其他位置的棕色像素是 sprite 设计层的"杂色"——不染色（保留原色），
@@ -947,45 +957,6 @@ function nearestPalRef(r, g, b) {
     }
     return best;
 }
-// 去除 sprite 中的孤立脏块（连通分量面积 < 阈值则整块 mask 透明）。
-// 根因：walk-side-f0/f2、walk-back-f0 头顶有"飞起来"的小棕色块，walk-front-f1/f2/f3
-// 边缘有错位孤立像素；这些脏块被 tintSprite 染色后就是用户看到的"行走杂点"。
-// 阈值 8 像素：保留眼睛(≈16px)等真正细节，去除飞起来的孤立脏块。
-// 站立用 idle 帧(无脏块)不受影响；行走用 walk 帧时孤立脏块被静默去除。
-// 算法：BFS 标记 4 邻域连通分量，记录面积，< 阈值则整块透明。一次性扫描，缓存后无重复开销。
-function maskIsolatedPixels(d, sw, sh) {
-    const N = sw * sh;
-    const labels = new Int32Array(N);
-    for (let i = 0; i < N; i++) labels[i] = -1;
-    const sizes = [];
-    let nextLabel = 0;
-    const stack = [];
-    for (let start = 0; start < N; start++) {
-        const i4 = start * 4;
-        if (d[i4 + 3] === 0) { labels[start] = 0; continue; }
-        if (labels[start] !== -1) continue;
-        const lab = ++nextLabel;
-        let size = 0;
-        stack.length = 0;
-        stack.push(start);
-        labels[start] = lab;
-        while (stack.length) {
-            const cur = stack.pop();
-            size++;
-            const cx = cur % sw, cy = (cur / sw) | 0;
-            if (cx > 0) { const n = cur - 1; if (labels[n] === -1 && d[n * 4 + 3] !== 0) { labels[n] = lab; stack.push(n); } }
-            if (cx < sw - 1) { const n = cur + 1; if (labels[n] === -1 && d[n * 4 + 3] !== 0) { labels[n] = lab; stack.push(n); } }
-            if (cy > 0) { const n = cur - sw; if (labels[n] === -1 && d[n * 4 + 3] !== 0) { labels[n] = lab; stack.push(n); } }
-            if (cy < sh - 1) { const n = cur + sw; if (labels[n] === -1 && d[n * 4 + 3] !== 0) { labels[n] = lab; stack.push(n); } }
-        }
-        sizes[lab] = size;
-    }
-    const THRESHOLD = 4;   // 小于 4 像素的连通分量视为孤立脏块（原 8 用户反馈"像素点缺少"过头）
-    for (let i = 0; i < N; i++) {
-        const lab = labels[i];
-        if (lab > 0 && sizes[lab] < THRESHOLD) d[i * 4 + 3] = 0;
-    }
-}
 // 返回调色后的 canvas(per img+look 缓存);look 缺失或 img 不可用时返回原 img
 // 性能优化:先缩放到 0.25x(原图 749×1846 → 187×461 ≈ 8 万像素),再 tint,几 ms 完成
 // (原图逐像素 tint 138 万像素需 500ms+);缩放后细节通过 nearest drawImage 还原
@@ -1007,8 +978,10 @@ export function tintSprite(img, look) {
     ctx.drawImage(img, 0, 0, sw, sh);
     const id = ctx.getImageData(0, 0, sw, sh);
     const d = id.data;
-    // 先 mask 孤立脏块（去除 sprite 中"飞起来"的小色块，是行走杂点的直接来源）
-    maskIsolatedPixels(d, sw, sh);
+    // 注：曾用 maskIsolatedPixels 把"飞起来的孤立小块"mask 透明，但会误伤头发细发丝
+    // （<4px 连通块被透明化）→ 渲染露出"头皮/肉色像素"（用户 2026-08-09 反馈"头发走着走着头皮露出来"）。
+    // 头顶杂色已由 nearestPart 的"头发区域色相硬约束"解决（棕块被染成发色），
+    // 不再需要 mask 孤立块——保留全部不透明像素，保证完整头发。
     // 像素纵向位置（相对 bbox，0=顶 1=底）：供 nearestPart 位置软约束使用
     const bb = getSpriteBBox(img);
     const bbH = Math.max(1, bb.h);
