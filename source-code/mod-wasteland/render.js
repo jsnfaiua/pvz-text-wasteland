@@ -921,6 +921,11 @@ function nearestPart(r, g, b, ny = 0.5) {
         }
         return altD < 7000 ? alt : null;
     }
+    // 底部 hair→shoes 裁决：鞋底/鞋跟区域的"棕色像素"（如 [72,43,22] 距 hair[1]=[72,48,24] 仅 29）
+    // 会被判给 hair → 随机到黑发时鞋底全黑。但角色底部（ny>0.72）不应出现头发色——
+    // 这些是鞋子的暗棕变体，改判 shoes 染成玩家鞋色。
+    // 鞋底保留少量描边/缝线深色（[26,26,26] 等已在 shoes 色板中）是可接受的。
+    if (best === 'hair' && ny > 0.72) return 'shoes';
     return best;
 }
 function hexRgb(hex) {
@@ -964,7 +969,7 @@ function fixByNeighborhood(d, sw, sh) {
             rr = (rr / n) | 0; gg = (gg / n) | 0; bb = (bb / n) | 0;
             const dr = d[i] - rr, dg = d[i + 1] - gg, db = d[i + 2] - bb;
             const dist2 = dr * dr + dg * dg + db * db;
-            if (dist2 > 15000) {  // RGB 距离 > 122
+            if (dist2 > 40000) {  // RGB 距离 > 200（仅处理极度异常的孤立深色，不擦掉正常鞋底阴影）
                 d[i] = rr; d[i + 1] = gg; d[i + 2] = bb;
             }
         }
@@ -1125,7 +1130,7 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
     const dx = Math.round(sx - dw / 2), dy = Math.round(sy - dh);
     ctx.save();
     ctx.imageSmoothingEnabled = false;
-    if (dir === 'left') { // 用户 sprite-side 是朝东视角图，朝东=不镜像显示原图，朝西=水平镜像显示反向
+    if (dir === 'right') { // 用户 sprite-side 全是朝西视角图（脸朝左），朝西=不镜像显示原图，朝东=水平镜像显示反向
         ctx.translate(sx, 0);
         ctx.scale(-1, 1);
         ctx.translate(-sx, 0);
