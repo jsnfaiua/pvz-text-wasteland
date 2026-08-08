@@ -944,6 +944,31 @@ export function tintSprite(img, look) {
 // 角色渲染:参考图 1:1 sprite(走路 4 帧平移动画;染病态逐像素侵蚀)
 // 尺寸:与普通僵尸体量相当(僵尸 28×36 = 1008px²;玩家统一高 48px,宽度按 sprite 比例,
 //       front≈20px 宽 → 面积≈960px² ≈ 僵尸体量,视觉上"一样大"且不细弱)
+// 待机动画（2026-08-08）：角色不透明像素 bbox，用于上下身分割
+const _bboxCache = new Map();
+function getSpriteBBox(img) {
+    if (!img) return { x: 0, y: 0, w: 1, h: 1 };
+    const key = img;
+    if (_bboxCache.has(key)) return _bboxCache.get(key);
+    let mnx = 1e9, mny = 1e9, mxx = -1, mxy = -1;
+    try {
+        const c = document.createElement('canvas');
+        c.width = img.width; c.height = img.height;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const d = ctx.getImageData(0, 0, c.width, c.height).data;
+        for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+            if (d[(y * c.width + x) * 4 + 3] > 40) {
+                if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+                if (y < mny) mny = y; if (y > mxy) mxy = y;
+            }
+        }
+    } catch (e) { /* 拿不到像素回退全图 */ }
+    const b = (mnx === 1e9) ? { x: 0, y: 0, w: img.width, h: img.height } : { x: mnx, y: mny, w: mxx - mnx + 1, h: mxy - mny + 1 };
+    if (_bboxCache.size < 500) _bboxCache.set(key, b);
+    return b;
+}
+
 export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, look, anim) {
     const level = (infection || 0) / 100;
     const a = anim || {};
@@ -955,6 +980,7 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
     //   frame % 4 → 0/1/2/3 = _mcWalk.side[0/1/2/3]
     // 朝东=渲染层整体镜像（显示原图）、朝西=不镜像（显示镜像图）——镜像顺序一致
     let img = _mcSprites[sprKey];
+    let idleAnim = false;   // 待机动画标记（渲染层动态：上半身浮动 ±1px，腿固定）
     if (moving && a.frame != null) {
         if (sprKey === 'side') {
             const fi = a.frame % 4;
@@ -962,6 +988,10 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
         } else if (_mcWalk[sprKey][a.frame]) {
             img = _mcWalk[sprKey][a.frame];
         }
+    } else if (!moving && !a.frame) {
+        // 待机动画（2026-08-08 20:43 用户确认）：10fps 上半身像素浮动 ±1px、腿固定、
+        // 画框不动。用渲染层动态实现（浮动在渲染像素级，肉眼可见）。
+        idleAnim = true;
     }
     if (!img) return; // sprite 未加载完,跳过本帧
     // 捏脸调色：仅当玩家在捏脸界面设置了 shirt（明确换衣色）才 tint；
@@ -981,7 +1011,29 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
         ctx.translate(-sx, 0);
     }
     if (level <= 0.01) {
-        ctx.drawImage(img, dx, dy, dw, dh);
+        if (idleAnim) {
+            // 待机动画：上半身（bbox 上部 72%）平滑浮动 ±1px，腿（底部 28%）固定
+            // 2026-08-08 21:05 用户反馈修正：
+            //   ① 呼吸频率调慢：sin 平滑 0.6Hz（周期 ~1.6s），不再 10fps 急促
+            //   ② 上下身 1px 重叠（源多取 1px），消除浮动时双腿之间像素断裂
+            const bb = getSpriteBBox(img);
+            if (bb.w > 0 && bb.h > 0) {
+                const bob = Math.round(Math.sin(performance.now() / 1000 * Math.PI * 1.2));   // 0.6Hz 平滑呼吸
+                const upperFrac = 0.78;   // 上半身 78%（含整个裤子+裆部），分割线远离裆部避免 bob 经过深色裤缝
+                const upperSrcH = Math.round(bb.h * upperFrac);
+                const legSrcH = bb.h - upperSrcH;
+                const upperDh = Math.round(dh * upperFrac);
+                const legDh = dh - upperDh;
+                // 腿（固定；源从分割线 -1 多取 1px，与上半身重叠 1px 防断裂）
+                ctx.drawImage(img, 0, bb.y + upperSrcH - 1, w, legSrcH + 1, dx, dy + upperDh - 1, dw, legDh + 1);
+                // 上半身（y 浮动 bob，重叠覆盖腿顶部）
+                ctx.drawImage(img, 0, bb.y, w, upperSrcH, dx, dy + bob, dw, upperDh);
+            } else {
+                ctx.drawImage(img, dx, dy, dw, dh);
+            }
+        } else {
+            ctx.drawImage(img, dx, dy, dw, dh);
+        }
         ctx.restore();
         return;
     }
