@@ -18,6 +18,11 @@ import * as B from './wbalance.js';
 import * as MSG from './wmsg.js';
 import { killNpc, maybeWound, controlledNpc, addAct } from './wnpc.js';
 
+// 攻击/射击原点在角色高度上的偏移（px）。
+// 角色 sprite 渲染高度 = 48（TARGET_H），脚底对齐 sv.py，身体中部约 24、持武器的手部约 30。
+// 子弹/枪口/瞄准角度都以此"手部高度"为原点，避免从人物脚底下方打出、位置不居中。
+export const SHOT_ORIGIN_Y = 26;
+
 function devDmg(sv, base) {
     if (!saveData.devMode) return base;
     if (sv._devOneShot) return 9999999;
@@ -121,9 +126,10 @@ function takeAmmo(sv, ammoType, need) {
 }
 
 // 攻击角度：朝鼠标世界坐标；鼠标在画布外用面向（移植单机 getAttackAngle）
+// 以手部高度（sv.py - SHOT_ORIGIN_Y）为原点，保证弹道/特效从人物身体中部发出而非脚底
 function attackAngle(sv) {
     if (sv.mouse && sv.mouse.inside) {
-        return Math.atan2(sv.camY + sv.mouse.y - sv.py, sv.camX + sv.mouse.x - sv.px);
+        return Math.atan2(sv.camY + sv.mouse.y - (sv.py - SHOT_ORIGIN_Y), sv.camX + sv.mouse.x - sv.px);
     }
     return Math.atan2(sv.faceY, sv.faceX);
 }
@@ -292,7 +298,8 @@ export function tryFire(sv, charge = 1) {
         const a = angle + t * spread;
         sv.bullets.push({
             id: 'b' + ((sv._bIdSeq = (sv._bIdSeq || 0) + 1)),   // 运行时 id：联机子弹同步去重用
-            x: sv.px + Math.cos(a) * 22, y: sv.py + Math.sin(a) * 22,
+            // 从手部高度发射（原 sv.py 为脚底，导致子弹从人物下方打出）
+            x: sv.px + Math.cos(a) * 22, y: (sv.py - SHOT_ORIGIN_Y) + Math.sin(a) * 22,
             vx: Math.cos(a) * w.bulletSpeed * spdMul, vy: Math.sin(a) * w.bulletSpeed * spdMul,
             damage: devDmg(sv, Math.round(w.damage * charge)),
             color: w.color, label: w.bulletLabel || '·',
@@ -308,7 +315,7 @@ export function tryFire(sv, charge = 1) {
     // 枪口特效（移植单机：短促拟声字残影，方向与子弹一致）
     sv.effects.push({
         kind: 'muzzle',
-        x: sv.px + Math.cos(angle) * 26, y: sv.py + Math.sin(angle) * 26,
+        x: sv.px + Math.cos(angle) * 26, y: (sv.py - SHOT_ORIGIN_Y) + Math.sin(angle) * 26,
         angle, color: w.color,
         label: { pistol: '砰', smg: '砰', rifle: '砰', shotgun: '轰', sniper: '轰', bow: '嗖', knife: '嗖' }[k] || '砰',
         ghosts: (k === 'shotgun' || k === 'sniper') ? 2 : 1,
@@ -318,7 +325,7 @@ export function tryFire(sv, charge = 1) {
     if (sv.mp && sv.mp.role === 'guest') {
         (sv.mpOutbox = sv.mpOutbox || []).push({
             type: 'fx', kind: 'muzzle',
-            x: sv.px + Math.cos(angle) * 26, y: sv.py + Math.sin(angle) * 26,
+            x: sv.px + Math.cos(angle) * 26, y: (sv.py - SHOT_ORIGIN_Y) + Math.sin(angle) * 26,
             angle, color: w.color, label: { pistol: '砰', smg: '砰', rifle: '砰', shotgun: '轰', sniper: '轰', bow: '嗖', knife: '嗖' }[k] || '砰',
             ghosts: (k === 'shotgun' || k === 'sniper') ? 2 : 1,
         });

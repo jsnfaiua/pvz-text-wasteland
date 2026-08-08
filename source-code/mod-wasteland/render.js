@@ -17,6 +17,11 @@ import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BO
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
 export { TS };
 
+// 角色 sprite 渲染高度（与 drawPixelPlayerBody 的 TARGET_H=48 对应）。
+// 攻击/挥砍特效以脚底（sv.py / sy）为圆心会偏低、位置不居中，
+// 统一上移到"身体中部"作为特效圆心（角色占 [y-48, y]，中部约 y-24）。
+const PLAYER_BODY_MID = 24;
+
 // ============================================================
 // 角色 sprite:用户参考图 1:1 提取(south/west/north 三个方向)。
 // 走路动画:精确像素平移规范(躯干/发/脸锁定,仅 4 部件 ±1px 平移),
@@ -883,7 +888,18 @@ const MC_PAL = {
 const MC_KEYS = Object.keys(MC_PAL);
 const _tintCache = new Map();
 
-function nearestPart(r, g, b) {
+// 每个部位在角色 bbox 内的"位置禁区"（归一化，0=顶 1=底）。
+// 仅对纵向分布明确、主区集中在单端的部位启用：hair 顶、pants 中下、shoes 底。
+// 逻辑：当像素颜色被最近匹配到该部位、但实际纵向位置已完全超出其合理区（属于该部位不可能），
+// 则视为跨部位的描边/阴影污染 → 不染色（保留 sprite 原色），消除"发区冒出鞋色/鞋区冒出发色"等杂点。
+// skin/shirt 位置多样（脸/手/衣/臂），不设禁区，避免误伤手臂等正常像素。
+const PART_RANGE = {
+    hair:  [0.00, 0.45],
+    pants: [0.46, 0.95],
+    shoes: [0.70, 1.00],
+};
+
+function nearestPart(r, g, b, ny = 0.5) {
     let best = null, bestD = 1e9;
     for (const k of MC_KEYS) {
         for (const p of MC_PAL[k]) {
@@ -891,7 +907,19 @@ function nearestPart(r, g, b) {
             if (d < bestD) { bestD = d; best = k; }
         }
     }
-    return bestD < 12000 ? best : null; // 阈值:覆盖亮/暗变体,远处(杂色/渐变)不替换
+    if (!best) return null;
+    // 收紧阈值：只替换与部位主色足够接近的像素（发/鞋等"纯部位色"），
+    // 阴影/描边/渐变等杂色不再被强行染成玩家色 → 消除头发/鞋子上的杂色颗粒。
+    // 原 12000(≈RGB 距离 109) 过宽；降至 7000(≈84) 保留明暗变体、滤除远处杂色。
+    if (bestD >= 7000) return null;
+    // 位置禁区（硬约束）：判定的部位若在该纵向位置"完全不可能出现"，
+    // 则不染色（返回 null 保留 sprite 原色）。这是消除"发区冒出鞋色/鞋区冒出发色"
+    // 等跨部位描边杂点的关键——描边/阴影像素本就不该染成玩家部位色。
+    // 仅对纵向分布明确、且主区集中在单端（hair 顶 / shoes 底 / pants 下）的部位启用，
+    // 避免误伤中部手臂(皮肤)等正常像素。正常像素都在各自区间内，完全不受影响。
+    const rng = PART_RANGE[best];
+    if (rng && (ny < rng[0] || ny > rng[1])) return null;
+    return best;
 }
 function hexRgb(hex) {
     if (!hex || typeof hex !== 'string') return null;
@@ -911,7 +939,8 @@ export function tintSprite(img, look) {
     const key = (img._tintBase || img.src || String(img.width)) + '|' + lookKey;
     const hit = _tintCache.get(key);
     if (hit) return hit;
-    const TINT_SCALE = 0.25; // 缩小 4x 做 tint(从 ~500ms 降到几 ms)
+    const TINT_SCALE = 1; // 2026-08-08 23:25 原图逐像素 tint（之前 0.25 让像素混合失真，nearestPart 误判产生粒子）；
+                          // 性能靠 _tintCache 缓存（每 img+look 组合只跑一次），之后命中 0ms
     const sw = Math.max(2, Math.round(img.width * TINT_SCALE));
     const sh = Math.max(2, Math.round(img.height * TINT_SCALE));
     const cv = document.createElement('canvas');
@@ -921,10 +950,15 @@ export function tintSprite(img, look) {
     ctx.drawImage(img, 0, 0, sw, sh);
     const id = ctx.getImageData(0, 0, sw, sh);
     const d = id.data;
+    // 像素纵向位置（相对 bbox，0=顶 1=底）：用于部位软区域约束（仅颜色判定有歧义时裁决）
+    const bb = getSpriteBBox(img);
+    const bbH = Math.max(1, bb.h);
     for (let i = 0; i < d.length; i += 4) {
         if (d[i + 3] === 0) continue;
+        const idx = i / 4;
         const r = d[i], g = d[i + 1], b = d[i + 2];
-        const part = nearestPart(r, g, b);
+        const ny = ((idx / sw | 0) - bb.y) / bbH;   // 像素行号 = Math.floor(idx / sw)
+        const part = nearestPart(r, g, b, ny);
         if (!part || part === 'eyes') continue; // 眼睛/深阴影保持原色
         const t = hexRgb(L[part]);
         if (!t) continue;
@@ -3537,7 +3571,8 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
         drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || tint, 0, n.look);
         ctx.restore();
         // 近战挥击特效（与玩家同一套：按武器样式差异化绘制）
-        drawSwingEffect(ctx, sx, sy, n.swingT, n.swingDir, n.swingWeapon);
+        // 圆心取角色身体中部（sy 是脚底）
+        drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, n.swingT, n.swingDir, n.swingWeapon);
         if (n.hp < n.maxHp || n.role === 'hostile' || n.party) {
             const bw = TS + 4;
             ctx.fillStyle = 'rgba(30,10,10,0.85)';
@@ -3947,7 +3982,8 @@ function drawPlayer(ctx, sv, camX, camY) {
     }
 
     // 挥击特效（移植本体：按武器 attackStyle 差异化绘制）
-    drawSwingEffect(ctx, px, py, sv.swingT, sv.swingDir, sv.swingWeapon);
+    // 圆心取角色身体中部（py 是脚底，直接当圆心会偏低、位置不居中）
+    drawSwingEffect(ctx, px, py - PLAYER_BODY_MID, sv.swingT, sv.swingDir, sv.swingWeapon);
 
     // 本体（受击变红 / 无敌帧闪烁）；上衣颜色取捏脸外观，不再写死绿色
     const blink = sv.invuln > 0 && Math.floor(sv.now * 20) % 2 === 0;
@@ -4103,8 +4139,8 @@ function drawRemotePlayer(ctx, sv, camX, camY, p) {
         }
         ctx.globalAlpha = 1;
     }
-    // 挥砍特效（同步挥砍状态）
-    if (p.swingT > 0) drawSwingEffect(ctx, sx, sy, p.swingT, p.swingDir || 0, p.swingWeapon);
+    // 挥砍特效（同步挥砍状态）；圆心取身体中部（sy 是脚底）
+    if (p.swingT > 0) drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, p.swingT, p.swingDir || 0, p.swingWeapon);
     // 完美防反光环（扩散圆环）
     if (p.perfectFlash > 0) {
         const t = 1 - p.perfectFlash / 0.35;

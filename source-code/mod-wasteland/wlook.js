@@ -25,18 +25,42 @@ export const HAIR_STYLES = [
 ];
 
 export const LOOK_PALETTES = {
-    skin:  { label: '肤色', colors: ['#c49470', '#e8b98a', '#8d5a3a', '#f0d0b0', '#5e3d28'] },
-    hair:  { label: '发色', colors: ['#34302d', '#1f1f1f', '#5a4632', '#7a4a2a', '#c8b090', '#d94f4f', '#8a4ad9'] },
-    shirt: { label: '上衣', colors: ['#39d98a', '#4a90d9', '#d94f4f', '#c8a24a', '#8a4ad9', '#3a3a3a', '#e8e8e8', '#e8885a'] },
-    pants: { label: '裤子', colors: ['#314c58', '#2a3a3a', '#4a3a28', '#5a5a5a', '#2a2a4a'] },
-    shoes: { label: '鞋子', colors: ['#20282b', '#3a2a1a', '#5a5a5a', '#7a2a2a', '#2a4a7a', '#c8b090'] },
-    eyes:  { label: '瞳色', colors: ['#232323', '#3a5a8a', '#4a7a3a', '#7a4a2a', '#8a4ad9'] },
+    skin:  { label: '肤色', colors: ['#c49470', '#e8b98a', '#8d5a3a', '#f0d0b0', '#5e3d28', '#ffd8b0', '#7a4a2a', '#d9a066'] },
+    hair:  { label: '发色', colors: ['#34302d', '#1f1f1f', '#5a4632', '#7a4a2a', '#c8b090', '#d94f4f', '#8a4ad9', '#4a90d9', '#2a8a6a', '#d9d9d9', '#ffd700', '#e8885a'] },
+    shirt: { label: '上衣', colors: ['#39d98a', '#4a90d9', '#d94f4f', '#c8a24a', '#8a4ad9', '#3a3a3a', '#e8e8e8', '#e8885a', '#4ad9d9', '#d94fd9', '#9acd32', '#ff8a5a'] },
+    pants: { label: '裤子', colors: ['#314c58', '#2a3a3a', '#4a3a28', '#5a5a5a', '#2a2a4a', '#3a5a3a', '#5a2a2a', '#4a4a8a'] },
+    shoes: { label: '鞋子', colors: ['#20282b', '#3a2a1a', '#5a5a5a', '#7a2a2a', '#2a4a7a', '#c8b090', '#2a5a3a', '#8a5a2a'] },
+    eyes:  { label: '瞳色', colors: ['#232323', '#3a5a8a', '#4a7a3a', '#7a4a2a', '#8a4ad9', '#3a8a8a', '#8a3a3a', '#c8a24a'] },
 };
 
+// HSV → '#rrggbb'
+function hsvToHex(h, s, v) {
+    const i = Math.floor(h * 6);
+    const f = h * 6 - i;
+    const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+    const rgb = [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]][i % 6];
+    return '#' + rgb.map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
+}
+// 色域约束：肤色/瞳色/鞋色取贴近现实的窄域，发色/上衣/裤子全色域，保证"多姿多彩"
+const RAND_RANGES = {
+    skin:  { h: [0.04, 0.12], s: [0.28, 0.62], v: [0.55, 0.95] },
+    hair:  { h: [0.0, 1.0],    s: [0.15, 0.85], v: [0.18, 0.8] },
+    shirt: { h: [0.0, 1.0],    s: [0.5, 0.95],  v: [0.4, 0.95] },
+    pants: { h: [0.0, 1.0],    s: [0.35, 0.8],  v: [0.3, 0.75] },
+    shoes: { h: [0.0, 1.0],    s: [0.1, 0.7],   v: [0.2, 0.55] },
+    eyes:  { h: [0.0, 1.0],    s: [0.3, 0.9],   v: [0.2, 0.6] },
+};
+function randColor(key) {
+    const r = RAND_RANGES[key] || RAND_RANGES.shirt;
+    const h = r.h[0] + Math.random() * (r.h[1] - r.h[0]);
+    const s = r.s[0] + Math.random() * (r.s[1] - r.s[0]);
+    const v = r.v[0] + Math.random() * (r.v[1] - r.v[0]);
+    return hsvToHex(h, s, v);
+}
+// 随机外观：每个部位在全色域内随机生成，因此每次都不一样（不再局限于几套固定色板）
 export function randomLook() {
-    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
     const out = {};
-    for (const key of Object.keys(LOOK_PALETTES)) out[key] = pick(LOOK_PALETTES[key].colors);
+    for (const key of Object.keys(LOOK_PALETTES)) out[key] = randColor(key);
     out.hairStyle = Math.floor(Math.random() * HAIR_STYLES.length);
     return out;
 }

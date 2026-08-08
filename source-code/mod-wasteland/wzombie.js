@@ -206,7 +206,9 @@ function playerZombieShoot(sv, z, dt) {
     if (w.kind !== 'ranged') return;
     z.shootT = (z.shootT || 0) - dt;
     if (z.shootT > 0) return;
-    const dx = sv.px - z.x, dy = sv.py - z.y;
+    // 手部高度（z.y 是脚底，角色高 48，手部约 26）：弹道/特效从身体中部发出
+    const shootY = z.y - 26;
+    const dx = sv.px - z.x, dy = sv.py - shootY;
     const dist = Math.hypot(dx, dy);
     if (dist > (w.range || 320) + TS) return;   // 超出射程不开火
     z.shootT = (w.fireInterval || 0.4) * 1.6;    // 尸化版射速略慢
@@ -218,7 +220,7 @@ function playerZombieShoot(sv, z, dt) {
         const ang = baseAng + off;
         if (!sv.npcBullets) sv.npcBullets = [];
         sv.npcBullets.push({
-            x: z.x, y: z.y - 8,
+            x: z.x, y: shootY,
             vx: Math.cos(ang) * (w.bulletSpeed || 460),
             vy: Math.sin(ang) * (w.bulletSpeed || 460),
             dmg: Math.max(4, Math.round(w.damage * 0.7)),   // 尸化版伤害略降（毕竟是僵尸在用）
@@ -227,7 +229,7 @@ function playerZombieShoot(sv, z, dt) {
             hostile: true, src: z.id, srcName: z.name,   // hostile：可命中玩家
         });
     }
-    sv.effects.push({ kind: 'zswing', x: z.x, y: z.y - 8, angle: baseAng, life: 0.2, maxLife: 0.2, style: 'thrust' });
+    sv.effects.push({ kind: 'zswing', x: z.x, y: shootY, angle: baseAng, life: 0.2, maxLife: 0.2, style: 'thrust' });
 }
 
 // 按僵尸强度掷品质（越强越好）

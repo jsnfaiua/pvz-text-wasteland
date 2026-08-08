@@ -717,7 +717,8 @@ function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) 
             zombieHitSound(sv, threat.z);      // 受击音（铁桶/路障护甲音，与玩家一致）
         } else if (threat.player) {
             // 恶意 NPC 命中玩家：正常受击伤害 + 感染风险 + 提示（无敌/无敌帧由上方豁免）
-            sv.hp = Math.max(1, sv.hp - n.dmg);
+            // 下限 0（与僵尸咬一致）：恶意 NPC 可以真正击败玩家；原 Math.max(1,…) 导致"永远打不死"
+            sv.hp = Math.max(0, sv.hp - n.dmg);
             sv.hurtT = 0.3;
             sv._combatT = 4;   // 进入交战状态，队友支援
             const c = controlledNpc(sv);
@@ -792,7 +793,9 @@ function npcTakeAmmo(n, type, need) {
 function fireNpcBullet(sv, n, threat) {
     const w = WEAPONS[n.wpnKey];
     if (!w) return;
-    const ang = Math.atan2(threat.y - n.y, threat.x - n.x);
+    // NPC 同样以"手部高度"为原点（n.y 是脚底，角色高 48，手部约 26）
+    const shootY = n.y - 26;
+    const ang = Math.atan2(threat.y - shootY, threat.x - n.x);
     if (!sv.npcBullets) sv.npcBullets = [];
     // 与玩家 tryFire 相同的弹丸分布：pellets 多弹丸 + spread 散射
     const pellets = w.pellets || 1;
@@ -800,7 +803,7 @@ function fireNpcBullet(sv, n, threat) {
         const t = pellets === 1 ? 0 : (i / (pellets - 1) - 0.5);
         const a = ang + t * (w.spread || 0);
         sv.npcBullets.push({
-            x: n.x, y: n.y - 8,
+            x: n.x, y: shootY,
             vx: Math.cos(a) * (w.bulletSpeed || 460), vy: Math.sin(a) * (w.bulletSpeed || 460),
             dmg: Math.max(4, w.damage),   // 与玩家同伤害
             color: w.color, label: w.bulletLabel || '·', life: 0.9, traveled: 0,
@@ -810,7 +813,7 @@ function fireNpcBullet(sv, n, threat) {
     }
     npcTakeAmmo(n, w.ammoType, 1);
     wearNpcWeapon(sv, n);
-    sv.effects.push({ kind: 'muzzle', x: n.x + Math.cos(ang) * 20, y: n.y + Math.sin(ang) * 20 - 8, angle: ang, color: w.color, label: '轰', ghosts: pellets > 1 ? 2 : 1, life: 0.1, maxLife: 0.1 });
+    sv.effects.push({ kind: 'muzzle', x: n.x + Math.cos(ang) * 20, y: shootY + Math.sin(ang) * 20, angle: ang, color: w.color, label: '轰', ghosts: pellets > 1 ? 2 : 1, life: 0.1, maxLife: 0.1 });
 }
 // 更新 NPC 子弹（与玩家同规则：射程衰减 + 穿透；命中僵尸/恶意 NPC，恶意火力可打玩家）
 function updateNpcBullets(sv, dt) {
@@ -845,7 +848,8 @@ function updateNpcBullets(sv, dt) {
                 const fo = b.traveled <= b.range ? 1 : Math.max(0.4, 1 - 0.6 * ((b.traveled - b.range) / b.range));
                 const dmg = Math.max(1, Math.round(b.dmg * fo));
                 if (hit.player) {
-                    sv.hp = Math.max(1, sv.hp - dmg);
+                    // 下限 0（与近战一致）：恶意 NPC 弹丸可真正击败玩家；原 Math.max(1,…) 打不死
+                    sv.hp = Math.max(0, sv.hp - dmg);
                     sv.hurtT = 0.25;
                     sv._combatT = 4;
                     const c = controlledNpc(sv);

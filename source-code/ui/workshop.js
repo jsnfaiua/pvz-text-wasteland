@@ -292,7 +292,10 @@ function renderDetail() {
         if (!cur.enabled) return;
         if (mod.id !== 'wasteland') return;
         // 用随机名字触发创建流程（enterWasteland 检测到该角色无档 → 命名+捏脸）
-        launchWasteland({ ...cur.opts, characterName: '__new__' + Date.now() });
+        // forceNew 关键：避免新角色继承 profile 残留的 worldSeed / opts.seed 而加载老世界存档
+        // （否则"新建角色"却进到旧世界，用户以为没创建成功）
+        const { seed: _ignored, ...restOpts } = cur.opts;
+        launchWasteland({ ...restOpts, characterName: '__new__' + Date.now(), forceNew: true });
     });
 
     // 世界种子下拉：选已有存档 → 继续该世界；选随机 → 开随机世界；选手动 → 显示输入框

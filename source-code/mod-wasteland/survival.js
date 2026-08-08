@@ -27,7 +27,7 @@ import * as WDEV from './wdev.js';
 import * as WSearch from './wsearch.js';
 import * as WV from './wvehicle.js';
 import * as WW from './wwordcraft.js';
-import { showLookCreator, normalizeLook } from './wlook.js';
+import { showLookCreator, normalizeLook, randomLook } from './wlook.js';
 import * as WNPC from './wnpc.js';
 import * as HUD from './whud.js';
 import * as TUT from './wtut.js';
@@ -3778,7 +3778,9 @@ export function showCreateCharacter(onDone) {
     const ok = () => {
         const name = (el.querySelector('#wsl-char-name').value || '').trim() || ('幸存者' + Math.floor(Math.random() * 900 + 100));
         el.remove();
-        showLookCreator((look) => onDone(name, look));
+        // 新建角色：以"全新随机多彩配色"为捏脸起点（而非继承上次外观），
+        // 避免每次新建都看到同一套配色，也呼应"色板应有多姿多彩"。
+        showLookCreator((look) => onDone(name, look), randomLook());
     };
     el.querySelector('#wsl-char-ok').addEventListener('click', ok);
     el.querySelector('#wsl-char-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
