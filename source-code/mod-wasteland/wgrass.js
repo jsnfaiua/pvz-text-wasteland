@@ -352,11 +352,14 @@ export function grassRenderLayer(ctx, sv, camX, camY, W, H) {
       for (const b of list) {
         // 2026-08-09 用户要求"草只长在草坪上、不会长到人行道"：束体 24x16 跨多格，
         // 检查束的占格 bbox 内所有格必须是 GROUND/WEED，否则不画（草束不会画到路面/人行道/建筑上）。
+        // 2026-08-10 植物格宽容：植物（SPROUT/PLOT）本身不高出地面阻挡草的生长——
+        // 此前 bbox 含植物格即整束不画 → 植物周围一片草全消失（"植物把整片草盖住"）。
+        // 改为：植物格视为"可长草"格（草束仍画，只被植物本体 28x30 像素盖住重叠部分，符合"只盖重叠那棵草"）。
         const cgx = b.cx2 / TS, cgy = b.cy2 / TS;
         let allGrass = true;
         for (let oy = -1; oy <= 1 && allGrass; oy++) for (let ox = -1; ox <= 1; ox++) {
           const ttt = getTile(sv, Math.floor(cgx + ox), Math.floor(cgy + oy));
-          if (ttt !== T.GROUND && ttt !== T.WEED) allGrass = false;
+          if (ttt !== T.GROUND && ttt !== T.WEED && ttt !== T.SPROUT && ttt !== T.PLOT) allGrass = false;
         }
         if (!allGrass) continue;
         const sx = b.cx2 - camX, sy = b.cy2 - camY;

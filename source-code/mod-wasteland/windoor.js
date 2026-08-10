@@ -16,6 +16,7 @@ import * as WA from './waction.js';
 import { rollQualityLoot, rollLootContents, zombieBagDropChance } from './wzombie.js';
 import { infectionLevelFromRoll } from './winfection.js';
 import { buildingTypeAt, BUILDING_TYPES, zombieStrengthAt, districtAt } from './wdistrict.js';
+import { killNpc, maybeWound, maybeInfectNpc, npcApplyDownedHit } from './wnpc.js';
 
 // 僵尸运行时 id 兜底（与室外 spawnZombie 同一自增序列 sv._zIdSeq，保证出门后 id 全局唯一）
 function ensureZId(sv, z) {
@@ -385,24 +386,29 @@ function spawnInteriorNpcs(sv, it, floor) {
 
 export function enterInterior(sv, doorKey, silent) {
     if (!sv.mods.interiors) sv.mods.interiors = {};
-    const floorKey = doorKey + ':1';
-    const saved = sv.mods.interiors[floorKey];
     const parts = doorKey.split(',');
     const dx = parseInt(parts[0]) || 0, dy = parseInt(parts[1]) || 0;
     const meas = measureBuilding(sv, dx, dy);
+    // 2026-08-10 修复"同一建筑两个门互通，B 门进入重新刷僵尸"：
+    // 存档/生成 key 用【建筑锚点】measureBuilding 的左上角 (meas.minX,minY) ——同一建筑的所有门
+    // 共享同一 interiorKey → 共享存档（清剿状态/已生成僵尸），A 门清完 B 门进入即为"已清剿"。
+    // 门口守卫匹配仍用 doorKey（世界僵尸的 guardDoor 是门格坐标，各自门前的守卫独立扣减）。
+    const buildingKey = meas.minX + ',' + meas.minY;
+    const floorKey = buildingKey + ':1';
+    const saved = sv.mods.interiors[floorKey];
     const cx = Math.floor(dx / CHUNK), cy = Math.floor(dy / CHUNK);
     const districtKey = districtAt(sv.world.seed, cx, cy);
-    const gen = generateInterior(sv.world.seed, doorKey, 1, meas.iw, meas.ih, { ...meas, districtKey });
+    const gen = generateInterior(sv.world.seed, buildingKey, 1, meas.iw, meas.ih, { ...meas, districtKey });
     const tiles = (saved && Array.isArray(saved.tiles) && saved.tiles.length === gen.tiles.length) ? saved.tiles.slice() : gen.tiles;
     const cleared = !!(saved && (saved === 1 || saved.cleared));
     const bType = buildingTypeAt(sv.world.seed, cx, cy);
     const bName = (bType && BUILDING_TYPES[bType]) ? BUILDING_TYPES[bType].name : '建筑';
     const [pSX, pSY] = ensureSpawnWalkable(tiles, gen.w, gen.h, gen.spawnX, gen.spawnY);
     // 门口镇守僵尸 = 室内 1 层僵尸跑出来的（带 guardDoor 标记的世界僵尸）：
-    // 它们已在室外，进入室内时按数量扣减 1 层生成，避免重复计算
+    // 它们已在室外，进入室内时按数量扣减 1 层生成，避免重复计算（守卫归属各自门 doorKey）
     const guards = (sv.zombies || []).filter(z => z.guardDoor === doorKey).length;
     sv.interior = {
-        key: doorKey,
+        key: buildingKey,
         floor: 1,
         buildingType: bType,
         districtKey,
@@ -422,7 +428,7 @@ export function enterInterior(sv, doorKey, silent) {
         if (saved && Array.isArray(saved.zombies) && saved.zombies.length) {
             for (const z of saved.zombies) sv.interior.zombies.push({ ...z, id: ensureZId(sv, z), atkState: null, atkT: 0, atkCd: 0, hasHit: false });
         } else {
-            spawnInteriorZombies(sv, doorKey, 1, guards);
+            spawnInteriorZombies(sv, buildingKey, 1, guards);
         }
     }
     // 2026-08-09 室内外 NPC 统一：室外跟随队员随玩家进室内——
@@ -442,7 +448,10 @@ function enterFollowers(sv, it) {
     let k = 0;
     for (const n of sv.npcs) {
         if (!n.alive || n.riding) continue;
-        if (!(n.party && n.state === 'follow')) continue;
+        // 2026-08-10 濒死角色跨场景：倒地主控记录（n.downed）在室外时也跟随进室内，
+        // 否则它留在室外坐标（室内渲染不画/用户找不到）——用户反馈"室外死亡后进屋，
+        // 濒死角色只在室外不会跟进室内"。已在其它房间的倒地记录不搬动（仍留在原房间等救）。
+        if (!(n.party && n.state === 'follow') && !(n.downed && !n.inInterior)) continue;
         // 2026-08-09 修复"切队友视角位置互换"：切视角重建房间（syncControllerInterior 调
         // enterInterior）时，已在同一房间的队员保持原坐标不动，绝不重置到出生点旁。
         // 仅真正从室外新进入的队员才在出生点旁安置。
@@ -549,7 +558,10 @@ export function exitInterior(sv, silent) {
             n.inInterior = false;
             n.interiorKey = null;
             n.interiorFloor = null;
-            if (n.party) {
+            // 2026-08-10 濒死角色跨场景：倒地主控记录（n.downed）也要带出到门外可走格，
+            // 否则它留在室内坐标（室外渲染画错位/用户找不到）——用户反馈"室内死亡后出门，
+            // 濒死角色只在室内不会跑出来"。
+            if (n.party || n.downed) {
                 // 落点：优先门口外最近可走地面（isWalk 真地面，绝不落在门格/墙/建筑内）；
                 // 找不到则以门口为基准做小幅扇形偏移（仍旧 isWalk 优先），兜底门口坐标交给寻路拉走
                 let placed = false;
@@ -729,6 +741,37 @@ export function updateInterior(sv, dt) {
         if (dist < B.Z_BITE_RANGE) {
             const dps = dmgTo / (contact.biteCd || 1);
             WA.resolvePlayerBiteTick(sv, z, dps, dt, istand);
+        }
+        // 2026-08-11 v2.97 室内外一致：僵尸也啃咬附近的 NPC（此前室内僵尸只咬玩家，队友在室内
+        // 对僵尸无敌——与室外行为不一致）。含倒地（downed）角色：不直接扣血，改扣救援时间
+        //（npcApplyDownedHit，每点伤害减 10 秒），与室外 wzombie.js 完全一致。
+        z._npcScanT = (z._npcScanT || 0) - dt;
+        if (sv.npcs && z._npcScanT <= 0) {
+            z._npcScanT = 0.2;
+            for (const n of sv.npcs) {
+                if (!n.alive) continue;
+                if (n.downed) {
+                    if (Math.hypot(n.x - z.x, n.y - z.y) < B.Z_BITE_RANGE) {
+                        z.faceDir = Math.atan2(n.y - z.y, n.x - z.x);
+                        npcApplyDownedHit(sv, n, (dmgTo / (contact.biteCd || 1)) * 0.2);
+                    }
+                    continue;
+                }
+                if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控走玩家受伤路径
+                if (Math.hypot(n.x - z.x, n.y - z.y) < B.Z_BITE_RANGE) {
+                    z.faceDir = Math.atan2(n.y - z.y, n.x - z.x);
+                    const npcDps = dmgTo / (contact.biteCd || 1);
+                    n.hp -= npcDps * 0.2;
+                    z._biteSfxT = (z._biteSfxT || 0) - 0.2;
+                    if (z._biteSfxT <= 0) {
+                        z._biteSfxT = B.Z_BITE_INTERVAL; n.hurtT = 0.3; maybeWound(sv, n);
+                        maybeInfectNpc(sv, n);
+                        sv.effects.push({ kind: 'hit', x: n.x, y: n.y, life: 0.2, maxLife: 0.2, label: '咬' });
+                    }
+                    if (n.hp <= 0) killNpc(sv, n, '被僵尸咬死');
+                    break;
+                }
+            }
         }
         // 扑咬（快速型：中距离突进 + 命中控制）
         if (contact.lunge > 0 && z.lungeCd <= 0 && dist < B.Z_LUNGE_TRIGGER_DIST && dist > B.Z_CONTACT_DIST) {

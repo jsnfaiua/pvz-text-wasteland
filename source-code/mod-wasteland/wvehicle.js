@@ -40,7 +40,7 @@ function ownerName(sv, driverId) {
 
 // 修理消耗
 export const REPAIR_PARTS = 3;         // 零件数
-export const CAR_MAX_HP = 400;         // 车辆耐久（驾驶用）
+export const CAR_MAX_HP = 3000;        // 车辆耐久（驾驶用）（2026-08-11 用户要求提升至 3000）
 export const CAR_DRIVE_SPEED = 260;    // 驾驶移动速度（px/s）
 export const CAR_TURN = 6;             // 转向速率
 export const CAR_CRUSH_DMG = 60;       // 碾压僵尸伤害
@@ -325,8 +325,13 @@ function driveCommon(sv, dt) {
     } else {
         d.speed = 0;
     }
+    // 2026-08-11 性能：碾压扫描 0.12s 节流——僵尸/NPC 多时每帧全量距离计算会卡顿；
+    // 碾压冷却（_crushCd）在扫描时递减，等效冷却 0.5s+0.12s≈0.62s，手感无感。
+    d._crushScanT = (d._crushScanT || 0) - dt;
+    const crushScan = d._crushScanT <= 0;
+    if (crushScan) d._crushScanT = 0.12;
     // 碾压僵尸
-    for (const z of sv.zombies) {
+    if (crushScan) for (const z of sv.zombies) {
         if (z.hp <= 0) continue;
         z._crushCd = (z._crushCd || 0) - dt;
         // 碾压冷却（L1）：防数秒秒杀高血僵尸（无冷却时 60 伤/帧 ≈ 每秒 3600 伤）
@@ -337,6 +342,23 @@ function driveCommon(sv, dt) {
             const a = Math.atan2(z.y - d.y, z.x - d.x);
             z.x += Math.cos(a) * 10; z.y += Math.sin(a) * 10;
             sv.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.2, maxLife: 0.2 });
+        }
+    }
+    // 2026-08-10 用户要求"汽车碾压对所有敌对生物生效"：碾压敌对 NPC（hostile，含骑手敌对生物），
+    // 与僵尸同规则（冷却 + 击退）。碾压伤害致死走 killNpc（掉落包裹）。非敌对（friendly 队友）不碾。
+    if (crushScan && sv.npcs) for (const o of sv.npcs) {
+        if (!o.alive || o.role !== 'hostile') continue;
+        o._crushCd = (o._crushCd || 0) - dt;
+        if (Math.hypot(o.x - d.x, o.y - d.y) < TS * 1.1 && o._crushCd <= 0) {
+            o._crushCd = 0.5;
+            o.hp -= CAR_CRUSH_DMG;
+            o.hurtT = 0.2;
+            const a = Math.atan2(o.y - d.y, o.x - d.x);
+            o.x += Math.cos(a) * 10; o.y += Math.sin(a) * 10;
+            sv.effects.push({ kind: 'hit', x: o.x, y: o.y, life: 0.2, maxLife: 0.2 });
+            if (o.hp <= 0) {
+                try { killNpc(sv, o, '被碾压'); } catch (e) { o.alive = false; o.hp = 0; }
+            }
         }
     }
     // 耐久归零 → 变残骸，弹出车内人员（残骸停到可停格，不覆盖破坏地形）
@@ -674,8 +696,29 @@ export function updateChauffeurDrive(sv, dt, canStandCar) {
     const tgx = Math.floor(tx / TS), tgy = Math.floor(ty / TS);
     // 真正到达：营地必须精确到旗子（TS*1.5）；区域/自由探索的目标点已吸附到可步行格，
     // 贴近 2 格内即视为到达——此前放宽到 12 格，车常停在野地就报"已抵达"，被误认为没到目的地
+    // 2026-08-11 v2.97 修复"车到板块附近几格就停、看不出到了哪个方向（顶部 UI 区域名没变）"：
+    // 到达判定 = **顶部地区 UI 变化才算到达**（用户定稿：城市→郊区，UI 变郊区 = 到了）。
+    //   区域目的地（city/suburb/ruins）：仅当车当前区块已是目标区域（districtAt == 目标区域）
+    //   才判定到达——车在区域交界/边缘（UI 未切）时**不提前停**，继续沿既有寻路驶入区域；
+    //   营地 = 精确到旗子（TS*1.5）；自由探索 = 到目标点 2 格内（无区域约束）。
+    //   "路径过不去才停旁边"由既有机制兜底：目标点不可达在寻点阶段已替换为最近可达点
+    //   （_chkInfo），行驶中卡死由 120s 无进展保护强制停车——绝不因到达判定苛刻而无限行驶。
     const arriveD = o.dest === 'camp' ? TS * 1.5 : TS * 2;
-    if (Math.hypot(tx - d.x, ty - d.y) < arriveD) { finishDriveOrder(sv, true); return; }
+    const wantZone = { city: 'urban', suburb: 'suburb', ruins: 'ruins' }[o.dest];
+    const dTarget = Math.hypot(tx - d.x, ty - d.y);
+    if (!wantZone) {
+        // 营地 / 自由探索：到目标点即达（原逻辑保留）
+        if (dTarget < arriveD) { finishDriveOrder(sv, true); return; }
+    } else {
+        // 区域目的地：以顶部 UI 区域变化为唯一到达标志
+        const curZone = districtAt(sv.world.seed, Math.floor(d.x / TS / CHUNK), Math.floor(d.y / TS / CHUNK));
+        if (curZone === wantZone) { finishDriveOrder(sv, true); return; }
+        // "路径过不去"兜底：目标点本身不在目标区域（寻点阶段确认过——替换点 5×5 内无同区域
+        // 可达格，落到最近可达荒野点）→ 车开到目标点即达（停在旁边），绝不空跑/卡死。
+        // 这是用户认可的"路径过不去才停旁边"兜底：目标点不在区域 = 真的过不去。
+        const goalZone = districtAt(sv.world.seed, Math.floor(tx / TS / CHUNK), Math.floor(ty / TS / CHUNK));
+        if (goalZone !== wantZone && dTarget < arriveD) { finishDriveOrder(sv, true); return; }
+    }
     // 全局无进展保护（兜底）：无论卡在哪个状态（倒车/原地旋转/被挡/异常挂机），
     // 120 秒内到目标距离无 0.5 格改善就强制优雅停车——绝不无限挂机。
     // 放在所有早退分支之前，倒车等分支早退时检测仍每帧运行

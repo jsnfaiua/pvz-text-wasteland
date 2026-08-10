@@ -13,7 +13,7 @@ import { drawMsg } from './wmsg.js';
 import { TS } from './wconst.js';
 import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H } from './windoor.js';
 import { districtAt, districtProfile, infectionAt } from './wdistrict.js';
-import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED, wxSpeedMul, fogRadius, windDirAt, windDirAtHour, SEASON_NAMES, seasonAt } from './wbalance.js';
+import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED, wxSpeedMul, fogRadius, windDirAt, windDirAtHour, SEASON_NAMES, seasonAt, DOWNED_LIMIT_SECONDS } from './wbalance.js';
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
 export { TS };
 
@@ -1369,11 +1369,20 @@ export function draw(ctx, sv) {
         drawWeatherParticles(ctx, sv, W, H, camX, camY);    // 天气粒子（雨丝/雪花/飞沙，世界坐标随相机）
         drawThunder(ctx, sv, W, H);                         // 雷阵雨闪电+闪光（确定性触发，双端同刻）
         drawEventOverlay(ctx, sv, W, H);        // 随机事件暗角（停电夜深蓝）
+        drawSquatOverlay(ctx, sv, W, H);        // 2026-08-10 Ctrl 蹲下：暗色遮罩（潜伏感）
         drawInfectionOverlay(ctx, sv, W, H);    // 感染侵蚀覆盖层（阶段越高越明显）
         drawSickVignette(ctx, sv, W, H);
         drawHUD(ctx, sv, W, H);
         drawDriveHUD(ctx, sv, W);
         drawTeamPanel(ctx, sv, W, H);
+        // 2026-08-11 v2.97 修复"本地 NPC 队友无远处指引"：此前整个指引块被包在
+        // `sv.p2 || sv.zombies.some(isPlayerZombie) || _legacyDrop` 条件里——若玩家只有本地
+        // NPC 队友（无联机队友/尸化自己/遗物），drawMateGuide 永不执行（室内却是无条件调用，
+        // 导致室内外不一致）。改为：本地队友指引独立于该条件，只要有存活 party 队友就画。
+        {
+            const guideDrawn = [];
+            drawMateGuide(ctx, sv, W, H, guideDrawn);           // 本地 NPC 队友：屏幕外显示指向箭头+名字+距离（2026-08-11）
+        }
         if (sv.p2 || (sv.p2s && Object.keys(sv.p2s).length) || sv.zombies.some(z => z.isPlayerZombie) || (sv._legacyDrop)) {
             // 指引指示器共享错位数组：队友 + 尸化的自己 + 遗物包裹 同边缘自动错开不重叠
             const guideDrawn = [];
@@ -1384,6 +1393,7 @@ export function draw(ctx, sv) {
         if (sv.build) drawBuildBar(ctx, sv, W, H);
         else drawHotbar(ctx, sv, W, H);
     }
+    // 2026-08-11 尸体搜索已复用容器 WSearch 界面（面板逐件渐亮），无独立读条进度条
     // 饥饿光晕（室内外通用，盖在最上层）：昏黄呼吸光 + 边缘暗角，模拟快晕倒的眩晕感
     drawStarveVignette(ctx, sv, W, H);
     // 2026-08-09 昏迷苏醒过渡：黑灰眨眼几次（像素氛围），期间叠加"荒野中醒来"字样
@@ -1481,6 +1491,24 @@ function drawEventOverlay(ctx, sv, W, H) {
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, W, H);
     }
+}
+
+// ---------- Ctrl 蹲下覆盖层（2026-08-10）：暗色遮罩 + 底部"蹲伏中"提示（潜伏感） ----------
+function drawSquatOverlay(ctx, sv, W, H) {
+    if (!sv.squatting) return;
+    ctx.save();
+    // 半透明暗色遮罩：压低画面亮度制造潜伏氛围（不阻断操作）
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+    // 底部提示
+    ctx.save();
+    ctx.font = '12px "Microsoft YaHei", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fillText('蹲伏中（潜伏）', W / 2, H - 10);
+    ctx.restore();
 }
 
 // ---------- 天气氛围覆盖层：沙尘暴沙色 / 大雾弥漫 / 雨雪冷调（呼吸动态 × 强度 mul） ----------
@@ -2057,7 +2085,9 @@ function drawCar(ctx, tileX, tileY, dir, opt) {
     ctx.bezierCurveTo(hl * 0.3, -hw - 2, -hl * 0.3, -hw - 2, -hl + 4, -hw); // 上侧腰线
     ctx.closePath();
     ctx.fillStyle = body;
-    if (o.repaired && !o.wreck) { ctx.shadowColor = '#2EE6C0'; ctx.shadowBlur = o.near ? 12 : 6; }
+    // 2026-08-11 性能：shadowBlur 是 Canvas 重操作，驾驶中每帧画车 + 高亮车多次触发会导致卡顿。
+    // 把阴影半径大幅调小（12/6 → 4/2）保留微光描边观感，显著降低每帧开销（开车不卡）。
+    if (o.repaired && !o.wreck) { ctx.shadowColor = '#2EE6C0'; ctx.shadowBlur = o.near ? 4 : 2; }
     ctx.fill();
     ctx.shadowBlur = 0;
     // 车身描边
@@ -3873,11 +3903,78 @@ function drawBullets(ctx, sv, camX, camY) {
 }
 
 // ---------- 玩家（闪现残影 / 跳跃滞空 / 格挡盾 / 完美防反光环 / 无敌帧闪烁） ----------
+// ---------- 尸体（2026-08-10 成员死亡后形象留在原地，可搜索遗物） ----------
+// 躺倒尸体：暗色上衣横躺（水平条 + 头部圆点），带"尸体"名牌；无碰撞、不参与 AI。
+function drawCorpse(ctx, sx, sy, n) {
+    const shirt = (n.look && n.look.shirt) || '#6b7480';
+    const skin = (n.look && n.look.skin) || '#d8c9a8';
+    // 阴影
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(sx, sy - 2, TS * 0.52, TS * 0.22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 横躺身体（水平长条，模拟倒地）
+    ctx.fillStyle = shirt;
+    ctx.fillRect(sx - TS * 0.46, sy - 5, TS * 0.92, 6);
+    // 头（卧侧）
+    ctx.fillStyle = skin;
+    ctx.beginPath();
+    ctx.arc(sx + TS * 0.48, sy - 2, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // 名条（尸体姓名）
+    ctx.save();
+    ctx.font = 'bold 10px "Microsoft YaHei", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(210,225,235,0.55)';
+    ctx.fillText((n.name || '幸存者') + ' 的尸体', sx, sy - 14);
+    ctx.restore();
+}
+
+// 2026-08-11 v2.97 濒死救援时间血条：角色头顶显示剩余可救治时间（现实时间 20 分钟），
+// 随时间流逝/被攻击（扣 10 秒/点伤害）减少；红色 → 橙色 → 黄色的渐变，见底时闪红。
+// 返回剩余秒数（0 = 已耗尽）。同时兼容主控 _downed（dwn._penaltySec）与成员 downed（n._penaltySec）。
+function drawDownedTimeBar(ctx, sx, sy, sv, sec) {
+    const total = DOWNED_LIMIT_SECONDS || 1200;
+    const ratio = Math.max(0, Math.min(1, sec / total));
+    const bw = 40, bh = 5;
+    const bx = sx - bw / 2, by = sy - TS / 2 - 30;
+    // 背景
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+    // 剩余部分（红色渐变：满=橙，见底=红）
+    const col = ratio > 0.5 ? '#FFB347' : (ratio > 0.25 ? '#FF8844' : '#FF4433');
+    ctx.fillStyle = col;
+    ctx.fillRect(bx, by, Math.max(1, Math.round(bw * ratio)), bh);
+    // 时间文字（mm:ss）
+    const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = 'bold 9px "Microsoft YaHei", monospace';
+    ctx.fillText(`救援 ${m}:${String(s).padStart(2, '0')}`, sx, by - 3);
+    ctx.textAlign = 'center';
+}
+
+// 计算倒地角色的剩余救援秒数（兼容主控 _downed 与成员 downed，跨文件用）
+function downedRemainSec(sv, dwn) {
+    if (!sv || !dwn) return 0;
+    const start = dwn.downedAtReal != null ? dwn.downedAtReal : (dwn._downedAtReal != null ? dwn._downedAtReal : (sv.now || 0));
+    const penalty = dwn._penaltySec || 0;
+    const spent = Math.max(0, (sv.now || 0) - start) + penalty;
+    return Math.max(0, DOWNED_LIMIT_SECONDS - spent);
+}
+
 // ---------- NPC（像素小人 + 名条 + 阵营色 + 血条） ----------
 function drawNpcs(ctx, sv, camX, camY, W, H) {
     if (!sv.npcs) return;
     const controllerId = sv.controllerId;
     for (const n of sv.npcs) {
+        // 2026-08-10 尸体渲染（成员死亡后形象留在原地，可搜索遗物）：_corpse 标记已死亡角色，
+        // 画躺倒尸体（暗色、面朝上倒地），不参与 AI/交互/名牌/血条，无碰撞。
+        if (n._corpse) {
+            const cxs = n.x - camX, cys = n.y - camY;
+            if (cxs < -80 || cxs > W + 80 || cys < -80 || cys > H + 80) continue;
+            drawCorpse(ctx, cxs, cys, n);
+            continue;
+        }
         if (!n.alive) continue;
         if (n.riding) continue;   // 乘车中：由车辆渲染
         if (n.inInterior) continue;   // 在室内：由室内渲染绘制（2026-08-09 室内外统一）
@@ -3891,6 +3988,9 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
         // 玩家与 NPC 距离（判定名字显示：可交互距离 ~2 格内才露出名牌）
         const nameDist = Math.hypot(n.x - sv.px, n.y - sv.py);
         const showName = nameDist < 2.2 * TS;
+        // 2026-08-11 性能：远处（>6 格）NPC 视为"远处"，待机用静态帧 + 不画挥击特效——
+        // 营地/人群聚集场景（屏幕内几十个 NPC）每帧大幅减少 drawImage 与特效路径开销。
+        const farNpc = nameDist > 6 * TS;
         // 逐帧动画：复用玩家待机/行走精灵。用 AI 侧的 sticky 移动标记 n._moving（由 wnpc.moveToward 置真、
         // updateNpc 每 tick 复位）判断是否在走——避免"远离玩家每 0.3s 才跳一格"导致的平移假象。
         const nMoving = !!n._moving;
@@ -3921,7 +4021,9 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
                 n._walkT = ((n._walkT || 0) + 1) % 4;
             }
         }
-        const nAnim = { dir: nDir, moving: nMoving, frame: nMoving ? (n._walkT || 0) : 0 };
+        // 2026-08-10 奔跑动画与玩家一致：n._running 由 moveToward 在 speedMul>=1.5 时置真，
+        // run→动作振幅 ×2（render 的 amp = a.run ? 2 : 1），离玩家远时队员奔跑赶路。
+        const nAnim = { dir: nDir, moving: nMoving, frame: nMoving ? (n._walkT || 0) : 0, run: !!n._running };
         // 名牌显示在渲染图片上方（用精灵实际内容 bbox 顶边，避免压到小人身上）
         const nameY = npcNameplateY(n);
         // 倒地主角（软核救治中，2026-08-10）：保持主控形象朝南站立待机的"定格帧"（不播动画），
@@ -3939,6 +4041,10 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
             ctx.font = 'bold 12px "Microsoft YaHei", monospace';
             ctx.fillText('↓', sx, sy - TS / 2 - 16);
             if (showName) drawNameplate(ctx, sx, sy - TS / 2 - 26, `${n.name}（濒临死亡）`, '#FF5544');
+            // 2026-08-11 v2.97 救援时间血条（角色上方：现实时间 20 分钟倒计时 + 被攻击扣减）
+            const sec = downedRemainSec(sv, n);
+            if (sec > 0) drawDownedTimeBar(ctx, sx, sy, sv, sec);
+            else drawDownedTimeBar(ctx, sx, sy, sv, 0);
             continue;
         }
 
@@ -3956,10 +4062,12 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
         }
         if (showName) drawNameplate(ctx, sx, nameY, n.name, nameColor);
         // 上衣取 NPC 的捏脸外观；无外观时用中性灰（不再按阵营发光/染色）
-        drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', 0, n.look, nAnim);
+        // 2026-08-11 性能：远处待机 NPC 用静态帧（跳过呼吸动画 bbox 拆分，省 1 次 drawImage）
+        const nAnimR = (farNpc && !nMoving) ? { dir: nDir, moving: false, frame: 1 } : nAnim;
+        drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', 0, n.look, nAnimR);
         // 近战挥击特效（与玩家同一套：按武器样式差异化绘制）
-        // 圆心取角色身体中部（sy 是脚底）
-        drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, n.swingT, n.swingDir, n.swingWeapon);
+        // 圆心取角色身体中部（sy 是脚底）；远处看不清不画，省特效路径
+        if (!farNpc) drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, n.swingT, n.swingDir, n.swingWeapon);
         if (showName && (n.hp < n.maxHp)) {
             const bw = TS + 4;
             ctx.fillStyle = 'rgba(30,10,10,0.85)';
@@ -3972,8 +4080,14 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
     if (sv.npcBullets) {
         ctx.font = 'bold 10px "Microsoft YaHei", monospace';
         for (const b of sv.npcBullets) {
+            // 2026-08-10 修复"弩箭横着飞"：NPC 子弹此前直接 fillText 不旋转，`→` 永远朝右。
+            // 与玩家子弹一致：沿弹道方向 rotate，弓弩的 `→`（弓→/弩→）直戳目标，而非横着飞。
+            ctx.save();
+            ctx.translate(b.x - camX, b.y - camY);
+            ctx.rotate(Math.atan2(b.vy || 0, b.vx || 1));
             ctx.fillStyle = b.color || '#FFF';
-            ctx.fillText(b.label || '·', b.x - camX, b.y - camY);
+            ctx.fillText(b.label || '·', 0, 0);
+            ctx.restore();
         }
     }
 }
@@ -4184,7 +4298,11 @@ function drawTeamPanel(ctx, sv, W, H) {
         // 第一行：名字 + 武器（名字右边）+ 状态徽标
         ctx.font = 'bold 11px "Microsoft YaHei", monospace';
         ctx.fillStyle = isCtrl ? '#39d98a' : '#E8E8E8';
-        const nameText = isCtrl ? n.name + ' ◈' : n.name;
+        // 2026-08-10 用户要求：幸存者操控的 NPC 名字右边加「（幸存者）」标记——
+        // 一眼识别当前操控的队友；"清除NPC"按 controllerId 保护此 NPC 不被误删。
+        // 注意：isPlayer 记录（幸存者自己）不加标记，否则会显示"幸存者（幸存者）"。
+        const isSurvivorNpc = isCtrl && !n.isPlayer;
+        const nameText = isSurvivorNpc ? n.name + '（幸存者）' : n.name;
         const nameW = Math.min(ctx.measureText(nameText).width, pw - 56);
         ctx.fillText(nameText, x + 10, y + 9, pw - 56);
         ctx.font = '9px "Microsoft YaHei", monospace';
@@ -4420,6 +4538,10 @@ function drawPlayer(ctx, sv, camX, camY) {
         ctx.fillStyle = '#FFCC66';
         ctx.fillText('换弹中…', px, py - TS / 2 - 12);
     }
+    // 2026-08-11 v2.97 主控本人倒地：头顶显示救援时间血条（玩家视角也能看到 20 分钟倒计时 + 被攻击扣减）
+    if (sv._downed && sv._downed.downedAtReal != null) {
+        drawDownedTimeBar(ctx, px, py, sv, downedRemainSec(sv, sv._downed));
+    }
 }
 
 // ---------- 联机远端队友（sv.p2 / sv.p2s 多队友）：像素小人 + 头顶名字 + HP 条，位置插值平滑 ----------
@@ -4608,6 +4730,23 @@ function drawP2Guide(ctx, sv, W, H, sharedDrawn) {
         drawOneP2Guide(ctx, sv, W, H, list[i], P2_GUIDE_COLORS[i % P2_GUIDE_COLORS.length], drawn);
     }
 }
+// ---------- 本地 NPC 队友 · 边缘指向指引（2026-08-11 用户需求） ----------
+// 队友（party 成员）离玩家太远（屏幕外）时，屏幕边缘显示指向箭头 + 名字 + 距离格数，
+// 与联机队友指引同款样式（复用 drawOneP2Guide）；室内外通用（室内 sv.camX=-ox 兼容）。
+// 排除：倒地的（躺地上等人救）、当前主控、原主角 isPlayer、乘车中（riding）。
+const MATE_GUIDE_COLORS = ['#FFD24A', '#7EE0A2', '#7EC8FF', '#FF9BD6', '#B8A0FF', '#FFB347'];
+function drawMateGuide(ctx, sv, W, H, sharedDrawn) {
+    if (!sv.npcs) return;
+    const mates = sv.npcs.filter(n => n.alive && n.party && !n.downed && !n.isPlayer
+        && n.id !== sv.controllerId && !n.riding);
+    if (!mates.length) return;
+    const drawn = sharedDrawn || [];
+    let i = 0;
+    for (const m of mates) {
+        drawOneP2Guide(ctx, sv, W, H, { tx: m.x, ty: m.y, name: m.name }, MATE_GUIDE_COLORS[i % MATE_GUIDE_COLORS.length], drawn);
+        i++;
+    }
+}
 function drawOneP2Guide(ctx, sv, W, H, p, color, drawn) {
     const dx = p.tx - sv.px, dy = p.ty - sv.py;
     const dist = Math.hypot(dx, dy);
@@ -4722,22 +4861,59 @@ function drawPlayerZombieGuide(ctx, sv, W, H, sharedDrawn) {
     }
 }
 
-// ---------- 遗物包裹 · 距离指引（正常模式队友救回后原地留下的行李，金色方箱样式） ----------
-// 玩家死亡（正常难度）→ 掉落全部物品成「遗物包裹」留在原地，有指引可前往拾取。
-// 样式与队友（圆点）和尸化自己（紫菱形）区分：金色方箱底 + 金色箭头 + 标签「遗物包裹 · N格」。
-const LEGACY_GUIDE_COLOR = '#FFD700';   // 金色
+// ---------- 死亡位置 · 距离指引（软核正常模式统一「死亡地点」，红色十字样式） ----------
+// 玩家死亡（正常难度）→ 遗物以主角尸体形式留在死亡点（靠近 F 搜索）；无物品则死亡位置被标记。
+// 屏幕边缘统一显示红色「死亡地点 · N格」指引，方便找回上次死亡位置（用户需求：只保留死亡地点指引）。
+// 消失条件：主角尸体已被搜索完（_corpseSearched）→ 指引消失。
+// 2026-08-10 修复"重生后没有死亡指引"：此前"走到死亡点 3 格内"也清除指引——但重生点/床常
+// 离死亡点很近（室内死亡重生在门口等），一重生指引就被清 → 用户反馈找不到死亡点。改为：
+// 玩家在死亡点附近时只显示地面红叉标记（同屏分支），不显示边缘箭头，但记录不删除；只有
+// 尸体被搜索完（遗物拿走）才真正清除指引。样式与队友（圆点）和尸化自己（紫菱形）区分。
+const DEATH_GUIDE_COLOR = '#FF5544';    // 红色：死亡地点
 function drawLegacyDropGuide(ctx, sv, W, H, sharedDrawn) {
-    if (!sv._legacyDrop || !sv.drops) return;
-    // 指引的是"死亡点"（包裹位置）——若包裹已被拾取（drops 中无 loot:legacy）则指引消失
-    const bagStillThere = sv.drops.some(d => d.id === 'loot:legacy' && d.contents && d.contents.length);
-    if (!bagStillThere) { sv._legacyDrop = null; return; }
+    if (!sv._legacyDrop) return;
     const tx = sv._legacyDrop.x, ty = sv._legacyDrop.y;
+    const margin = 52;
+    // 死亡点遗物尸体状态：未搜索（引导玩家回来搜）/ 已搜索（遗物已拿走）
+    const corpseUnsearched = (sv.npcs || []).some(n => n._corpse && !n._corpseSearched &&
+        Math.abs(n.x - tx) < TS && Math.abs(n.y - ty) < TS);
+    const corpseSearched = (sv.npcs || []).some(n => n._corpse && n._corpseSearched &&
+        Math.abs(n.x - tx) < TS && Math.abs(n.y - ty) < TS);
+    // 主角尸体已被搜索完（遗物拿走）→ 指引消失（人已回收遗物）
+    if (corpseSearched) { sv._legacyDrop = null; return; }
+    // 2026-08-10 修复"死亡地点标志永久残留"：死亡点没有任何尸体（无物品死亡标记 /
+    // 尸体已被超期清理）时，玩家已到达死亡点附近（同屏）即清除指引——否则尸体被清后
+    // 上方 corpseSearched 判定永远找不到 → 标志永不消失（用户反馈：到达死亡点标志没消失）。
+    if (!corpseUnsearched) {
+        const sx0 = tx - sv.camX, sy0 = ty - sv.camY;
+        if (sx0 >= margin && sx0 <= W - margin && sy0 >= margin && sy0 <= H - margin) { sv._legacyDrop = null; return; }
+    }
     const dx = tx - sv.px, dy = ty - sv.py;
     const dist = Math.hypot(dx, dy);
     const sx = tx - sv.camX, sy = ty - sv.camY;
-    const margin = 52;
-    // 同屏：能看到包裹（drawDrops 已画金色袋 + 名字牌），不显示指引
-    if (sx >= margin && sx <= W - margin && sy >= margin && sy <= H - margin) return;
+    // 同屏：能看到死亡点（尸体由 drawNpcs 画躺倒尸体 + 名牌；无物品死亡点画红叉标记），不显示边缘指引
+    if (sx >= margin && sx <= W - margin && sy >= margin && sy <= H - margin) {
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.strokeStyle = 'rgba(255,85,68,0.9)';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(-7, -7); ctx.lineTo(7, 7);
+        ctx.moveTo(7, -7); ctx.lineTo(-7, 7);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(60,10,8,0.85)';
+        ctx.fillRect(-10, -16, 20, 14);
+        ctx.strokeStyle = DEATH_GUIDE_COLOR;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(-10, -16, 20, 14);
+        ctx.fillStyle = '#FFE9E9';
+        ctx.font = 'bold 9px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('死', 0, -9);
+        ctx.restore();
+        return;
+    }
     const ang = Math.atan2(dy, dx);
     const px2 = clamp(W / 2 + Math.cos(ang) * (W / 2 - 40), margin, W - margin);
     let py2 = clamp(H / 2 + Math.sin(ang) * (H / 2 - 40), margin, H - margin);
@@ -4751,22 +4927,22 @@ function drawLegacyDropGuide(ctx, sv, W, H, sharedDrawn) {
     drawn.push({ x: px2, y: py2 });
     ctx.save();
     ctx.translate(px2, py2);
-    // 金色方箱底 + 描边（与队友圆底、尸化菱形三方区分）
-    ctx.fillStyle = 'rgba(40,28,4,0.9)';
-    ctx.strokeStyle = LEGACY_GUIDE_COLOR;
+    // 红色十字底（死亡地点样式，与队友圆点、尸化菱形区分）
+    ctx.fillStyle = 'rgba(60,10,8,0.9)';
+    ctx.strokeStyle = DEATH_GUIDE_COLOR;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.rect(-12, -12, 24, 24);
     ctx.fill(); ctx.stroke();
-    // 箱盖线（金色横条）
-    ctx.strokeStyle = LEGACY_GUIDE_COLOR;
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = DEATH_GUIDE_COLOR;
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.moveTo(-10, -4); ctx.lineTo(10, -4);
+    ctx.moveTo(-7, -7); ctx.lineTo(7, 7);
+    ctx.moveTo(7, -7); ctx.lineTo(-7, 7);
     ctx.stroke();
-    // 指向包裹的金色箭头
+    // 指向死亡点的红色箭头
     ctx.rotate(ang);
-    ctx.fillStyle = LEGACY_GUIDE_COLOR;
+    ctx.fillStyle = DEATH_GUIDE_COLOR;
     ctx.beginPath();
     ctx.moveTo(12, 0); ctx.lineTo(-5, -7); ctx.lineTo(-2, 0); ctx.lineTo(-5, 7);
     ctx.closePath(); ctx.fill();
@@ -4777,14 +4953,14 @@ function drawLegacyDropGuide(ctx, sv, W, H, sharedDrawn) {
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 11px "Microsoft YaHei", monospace';
     ctx.fillStyle = 'rgba(40,28,4,0.88)';
-    const label = '遗物包裹 · ' + Math.round(dist / TS) + ' 格';
+    const label = '死亡地点 · ' + Math.round(dist / TS) + ' 格';
     const lw = ctx.measureText(label).width + 10;
     roundRectPath(ctx, px2 - lw / 2, py2 + 24, lw, 18, 4);
     ctx.fill();
-    ctx.strokeStyle = LEGACY_GUIDE_COLOR;
+    ctx.strokeStyle = DEATH_GUIDE_COLOR;
     ctx.lineWidth = 1;
     ctx.stroke();
-    ctx.fillStyle = '#FFE98A';
+    ctx.fillStyle = '#FFE9E9';
     ctx.fillText(label, px2, py2 + 33);
     ctx.restore();
 }
@@ -5354,6 +5530,11 @@ function drawInterior(ctx, sv, W, H) {
     // 2026-08-09 室内外 NPC 统一：随玩家进室内的队员 / 室内招募的队员（sv.npcs 中 inInterior）也绘制
     if (sv.npcs) {
         for (const n of sv.npcs) {
+            // 2026-08-10 室内尸体渲染（成员死亡后形象留在房间，可搜索遗物）
+            if (n._corpse && n.inInterior) {
+                drawCorpse(ctx, ox + n.x, oy + n.y, n);
+                continue;
+            }
             if (!n.alive || !n.inInterior) continue;
             if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控画成玩家
             const sx = ox + n.x, sy = oy + n.y;
@@ -5370,6 +5551,9 @@ function drawInterior(ctx, sv, W, H) {
                 ctx.font = 'bold 12px "Microsoft YaHei", monospace';
                 ctx.fillText('↓', sx, sy - TS / 2 - 16);
                 drawNameplate(ctx, sx, sy - TS / 2 - 26, `${n.name || '幸存者'}（濒临死亡）`, '#FF5544');
+                // 2026-08-11 v2.97 救援时间血条（室内倒地角色同款）
+                const sec = downedRemainSec(sv, n);
+                drawDownedTimeBar(ctx, sx, sy, sv, sec);
                 continue;
             }
             // 复用室外同款逐帧动画：按本帧位移判断走动/朝向
@@ -5401,7 +5585,8 @@ function drawInterior(ctx, sv, W, H) {
                     n._walkT = ((n._walkT || 0) + 1) % 4;
                 }
             }
-            const nAnim2 = { dir: nDir, moving: nMv, frame: nMv ? (n._walkT || 0) : 0 };
+            // 2026-08-10 室内奔跑动画与室外一致：run→动作振幅 ×2
+            const nAnim2 = { dir: nDir, moving: nMv, frame: nMv ? (n._walkT || 0) : 0, run: !!n._running };
             drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', 0, n.look || sv.character || null, nAnim2);
             // 2026-08-10 与室外一致：近战挥击特效（按武器样式差异化绘制；圆心取身体中部）
             if (n.swingT > 0) drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, n.swingT, n.swingDir, n.swingWeapon);
@@ -5421,6 +5606,20 @@ function drawInterior(ctx, sv, W, H) {
     // 队友在室外时由 drawRemotePlayer 内部走"在楼外"标记）
     if (sv.p2) drawRemotePlayer(ctx, sv, -ox, -oy);
 
+    // 2026-08-10 修复"室内 NPC 子弹不显示"：与室外 drawNpcs 同款子弹绘制
+    // （NPC 坐标是室内坐标，室内渲染统一加 ox/oy 偏移到屏幕坐标）
+    if (sv.npcBullets) {
+        ctx.font = 'bold 10px "Microsoft YaHei", monospace';
+        for (const b of sv.npcBullets) {
+            // 2026-08-10 室内同样沿弹道方向旋转 NPC 子弹（弓弩箭直戳目标）
+            ctx.save();
+            ctx.translate(b.x + ox, b.y + oy);
+            ctx.rotate(Math.atan2(b.vy || 0, b.vx || 1));
+            ctx.fillStyle = b.color || '#FFF';
+            ctx.fillText(b.label || '·', 0, 0);
+            ctx.restore();
+        }
+    }
     // 特效
     drawEffects(ctx, sv, -ox, -oy);
     // 昼夜压暗（室内减半，保持可玩性）
@@ -5444,6 +5643,10 @@ function drawInterior(ctx, sv, W, H) {
     ctx.font = '14px "Microsoft YaHei", monospace';
     ctx.fillStyle = '#D29A5B';
     ctx.fillText(`室 内 · ${floorTag} · ${left > 0 ? `僵尸 ×${left}` : '已清剿'}`, 400, 17);
+    // 2026-08-11 室内队友边缘指引：同室外（sv.camX=-ox 兼容，队友屏幕外显示指向箭头+名字+距离）
+    const guideDrawn = [];
+    drawMateGuide(ctx, sv, W, H, guideDrawn);
+    drawLegacyDropGuide(ctx, sv, W, H, guideDrawn);
 
     // 底部提示（2026-08-10 循环滚动横幅：从右飘到左，往复循环）
     drawScrollBanner(ctx, sv, W, H, curFloor === 1

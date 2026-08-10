@@ -48,6 +48,8 @@ export function openSearch(sv, meta, options) {
     if (ui) closeSearch(sv, true);
     opts = options || {};
     curSv = sv;
+    // 2026-08-10 搜索界面打开时角色静止：清空移动键（防止打开前按住的方向键继续走位）
+    if (sv && sv.keys) for (const k of ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']) sv.keys[k] = false;
     const immediate = meta.immediate;
     // 容器容量：左侧格子数 = 容器可存物品数（默认=本次物品数）
     const cap = Math.max(meta.cap || 0, meta.items.length);
@@ -97,6 +99,7 @@ export function openSearch(sv, meta, options) {
         lootBag: meta.lootBag || null,
         onClose: meta.onClose || null,
         gx: meta.gx, gy: meta.gy,
+        corpseFull: meta.corpseFull || null,   // 2026-08-11 尸体搜索：完整物品对象映射（拿取保留耐久/附魔等属性）
     };
     if (allDone) AudioSystem.playCollect();
     buildUI(sv);
@@ -689,7 +692,18 @@ function takeFromSearch(sv, idx, slot) {
     if (!it) return;
     if (!it.done) return;   // 未完成揭示不能拿
     if (slot != null) { dropToBag(sv, { kind: 'search', idx, item: it }, slot); rerender(sv); return; }
-    const left = Panel.addItem(sv, it.id, it.n);
+    // 2026-08-11 尸体搜索（容器界面）：拿取优先用完整对象入包（addItemObj 保留武器耐久/附魔等属性），
+    // 防止只按 id 重入包导致物品功能丢失（用户要求"物品功能不会丧失"）。
+    let left = it.n;
+    const full = (s.corpseFull || []).find(o => o && o.id === it.id && o._rem !== 0);
+    if (full) {
+        const takeN = Math.min(it.n, full._rem || it.n);
+        const obj = { ...full, n: takeN };
+        left = Panel.addItemObj(sv.inv, obj);
+        full._rem = (full._rem || it.n) - (takeN - left);
+    } else {
+        left = Panel.addItem(sv, it.id, it.n);
+    }
     if (left < it.n) {
         it.n = left;
         if (left <= 0) removeSearchItem(s, idx);

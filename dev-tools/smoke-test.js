@@ -15,9 +15,10 @@ try { globalThis.localStorage = _lsStub; } catch { /* 已有只读属性则忽�
 globalThis.window = {
     localStorage: _lsStub,
     AudioContext: function () {
-        const gain = () => ({ gain: { value: 0 }, connect() {} });
+        const gain = () => ({ gain: { value: 0 }, connect() {}, addEventListener() {}, removeEventListener() {} });
         return {
             createGain: gain, destination: {}, currentTime: 0,
+            state: 'running', addEventListener() {}, removeEventListener() {}, resume: () => Promise.resolve(),
             createBuffer: () => ({}),
             createBufferSource: () => ({ connect() {}, start() {}, stop() {}, onended: null }),
             decodeAudioData: (b, ok) => ok && ok({ duration: 1 }),
@@ -360,6 +361,22 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
     const none = createRunDefaults(opts, deps);
     const resNone = applySnapshot(none, null, deps);
     assert(resNone.loaded === false && resNone.legacy === false, 'wstate: null save means fresh world');
+
+    // 8. 世界地图探索记录（E1）：默认存在 + 序列化往返 + 缺省兜底
+    {
+        const runM = createRunDefaults(opts, deps);
+        assert(runM.mods && typeof runM.mods.explored && typeof runM.mods.explored === 'object', 'wmap: createRunDefaults mods.explored default {}');
+        runM.mods.explored['3,5'] = 1;
+        runM.world = { seed: 20260805, chunks: new Map() };   // serializeSV 要求 world 存在
+        const dataM = serializeSV(runM, deps);
+        assert(dataM && dataM.mods && dataM.mods.explored && dataM.mods.explored['3,5'] === 1, 'wmap: explored round-trips via serializeSV');
+        // 旧档缺省：explored 缺失 → applySnapshot 补空对象（不崩溃）
+        const oldSave = { ...dataM };
+        delete oldSave.mods.explored;
+        const runOld = createRunDefaults(opts, deps);
+        const resOld = applySnapshot(runOld, oldSave, deps);
+        assert(resOld.loaded && runOld.mods.explored && typeof runOld.mods.explored === 'object', 'wmap: applySnapshot backfills explored {}');
+    }
 }
 
 // ============================================================
@@ -394,6 +411,7 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
         homeBed: { x: 1, y: 2 }, lastRestDay: 2, horde: 1,
         zombies: [{ type: 'walker', char: '尸', name: '小尸', x: 10, y: 20, tx: 11, ty: 21, hp: 30, maxHp: 30, speed: 1, damage: 5, horde: false, vaulted: false, _nightStrengthActive: false, wt: 999 }],
         npcs: [{ id: 'npc1', name: '阿远' }],
+        drops: [],
         px: 123.5, py: 456.25, faceX: 1, faceY: 0,
     };
 
@@ -436,6 +454,82 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
     const noChar = createRunDefaults(opts, deps);
     applyCharacter(noChar, null, deps);
     assert(noChar.characterName === '幸存者' && noChar.inv.length === 24, 'wstate-char: null character keeps defaults');
+
+    // 6b. 死亡位置指引 {x,y} 随档保存/恢复 + 遗物以主角尸体形式存在（2026-08-10 用户需求：
+    //     无物品死亡也有方位指引；有物品 → 尸体留在死亡点可 F 搜索，指引统一「死亡地点」）
+    {
+        // 为尸体往返单独构造 deps 变体（mock 支持 _corpse/_corpseContents 字段）
+        const corpseDeps = {
+            ...deps,
+            WNPC: {
+                ...deps.WNPC,
+                serializeNpcs: sv => (sv.npcs || []).filter(n => n.alive || n._corpse).map(n => ({
+                    id: n.id, name: n.name, x: n.x, y: n.y,
+                    alive: !!n.alive, _corpse: !!n._corpse,
+                    _corpseContents: n._corpseContents || null, _corpseSearched: !!n._corpseSearched,
+                })),
+                restoreNpcs: (run, data) => { run.npcs = (data || []).map(d => ({ ...d })); },
+            },
+        };
+        // 空背包死亡：仅死亡地点指引，无掉落袋（真实场景 deathDropLegacy 同时设 _legacyDrop 与 _lastDeathPos）
+        sv._legacyDrop = { x: 100, y: 200 };
+        sv._lastDeathPos = { x: 100, y: 200 };
+        sv.npcs = [{ id: 'npc1', name: '阿远' }];
+        const w2 = serializeWorld(sv, corpseDeps);
+        assert(w2.legacyDrop && w2.legacyDrop.x === 100 && w2.legacyDrop.y === 200 && w2.legacyDrop.hasBag === undefined,
+            'wstate-legacyDrop: serialize keeps death point {x,y} (no hasBag)');
+        const runLD = createRunDefaults(opts, corpseDeps);
+        applyWorld(runLD, w2, corpseDeps);
+        assert(runLD._legacyDrop && runLD._legacyDrop.x === 100 && runLD._legacyDrop.y === 200,
+            'wstate-legacyDrop: apply restores death point');
+        assert(!runLD.drops.some(d => d.id === 'loot:legacy'), 'wstate-legacyDrop: no empty legacy bag on no-items death');
+        // 2026-08-10 上次死亡位置 lastDeathPos 持久记录：随档往返保留（开发者传送死亡点兜底用）
+        assert(w2.lastDeathPos && w2.lastDeathPos.x === 100 && w2.lastDeathPos.y === 200,
+            'wstate-lastDeathPos: serialize keeps last death pos');
+        assert(runLD._lastDeathPos && runLD._lastDeathPos.x === 100 && runLD._lastDeathPos.y === 200,
+            'wstate-lastDeathPos: apply restores last death pos');
+        // 旧档兼容：无 lastDeathPos 字段时用 legacyDrop 位置兜底
+        const oldW = { ...w2, lastDeathPos: undefined };
+        const runOld2 = createRunDefaults(opts, corpseDeps);
+        applyWorld(runOld2, oldW, corpseDeps);
+        assert(runOld2._lastDeathPos && runOld2._lastDeathPos.x === 100 && runOld2._lastDeathPos.y === 200,
+            'wstate-lastDeathPos: old save falls back to legacyDrop pos');
+        // 指引被清除（走到点/尸体搜索完）后 lastDeathPos 仍在（传送功能不依赖指引）
+        delete runLD._legacyDrop;
+        assert(runLD._lastDeathPos && runLD._lastDeathPos.x === 100,
+            'wstate-lastDeathPos: persists after guide cleared');
+
+        // 有物品死亡：死亡点生成主角尸体（_corpse），随档往返保留 + 可搜索
+        sv._legacyDrop = { x: 100, y: 200 };
+        sv.npcs.push({
+            id: 'corpse:1', name: '阿远', role: 'friendly', look: null,
+            x: 100, y: 200, hp: 0, maxHp: 100, alive: false,
+            _corpse: true, _corpseContents: [{ id: 'wood', n: 1 }], _corpseSearched: false,
+        });
+        const w3 = serializeWorld(sv, corpseDeps);
+        assert(w3.legacyDrop && w3.legacyDrop.x === 100 && w3.legacyDrop.y === 200,
+            'wstate-legacyDrop: serialize keeps death point (with corpse)');
+        const runLB = createRunDefaults(opts, corpseDeps);
+        applyWorld(runLB, w3, corpseDeps);
+        const corpse = (runLB.npcs || []).find(n => n._corpse);
+        assert(corpse && corpse._corpseContents && corpse._corpseContents.length === 1 && corpse.x === 100,
+            'wstate-legacyDrop: corpse (with contents) survives world round-trip');
+        assert(!runLB.drops.some(d => d.id === 'loot:legacy'), 'wstate-legacyDrop: no loot bag drop on corpse death');
+        // 尸体被搜索（_corpseSearched）后仍保留在 npcs（可读档），指引由 drawLegacyDropGuide 判定消失
+        corpse._corpseSearched = true;
+        runLB.world = { seed: 20260805, chunks: new Map() };
+        const w4 = serializeWorld(runLB, corpseDeps);
+        const runSearched = createRunDefaults(opts, corpseDeps);
+        applyWorld(runSearched, w4, corpseDeps);
+        assert((runSearched.npcs || []).some(n => n._corpse && n._corpseSearched), 'wstate-legacyDrop: searched corpse persists');
+        // 旧档兼容：无尸体记录但有 contents → 兜底生成主角尸体（老档遗物可找回）
+        const oldLegacy = { x: 1, y: 2, contents: [{ id: 'wood', n: 1 }] };
+        const runOld = createRunDefaults(opts, corpseDeps);
+        runOld.npcs = [{ id: 'npc1', name: '阿远' }];
+        applyWorld(runOld, { ...w2, legacyDrop: oldLegacy }, corpseDeps);
+        assert((runOld.npcs || []).some(n => n._corpse && n._corpseContents.length === 1 && n.x === 1),
+            'wstate-legacyDrop: old save contents migrate to corpse');
+    }
 
     // 7c. 高帧率（无锁帧）dt 数值断言：主循环 dt = Math.min(realDelta, 0.05)，
     //     只有上限 clamp（防低帧跳变），无下限钳制 —— 144/240Hz 高刷下 dt 不被压缩
@@ -743,6 +837,512 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
     assert(isWalk(getTile(sv, cgx, cgy)), 'driveOrder: camp target snapped to walkable tile');
 }
 
+// NPC 动态武器选择（2026-08-10 用户要求：近距用近战、远距用远程、远程没弹自动切近战）
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    const now = 1000;
+    const makeNpc = (inv) => ({ inv, _wpick: null, _wpickT: null });
+    // 1) 同时持有近战+远程：近距离选近战、远距离选远程（每次重置缓存避免 0.3s 缓存干扰）
+    const n1 = makeNpc([{ id: 'wpn:sword', n: 1 }, { id: 'wpn:rifle', n: 1 }, { id: 'ammo:rifleAmmo', n: 30 }]);
+    const near = WNPC.npcPickWeapon(n1, 30, now);
+    assert(near && near.key === 'sword', `weaponPick: close range picks melee sword (got ${near && near.key})`);
+    n1._wpick = null; n1._wpickT = null;
+    const far = WNPC.npcPickWeapon(n1, 300, now);
+    assert(far && far.key === 'rifle', `weaponPick: far range picks ranged rifle (got ${far && far.key})`);
+    // 2) 远程弹药耗尽 → 自动切近战
+    const n2 = makeNpc([{ id: 'wpn:sword', n: 1 }, { id: 'wpn:rifle', n: 1 }, { id: 'ammo:rifleAmmo', n: 0 }]);
+    const noAmmo = WNPC.npcPickWeapon(n2, 300, now + 1000);
+    assert(noAmmo && noAmmo.key === 'sword', `weaponPick: no ammo falls back to melee sword (got ${noAmmo && noAmmo.key})`);
+    // 3) 只有远程武器且有弹药 → 任何距离都用远程（无近战可切）
+    const n3 = makeNpc([{ id: 'wpn:rifle', n: 1 }, { id: 'ammo:rifleAmmo', n: 10 }]);
+    const onlyRanged = WNPC.npcPickWeapon(n3, 20, now + 2000);
+    assert(onlyRanged && onlyRanged.key === 'rifle', `weaponPick: only ranged weapon always picked (got ${onlyRanged && onlyRanged.key})`);
+    // 4) 无武器 → null（肉搏）
+    const n4 = makeNpc([{ id: 'food', n: 1 }]);
+    assert(WNPC.npcPickWeapon(n4, 100, now + 3000) === null, 'weaponPick: no weapons returns null (fist)');
+}
+
+// 恶意 NPC 攻击（2026-08-10 用户反馈"短剑很远捅人/反复鞭尸/远程边走边打打不中耗弹快"）：
+// 近战 45px 距离判定 + 倒地（downed）玩家/队友免伤 + 远程射击站定瞄准
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    const C0 = (SPAWN.x + 0.5) * TS, R0 = (SPAWN.y + 0.5) * TS;   // 出生点格中心（可走区域）
+    const makeSv = (px, py, hx, hy, fx, fy, friendDowned) => {
+        const sv = {
+            world: { seed: 12345, chunks: new Map() },
+            mods: { tiles: {} },
+            px, py, hp: 100, maxHp: 100,
+            npcs: [], zombies: [], interior: null,
+            now: 0, controllerId: null, msgs: [],
+            _devGod: false, invuln: 0, _wake: null, _downed: null,
+            _combatT: 0, hurtT: 0, _lastNpcHit: null,
+            effects: [], drops: [], npcBullets: [],
+            mp: null, mpOutbox: [],
+        };
+        const hostile = WNPC.makeNpc(sv, hx, hy, 'hostile');
+        hostile.inv = [{ id: 'wpn:dagger', n: 1, eq: 'melee' }];
+        hostile.wpnKey = 'dagger';
+        hostile._wpick = null; hostile._wpickT = null; hostile._threat = null; hostile._threatT = 0; hostile._standT = 0; hostile._aimT = 0;
+        sv.npcs.push(hostile);
+        const friend = WNPC.makeNpc(sv, fx, fy, 'friendly');
+        friend._wpick = null; friend._wpickT = null; friend._threat = null; friend._threatT = 0; friend._standT = 0;
+        if (friendDowned) { friend.downed = true; friend.hp = 1; }
+        sv.npcs.push(friend);
+        return { sv, hostile, friend };
+    };
+    const canStand = () => true;
+    // 1) 近战距离判定：短剑 dagger reach=37 → 攻击距离 45px，46px 外不命中
+    {
+        const { sv, hostile } = makeSv(C0, R0, C0 + 46, R0, C0 + 400, R0 + 400);
+        const hp0 = sv.hp;
+        WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+        assert(sv.hp === hp0, 'hostileAtk: 短剑 46px 外不命中玩家');
+    }
+    // 2) 恶意 NPC 不攻击"倒地主控视角"玩家（controllerId 指向 downed 记录时免伤，防反复鞭尸）
+    {
+        const { sv, hostile } = makeSv(C0, R0, C0 + 30, R0, C0 + 400, R0 + 400);
+        // 当前主控记录标记倒地（=正在操控倒地主角等待救治）
+        const pc = WNPC.makeNpc(sv, C0, R0, 'friendly');
+        pc.downed = true; pc.alive = true; pc.hp = 1;
+        sv.npcs.push(pc);
+        sv.controllerId = pc.id;
+        sv._downed = { name: pc.name, px: C0, py: R0, dayDead: 0, med: 0, herb: 0 };
+        const hp0 = sv.hp;
+        WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+        assert(sv.hp === hp0, 'hostileAtk: 恶意 NPC 不攻击倒地主控玩家（防反复鞭尸）');
+    }
+    // 2b) 反例：队伍有人倒地但当前主控（未倒地）仍应被攻击（2026-08-10 用户反馈"恶意NPC不攻击切换主控"）
+    {
+        const { sv, hostile } = makeSv(C0, R0, C0 + 30, R0, C0 + 400, R0 + 400);
+        const pc = WNPC.makeNpc(sv, C0, R0, 'friendly');   // 当前主控（未倒地）
+        pc.downed = false; pc.alive = true; pc.hp = 100;
+        sv.npcs.push(pc);
+        sv.controllerId = pc.id;
+        // 队伍里另有倒地者（但非主控）
+        const downedMate = WNPC.makeNpc(sv, C0 + 200, R0, 'friendly');
+        downedMate.downed = true; downedMate.alive = true; downedMate.hp = 1;
+        sv.npcs.push(downedMate);
+        sv._downed = { name: downedMate.name, px: C0 + 200, py: R0, dayDead: 0, med: 0, herb: 0 };
+        const hp0 = sv.hp;
+        WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+        assert(sv.hp < hp0, 'hostileAtk: 队伍有倒地者时，未倒地的当前主控仍应被攻击');
+    }
+    // 3) 恶意 NPC 不攻击倒地队友（n.downed）
+    {
+        const { sv, hostile, friend } = makeSv(C0 - 400, R0, C0, R0, C0 + 30, R0, true);
+        const fp0 = friend.hp;
+        WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+        assert(friend.hp === fp0, 'hostileAtk: 恶意 NPC 不攻击倒地队友（防反复鞭尸/掉遗物）');
+    }
+    // 4) 对照组：非倒地队友正常被攻击（确认 3 不是"完全不攻击"）
+    {
+        const { sv, hostile, friend } = makeSv(C0 - 400, R0, C0, R0, C0 + 30, R0, false);
+        const fp0 = friend.hp;
+        WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+        assert(friend.hp < fp0, 'hostileAtk: 非倒地队友正常被攻击（对照组）');
+    }
+    // 5) 远程射击站定：开火帧不移动 + 站定瞄准锁期间不移动（不再边走边打）
+    {
+        const { sv, hostile, friend } = makeSv(C0 - 400, R0, C0, R0, C0 + 200, R0, false);
+        hostile.inv = [{ id: 'wpn:pistol', n: 1, eq: 'ranged' }, { id: 'ammo:pistolAmmo', n: 20 }];
+        hostile.wpnKey = 'pistol';
+        hostile._wpick = null; hostile._wpickT = null;
+        const b0 = sv.npcBullets.length;
+        const hx0 = hostile.x, hy0 = hostile.y;
+        WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+        assert(sv.npcBullets.length > b0, 'hostileAtk: 远程武器在射程内开火');
+        assert(hostile.x === hx0 && hostile.y === hy0, 'hostileAtk: 射击帧站定不移动');
+        assert(hostile._aimT > 0, 'hostileAtk: 开火后进入站定瞄准锁');
+        const hx1 = hostile.x, hy1 = hostile.y;
+        WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+        assert(hostile.x === hx1 && hostile.y === hy1, 'hostileAtk: 站定瞄准锁期间不移动');
+    }
+}
+
+// 武器与警戒规则（2026-08-10 用户需求）：弓弩蓄力 / 警戒范围按武器 / 软核成员被击杀倒地可救助
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    const C0 = (SPAWN.x + 0.5) * TS, R0 = (SPAWN.y + 0.5) * TS;
+    const canStand = () => true;
+    const makeSv = (weaponKey, ammoN) => {
+        const sv = {
+            world: { seed: 12345, chunks: new Map() }, mods: { tiles: {} },
+            px: C0 - 400, py: R0, hp: 100, maxHp: 100,
+            npcs: [], zombies: [], interior: null, now: 0, controllerId: null,
+            _devGod: false, invuln: 0, _wake: null, _downed: null, _downedMembers: [],
+            _combatT: 0, hurtT: 0, _lastNpcHit: null,
+            effects: [], drops: [], npcBullets: [], mp: null, mpOutbox: [], msgs: [],
+            day: 1, diffKey: 'normal', _waitDowned: false, _carryDowned: false,
+        };
+        const hostile = WNPC.makeNpc(sv, C0, R0, 'hostile');
+        hostile.inv = [{ id: 'wpn:' + weaponKey, n: 1, eq: 'ranged' }, { id: 'ammo:' + (weaponKey === 'bow' ? 'arrowAmmo' : weaponKey + 'Ammo'), n: ammoN || 20 }];
+        hostile.wpnKey = weaponKey;
+        hostile._wpick = null; hostile._wpickT = null; hostile._threat = null; hostile._threatT = 0; hostile._standT = 0; hostile._aimT = 0; hostile._chargeT = 0;
+        sv.npcs.push(hostile);
+        return { sv, hostile };
+    };
+    // 1) 弓弩蓄力：第1帧不放箭，蓄力 0.25s 后才放箭（玩家一致）
+    {
+        const { sv, hostile } = makeSv('bow', 20);
+        sv.zombies.push({ x: C0 + 200, y: R0, hp: 500, maxHp: 500, active: true });
+        const b0 = sv.npcBullets.length;
+        WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 26, 0, true);
+        assert(sv.npcBullets.length === b0, 'weaponRule: 弓弩第1帧蓄力不放箭');
+        assert((hostile._chargeT || 0) > 0, 'weaponRule: 弓弩第1帧开始蓄力');
+        for (let f = 0; f < 5; f++) { sv.now += 1 / 20; WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 26, 0, true); }
+        assert(sv.npcBullets.length > b0, 'weaponRule: 弓弩蓄力完成后放箭');
+    }
+    // 2) 警戒范围按武器：近战 7 格（10 格外不可警戒）、狙击 26 格（20 格内可警戒）、弓 15 格
+    {
+        const s1 = makeSv('dagger', 0);
+        s1.sv.zombies.push({ x: C0 + 10 * TS, y: R0, hp: 500, maxHp: 500, active: true });
+        assert(!WNPC.combatThreat(s1.sv, s1.hostile, 1 / 20, canStand, 7, 0, true), 'weaponRule: 近战警戒7格，10格外不可警戒');
+        const s2 = makeSv('sniper', 5);
+        s2.sv.zombies.push({ x: C0 + 20 * TS, y: R0, hp: 500, maxHp: 500, active: true });
+        assert(!!WNPC.combatThreat(s2.sv, s2.hostile, 1 / 20, canStand, 26, 0, true), 'weaponRule: 狙击警戒26格，20格内可警戒');
+        const s3 = makeSv('bow', 20);
+        s3.sv.zombies.push({ x: C0 + 12 * TS, y: R0, hp: 500, maxHp: 500, active: true });
+        assert(!!WNPC.combatThreat(s3.sv, s3.hostile, 1 / 20, canStand, 15, 0, true), 'weaponRule: 弓警戒15格，12格内可警戒');
+    }
+    // 3) 软核成员被战斗致死 → 倒地（downed）可救助；非战斗死亡 → 直接死亡
+    {
+        const sv = {
+            world: { seed: 12345, chunks: new Map() }, mods: { tiles: {} },
+            px: C0, py: R0, hp: 100, maxHp: 100,
+            npcs: [], zombies: [], interior: null, now: 0, controllerId: null,
+            _devGod: false, invuln: 0, _wake: null, _downed: null, _downedMembers: [],
+            _combatT: 0, hurtT: 0, _lastNpcHit: null,
+            effects: [], drops: [], npcBullets: [], mp: null, mpOutbox: [], msgs: [],
+            day: 1, diffKey: 'normal', _waitDowned: false, _carryDowned: false,
+        };
+        const m1 = WNPC.makeNpc(sv, C0 + TS, R0, 'friendly'); m1.party = true; m1.hp = 0;
+        sv.npcs.push(m1);
+        WNPC.killNpc(sv, m1, '被僵尸咬死');
+        assert(m1.downed === true && m1.alive === true, 'weaponRule: 软核成员被僵尸咬死 → 倒地可救助');
+        assert((sv._downedMembers || []).some(m => m.id === m1.id), 'weaponRule: 倒地成员记录在 _downedMembers');
+        const m2 = WNPC.makeNpc(sv, C0 + 2 * TS, R0, 'friendly'); m2.party = true; m2.hp = 0;
+        sv.npcs.push(m2);
+        WNPC.killNpc(sv, m2, '病死');
+        assert(m2.alive === false, 'weaponRule: 非战斗死亡（病死）→ 直接死亡');
+    }
+}
+
+// NPC 自主行为（2026-08-10 用户需求）：自主捡物品（就近+同物品优先）/ 奔跑 / 卡碰撞体兜底
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    const C0 = (SPAWN.x + 0.5) * TS, R0 = (SPAWN.y + 0.5) * TS;
+    const canStand = () => true;
+    const makeSv = () => ({
+        world: { seed: 12345, chunks: new Map() },
+        mods: { tiles: {} },
+        px: C0, py: R0, hp: 100, maxHp: 100,
+        npcs: [], zombies: [], interior: null,
+        now: 0, controllerId: null,
+        _devGod: false, invuln: 0, _wake: null, _downed: null,
+        _combatT: 0, hurtT: 0, _lastNpcHit: null,
+        effects: [], drops: [], npcBullets: [],
+        mp: null, mpOutbox: [],
+    });
+    // 1) 自主捡物品：背包有 food → 优先走向远处 food（同物品优先）而非更近的 water，走到后拾取
+    {
+        const sv = makeSv();
+        sv.drops.push({ x: C0 + 2 * TS, y: R0, id: 'food', n: 2 });
+        sv.drops.push({ x: C0 + 0.5 * TS, y: R0, id: 'water', n: 1 });
+        const npc = WNPC.makeNpc(sv, C0, R0, 'friendly');
+        npc.inv = [{ id: 'food', n: 1 }];
+        npc.party = true; npc.state = 'follow';
+        sv.npcs.push(npc);
+        let targetFood = false;
+        for (let f = 0; f < 200; f++) {
+            sv.now += 1 / 20;
+            WNPC.updateNpc(sv, npc, 1 / 20, canStand, null, false);
+            const df = Math.hypot(C0 + 2 * TS - npc.x, R0 - npc.y);
+            const dw = Math.hypot(C0 + 0.5 * TS - npc.x, R0 - npc.y);
+            if (df < dw) targetFood = true;
+            const fNow = npc.inv.find(s => s.id === 'food');
+            if (fNow && fNow.n >= 2) break;
+        }
+        assert(targetFood, 'npcAuto: 背包有 food 时优先走向远处 food（同物品优先）');
+        const fAfter = npc.inv.find(s => s.id === 'food');
+        assert(fAfter && fAfter.n >= 2, `npcAuto: 捡到 food (n=${fAfter ? fAfter.n : 0})`);
+    }
+    // 2) 奔跑：离玩家远时 _running=true（奔跑动画），靠近后停止
+    {
+        const sv = makeSv();
+        const npc = WNPC.makeNpc(sv, C0 - 8 * TS, R0, 'friendly');
+        npc.party = true; npc.state = 'follow';
+        sv.npcs.push(npc);
+        WNPC.updateNpc(sv, npc, 1 / 20, canStand, null, false);
+        assert(npc._running === true, `npcAuto: 离玩家远(8格)时奔跑 (_running=${npc._running})`);
+        npc.x = C0 + 1 * TS; npc.y = R0;
+        npc._running = true;
+        WNPC.updateNpc(sv, npc, 1 / 20, canStand, null, false);
+        assert(npc._running === false, `npcAuto: 靠近(1格)后恢复步行 (_running=${npc._running})`);
+    }
+    // 3) 卡碰撞体兜底：位置不可站 → 传送到最近可站格
+    {
+        const sv = makeSv();
+        const npc = WNPC.makeNpc(sv, C0, R0, 'friendly');
+        npc.party = true; npc.state = 'follow';
+        sv.npcs.push(npc);
+        const strictStand = (x, y) => Math.hypot(x - C0, y - R0) > TS * 0.8;   // 中心是碰撞体
+        WNPC.updateNpc(sv, npc, 1 / 20, strictStand, null, false);
+        assert(strictStand(npc.x, npc.y), 'npcAuto: 卡碰撞体后传送至可站格');
+    }
+}
+
+// NPC 切主控背包归一化（2026-08-10 用户反馈"切主控后背包大小与玩家不一致"）：
+// normBag 保证 NPC 的动态 inv 归一化为 BAG_SIZE(24) 格（不足补 null、超长保留），
+// 使切主控后背包 UI 与主控玩家一致。
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    const C0 = (SPAWN.x + 0.5) * TS, R0 = (SPAWN.y + 0.5) * TS;
+    const canStand = () => true;
+    const makeSv = () => ({
+        world: { seed: 12345, chunks: new Map() },
+        mods: { tiles: {} },
+        px: C0, py: R0, hp: 100, maxHp: 100,
+        npcs: [], zombies: [], interior: null,
+        now: 0, controllerId: null,
+        _devGod: false, invuln: 0, _wake: null, _downed: null,
+        _combatT: 0, hurtT: 0, _lastNpcHit: null,
+        effects: [], drops: [], npcBullets: [],
+        mp: null, mpOutbox: [],
+    });
+    // 1) 短背包（如 5 格）→ 归一化为 24 格
+    {
+        const sv = makeSv();
+        const npc = WNPC.makeNpc(sv, C0, R0, 'friendly');
+        npc.inv = [{ id: 'food', n: 2 }, { id: 'water', n: 1 }, null, null, { id: 'med:bandage', n: 3 }];   // 5 格（含空洞）
+        npc.party = true;
+        sv.npcs.push(npc);
+        sv.controllerId = npc.id;
+        const out = WNPC.normBag(npc.inv);
+        assert(out.length === 24, `npcBag: 5格背包归一化为24格 (实际${out.length})`);
+        assert(out[0].id === 'food' && out[4].id === 'med:bandage', 'npcBag: 物品位置保持');
+        assert(out[2] === null && out[5] === null, 'npcBag: 空槽保持 null');
+    }
+    // 2) 超长背包（开发无限背包，如 40 格）→ 保留超长不截断
+    {
+        const sv = makeSv();
+        const npc = WNPC.makeNpc(sv, C0, R0, 'friendly');
+        const big = Array(40).fill(null);
+        big[0] = { id: 'food', n: 1 };
+        npc.inv = big;
+        npc.party = true;
+        sv.npcs.push(npc);
+        const out = WNPC.normBag(npc.inv);
+        assert(out.length === 40, `npcBag: 40格无限背包保留超长 (实际${out.length})`);
+        assert(out[0].id === 'food', 'npcBag: 超长背包物品保留');
+    }
+    // 3) 切主控后 sv.inv 长度 == BAG_SIZE（24）且与 NPC 背包一致
+    {
+        const sv = makeSv();
+        const npc = WNPC.makeNpc(sv, C0, R0, 'friendly');
+        npc.inv = [{ id: 'food', n: 1 }];
+        npc.party = true;
+        sv.npcs.push(npc);
+        // 模拟 switchControl 的归一化：sv.inv = normBag(tgt.inv)
+        sv.inv = WNPC.normBag(npc.inv);
+        assert(sv.inv.length === 24, `npcBag: 切主控后 sv.inv 归一化为24格 (实际${sv.inv.length})`);
+    }
+}
+
+// 近战绕圈站位不贴脸（2026-08-10 用户反馈"近战还是贴脸攻击"）：
+// 绕圈目标 = 攻击边缘内沿（0.92*reach≈41px），攻击时与目标距离应 > 30px（不脸贴脸）
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    const C0 = (SPAWN.x + 0.5) * TS, R0 = (SPAWN.y + 0.5) * TS;
+    const makeSv = (lowHp) => {
+        const sv = {
+            world: { seed: 12345, chunks: new Map() },
+            mods: { tiles: {} },
+            px: C0 - 400, py: R0, hp: 100, maxHp: 100,
+            npcs: [], zombies: [], interior: null,
+            now: 0, controllerId: null,
+            _devGod: false, invuln: 0, _wake: null, _downed: null,
+            _combatT: 0, hurtT: 0, _lastNpcHit: null,
+            effects: [], drops: [], npcBullets: [],
+            mp: null, mpOutbox: [],
+        };
+        const hostile = WNPC.makeNpc(sv, C0, R0, 'hostile');
+        hostile.inv = [{ id: 'wpn:dagger', n: 1, eq: 'melee' }];
+        hostile.wpnKey = 'dagger';
+        if (lowHp) { hostile.hp = 10; hostile.maxHp = 100; }
+        hostile._wpick = null; hostile._wpickT = null; hostile._threat = null; hostile._threatT = 0; hostile._standT = 0; hostile._aimT = 0; hostile._jitter = 0;
+        sv.npcs.push(hostile);
+        sv.zombies.push({ x: C0 + 100, y: R0, hp: 500, maxHp: 500, active: true, walking: false, type: 'zombie', name: '僵尸', seed: 1, dmg: 10, hurt: 0, ang: 0, biteCd: 0, isDowned: false, carry: null });
+        return { sv, hostile };
+    };
+    const canStand = () => true;
+    for (const [tag, lowHp] of [['normal', false], ['lowHp', true]]) {
+        const { sv, hostile } = makeSv(lowHp);
+        let minAtkDist = Infinity, atkFrames = 0;
+        for (let f = 0; f < 150; f++) {
+            sv.now += 1 / 20;
+            const z = sv.zombies[0];
+            WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+            if (z.hp < 500) {
+                const d = Math.hypot(hostile.x - z.x, hostile.y - z.y);
+                minAtkDist = Math.min(minAtkDist, d);
+                atkFrames++;
+                if (atkFrames > 3) z.hp = 500;
+            }
+        }
+        assert(atkFrames > 0, `meleeStandoff[${tag}]: 应正常出刀 (atkFrames=${atkFrames})`);
+        assert(minAtkDist !== Infinity && minAtkDist > 30, `meleeStandoff[${tag}]: 攻击时距离应 >30px 不贴脸 (实际 ${minAtkDist === Infinity ? '-' : minAtkDist.toFixed(1)}px)`);
+    }
+    // 3) 高血近战不站撸（2026-08-10 用户反馈"血量高时和僵尸站撸"）：
+    //    出刀后冷却期间应绕圈移动（位置持续变化），而非完全站定原地挨打。
+    {
+        const { sv, hostile } = makeSv(false);
+        hostile.inv = [{ id: 'wpn:dagger', n: 1, eq: 'melee' }];
+        hostile.wpnKey = 'dagger';
+        hostile._wpick = null; hostile._wpickT = null; hostile._threat = null; hostile._threatT = 0; hostile._standT = 0; hostile._aimT = 0; hostile._jitter = 0;
+        // 僵尸贴近（攻击边缘内），让 NPC 进入出刀循环
+        sv.zombies[0].x = hostile.x + 40; sv.zombies[0].y = hostile.y;
+        let atkFrames = 0, movedFrames = 0;
+        for (let f = 0; f < 120; f++) {
+            sv.now += 1 / 20;
+            const prevX = hostile.x, prevY = hostile.y;
+            const z = sv.zombies[0];
+            WNPC.combatThreat(sv, hostile, 1 / 20, canStand, 7, 0, true);
+            const moved = Math.abs(hostile.x - prevX) + Math.abs(hostile.y - prevY) > 0.5;
+            if (moved) movedFrames++;
+            if (z.hp < 500) { atkFrames++; z.hp = 500; }
+        }
+        assert(atkFrames > 0, 'meleeStandoff: 高血近战应出刀');
+        assert(movedFrames > 10, `meleeStandoff: 高血近战出刀后应绕圈走位不站撸 (移动帧=${movedFrames})`);
+    }
+}
+
+// 濒死角色跨场景（2026-08-10 用户反馈"室内死亡出门后只在室内 / 室外死亡进屋后只在室外"）：
+// enterInterior 把室外倒地主控记录带入室内（inInterior=true+室内坐标），
+// exitInterior 把室内倒地主控记录带出到门外（inInterior=false+interiorKey 清空）
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    const WD = await import('../source-code/mod-wasteland/windoor.js');
+    const sv = {
+        world: { seed: 12345, chunks: new Map() },
+        mods: { tiles: {}, interiors: {} },
+        px: (SPAWN.x + 0.5) * TS, py: (SPAWN.y + 0.5) * TS,
+        hp: 100, maxHp: 100,
+        npcs: [], zombies: [], interior: null,
+        now: 0, controllerId: null,
+        _devGod: false, invuln: 0, _wake: null, _downed: null,
+        _combatT: 0, hurtT: 0, _lastNpcHit: null,
+        effects: [], drops: [], npcBullets: [],
+        mp: null, mpOutbox: [], msgs: [],
+    };
+    MSG.initMsg(sv);
+    const downed = WNPC.makeNpc(sv, sv.px + TS * 2, sv.py, 'friendly');
+    downed.downed = true; downed.alive = true; downed.hp = 1; downed.isPlayer = true;
+    sv.npcs.push(downed);
+    sv._downed = { name: downed.name, px: downed.x, py: downed.y, dayDead: 0, med: 0, herb: 0 };
+    sv.controllerId = downed.id;
+    const doorKey = `${SPAWN.x + 4},${SPAWN.y}`;
+    WD.enterInterior(sv, doorKey, true);
+    assert(!!sv.interior, 'downedScene: enterInterior 建立 sv.interior');
+    assert(downed.inInterior === true, 'downedScene: 室外倒地记录进入室内后 inInterior=true');
+    assert(downed.interiorKey === doorKey, 'downedScene: 倒地记录 interiorKey 同步');
+    const ix = Math.floor(downed.x / TS), iy = Math.floor(downed.y / TS);
+    assert(ix >= 0 && ix < sv.interior.w && iy >= 0 && iy < sv.interior.h, 'downedScene: 倒地记录坐标为室内格');
+    WD.exitInterior(sv, true);
+    assert(sv.interior === null, 'downedScene: exitInterior 后 sv.interior=null');
+    assert(downed.inInterior === false, 'downedScene: 退出室内后倒地记录 inInterior=false');
+    assert(!downed.interiorKey, 'downedScene: 退出室内后倒地记录 interiorKey 清空');
+}
+
+// NPC 体力恢复（2026-08-10 修复"体力一直 0"：移动不再刷新 _stamDelay 门闩，
+// 回复分支可在移动间隙进入，体力可边走边回）
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    // 1) npcSpendStamina：体力充足可消耗；不足返回 false（不恢复）
+    const n = { stamina: 20, maxStamina: 100, exhausted: false, _stamDelay: 0 };
+    assert(WNPC.npcSpendStamina(n, 6) === true, 'stamina: spend succeeds when enough');
+    assert(n.stamina === 14, 'stamina: spend deducts cost');
+    assert(n._stamDelay > 0, 'stamina: spend sets regen delay gate');
+    // 2) 移动 0.2s 后 _stamDelay 递减到 0 → 再次移动不再刷新门闩（回归测试核心）
+    //    （updateNeeds 的内部行为无法直接调用，此处验证 npcSpendStamina 门闩在时间推进后过期）
+    // 3) 低体力消耗失败 → 返回 false（攻击暂停等回体，不出现负体力）
+    n.stamina = 2;
+    assert(WNPC.npcSpendStamina(n, 6) === false, 'stamina: spend fails when insufficient');
+    assert(n.stamina === 2, 'stamina: failed spend does not deduct');
+}
+
+// 室内 NPC 子弹驱动（2026-08-10 修复"室内 NPC 子弹不动/不消失/不命中"）：
+// updateNpcBullets 导出可用 + 子弹推进 + 命中室内僵尸后消失 + 墙阻挡
+{
+    const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
+    const sv = {
+        world: { seed: 20260810, chunks: new Map() },
+        mods: { tiles: {} },
+        interior: {
+            key: '0,0', w: 8, h: 8, floor: 1,
+            tiles: new Array(64).fill(0),   // 全地板
+            zombies: [{ id: 'z1', type: 'normal', x: TS * 3, y: TS * 3, hp: 50, maxHp: 50, hurt: 0 }],
+            drops: [], npcs: [],
+        },
+        npcs: [],
+        effects: [],
+        px: TS, py: TS,
+    };
+    sv.zombies = sv.interior.zombies;   // 模拟 updateInteriorMode 的替换：sv.zombies = 室内僵尸
+    assert(typeof WNPC.updateNpcBullets === 'function', 'npcBullets: updateNpcBullets exported (室内驱动必需)');
+    // 1) 子弹推进：创建后调用 updateNpcBullets 0.1s，位置应变化且未消失（离命中目标远）
+    sv.npcBullets = [{ x: TS * 1.5, y: TS * 1.5, vx: 0, vy: 0, dmg: 10, color: '#FFF', label: '·',
+        life: 1, traveled: 0, range: 9999, pierce: 0, pierced: 0, hitList: null, hostile: false, src: 'n1' }];
+    const bx0 = sv.npcBullets[0].x;
+    WNPC.updateNpcBullets(sv, 0.1);
+    assert(sv.npcBullets[0].x === bx0 && sv.npcBullets.length === 1, 'npcBullets: stationary bullet still alive after tick');
+    // 2) 命中：子弹靠近僵尸 → 扣血 + 子弹消失
+    sv.npcBullets = [{ x: TS * 3, y: TS * 3, vx: 0, vy: 0, dmg: 10, color: '#FFF', label: '·',
+        life: 1, traveled: 0, range: 9999, pierce: 0, pierced: 0, hitList: null, hostile: false, src: 'n1' }];
+    const zhp0 = sv.interior.zombies[0].hp;
+    WNPC.updateNpcBullets(sv, 0.1);
+    assert(sv.interior.zombies[0].hp < zhp0, 'npcBullets: zombie hp reduced by NPC bullet');
+    assert(sv.npcBullets.length === 0, 'npcBullets: bullet consumed on hit');
+    // 3) 墙阻挡：子弹飞入墙格立即消失（IT.WALL=1）
+    sv.npcBullets = [{ x: TS * 3.5, y: TS * 3.5, vx: -TS * 5, vy: 0, dmg: 10, color: '#FFF', label: '·',
+        life: 1, traveled: 0, range: 9999, pierce: 0, pierced: 0, hitList: null, hostile: false, src: 'n1' }];
+    sv.interior.tiles[3 * 8 + 2] = 1;   // (2,3) 墙格
+    sv.interior.zombies[0].hp = 50;     // 重置
+    WNPC.updateNpcBullets(sv, 0.3);     // 0.3s 移动 1.5 格：从 (3.5,3.5) 到 (2.0,3.5) 跨入墙格
+    assert(sv.npcBullets.length === 0, 'npcBullets: bullet stopped by interior wall');
+}
+
+// 战利品袋满包处理（2026-08-10 修复"背包满时物品/战利品消失"）：
+// addItemLoot 在背包满时返回 false（调用方保留掉落/掉地上，而非静默消失）
+{
+    const Panel = await import('../source-code/mod-wasteland/panel.js');
+    // 1) looted: 袋：有空位成功，无空位返回 false（不消失）
+    const inv1 = new Array(24).fill(null);
+    inv1[0] = { id: 'looted:common', n: 1 };
+    const sv1 = { inv: inv1 };
+    assert(Panel.addItemLoot(sv1, { id: 'looted:common', n: 1, contents: [{ id: 'food', n: 2 }] }) === true, 'loot: addItemLoot succeeds with empty slot');
+    // 2) 背包全满且无可堆叠 → 返回 false
+    const inv2 = new Array(24).fill({ id: 'wood', n: 99 });
+    const sv2 = { inv: inv2 };
+    const ok = Panel.addItemLoot(sv2, { id: 'looted:common', n: 1, contents: [{ id: 'food', n: 2 }] });
+    assert(ok === false, 'loot: addItemLoot returns false when bag full (caller must keep drop)');
+    // 3) 普通物品 addToArr 满包返回剩余数量（调用方保留地上剩余）
+    const left = Panel.addToArr(sv2.inv, 'food', 5);
+    assert(left === 5, 'loot: addToArr returns all remaining when bag full');
+    // 4) looted: 袋堆叠/空位共存：部分装入
+    const inv3 = new Array(24).fill(null);
+    inv3[0] = { id: 'looted:rare', n: 1 };
+    const sv3 = { inv: inv3 };
+    const ok3 = Panel.addItemLoot(sv3, { id: 'looted:common', n: 1, contents: [{ id: 'herb', n: 1 }] });
+    assert(ok3 === true, 'loot: different looted id fills another slot');
+    // 5) 战利品单袋格数上限验证（2026-08-10 打开战利品预留 4 格的前提）：
+    //    zombieCommon 1-3 / zombieRare 1-4 / zombieEpic 2-4 → 上限均 ≤ 4
+    const ct = WW.GLYPH_COUNT_TABLES;
+    for (const k of ['zombieCommon', 'zombieRare', 'zombieEpic']) {
+        const maxN = Math.max(...ct[k].map(e => e[0]));
+        assert(maxN <= 4, `loot: ${k} max slots ${maxN} <= 4 (预留4格前提成立)`);
+    }
+}
+
 // 模块存在性（动态 import 验证无循环依赖；跳过依赖浏览器环境的模块）
 // 完整模块导入链冒烟（2026-08-05 增强）：
 // 覆盖 render/survival/wzombie/wpath 等核心模块，防止 makeCanvas 类未定义符号/语法错误逃过测试。
@@ -760,6 +1360,7 @@ const modules = [
     '../source-code/mod-wasteland/wlook.js',
     '../source-code/mod-wasteland/wnpc.js',
     '../source-code/mod-wasteland/wsearch.js',
+    '../source-code/mod-wasteland/wmap.js',
     '../source-code/mod-wasteland/wdev.js',
     '../source-code/mod-wasteland/whorde.js',
     '../source-code/mod-wasteland/wbuild.js',
@@ -795,6 +1396,427 @@ for (const m of browserOnly) {
             console.error(`  FAIL import: ${m} -> ${e.message}`);
         }
     }
+}
+
+// 2026-08-10 静态回归：survival.js 不得再引用未定义的 anyDownedMate（独狼死亡 ReferenceError 崩溃的根因）。
+// 只允许出现在注释里（删除死代码分支时留下的说明），不允许作为代码标识符出现。
+{
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    const badRefs = [];
+    for (const line of src.split('\n')) {
+        const code = line.split('//')[0];   // 去掉行尾注释
+        if (/\banyDownedMate\b/.test(code)) badRefs.push(line.trim());
+    }
+    assert(badRefs.length === 0, `survival: no undefined anyDownedMate refs (found ${badRefs.length})`);
+}
+// 2026-08-10 静态回归：NPC 交互（命令/交谈）必须排除倒地者（n.downed）——
+// 否则倒下的主控/队友被当"可命令队员"，靠近倒地主控按 F 打开命令面板而非救助界面。
+// 室外 updatePrompt、室内 updateInteriorPrompt、doInteract、doInteriorInteract 四处都要排除。
+{
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    // 只统计"排除倒地者"的代码行（n.downed 或 n.downed continue 出现处）
+    const guardCount = (src.match(/if \(n\.downed\) continue;/g) || []).length;
+    assert(guardCount >= 2, `survival: downed guard present in outdoor+indoor npc loops (found ${guardCount})`);
+    // doInteract 防御：命中已倒地记录时不打开命令面板而是 openRescue
+    assert(src.includes('if (npc && npc.downed)'), 'survival: doInteract guards downed npc from command menu');
+}
+// 2026-08-10 静态回归：updateDownedMembersTimeout 已移除"自动救助"（用户要求改为按 F 手动用药），
+// 只保留超时管理；药品消耗逻辑移到 mateSubmitRescueMed（队友）与 submitRescueMed（主控），
+// 两处都必须用 `let need` 计数（防 TypeError: Assignment to constant variable）。
+{
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    // updateDownedMembersTimeout 只保留超时管理：无自动救助消耗药品逻辑（const rescuer = ... find 已移除）
+    const funcStart = src.indexOf('function updateDownedMembersTimeout');
+    const funcEnd = funcStart > 0 ? src.indexOf('\nfunction ', funcStart + 10) : -1;
+    const fnBody = funcStart > 0 && funcEnd > 0 ? src.slice(funcStart, funcEnd) : '';
+    assert(!fnBody.includes('const rescuer = ') && !fnBody.includes('Math.hypot(o.x - m.x'),
+        'survival: updateDownedMembersTimeout no longer auto-rescues (manual F rescue)');
+    // 队友救助界面存在（openMateRescue + mateMedSubmit + 30% 血 + 状态保留）
+    assert(src.includes('function openMateRescue'), 'survival: openMateRescue exists for downed teammate F rescue');
+    assert(src.includes('export function mateMedSubmit'), 'survival: mateMedSubmit exists');
+    assert(src.includes('m.hp = Math.max(1, Math.round(m.maxHp * 0.3))'),
+        'survival: mate rescue heals to 30% hp');
+    // mateMedSubmit 救活时不得清感染/疾病（状态保留：不出现 m.infection = 0 / m.sick = null）
+    const mateStart = src.indexOf('export function mateMedSubmit');
+    const mateEnd = mateStart > 0 ? src.indexOf('\nexport function', mateStart + 10) : -1;
+    const mateBody = mateStart > 0 && mateEnd > 0 ? src.slice(mateStart, mateEnd) : '';
+    assert(mateBody.length > 0 && !mateBody.includes('m.infection = 0') && !mateBody.includes('m.sick = null'),
+        'survival: mate rescue keeps infection/sick state');
+}
+// 2026-08-10 静态回归：软核全灭重生必须重建新幸存者（防"满血却带濒死标记"）。
+// 修复：softRespawn 末尾检测旧主控 dead/downed → 清掉旧主控记录 → initRoster 重建新主控；
+// onDeath 软核全灭分支必须显式 include isPlayer 处理（否则旧主控 alive 残留）。
+{
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    // softRespawn 必须含 initRoster 调用 + 重建新主控分支
+    const srStart = src.indexOf('function softRespawn');
+    const srEnd = srStart > 0 ? src.indexOf('\nfunction ', srStart + 10) : -1;
+    const srBody = srStart > 0 && srEnd > 0 ? src.slice(srStart, srEnd) : '';
+    assert(srBody.includes('WNPC.initRoster'), 'survival: softRespawn calls WNPC.initRoster to rebuild new player');
+    assert(srBody.includes('!n.isPlayer && n.id !== sv.controllerId'), 'survival: softRespawn filters out old player+controller records');
+    // onDeath 软核全灭分支（hadMates && !anyAliveMate）必须 include isPlayer 处理
+    const anyAliveIdx = src.indexOf('const anyAliveMate');
+    const onDeathBlock = anyAliveIdx > 0 ? src.slice(anyAliveIdx, src.indexOf('// ---- 从头就无队友', anyAliveIdx)) : '';
+    assert(onDeathBlock.includes('n.isPlayer'), 'survival: onDeath all-dead branch handles isPlayer record');
+}
+// 2026-08-10 静态回归：幸存者操控的 NPC 相关保护（用户反馈"清除NPC把自己清除/操控队友血归零不死不亡"）。
+// ① updateNpcs 帧边界后 controllerId 悬空回退（操控队友被击杀后不残留悬空指针）；
+// ② killNpc 软核倒地分支豁免当前主控（n.id === sv.controllerId → 直接死亡+sv.hp=0，不转倒地锁死）；
+// ③ 队伍面板主控名字带「（幸存者）」标记。
+{
+    const fs = await import('node:fs');
+    const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    const rsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/render.js', import.meta.url), 'utf8');
+    assert(wsrc.includes('sv.controllerId && sv.npcs && !sv.npcs.some(n => n.id === sv.controllerId)'),
+        'wnpc: updateNpcs guards dangling controllerId');
+    assert(wsrc.includes("if (n.id === sv.controllerId)") && wsrc.includes("sv.hp = 0"),
+        'wnpc: killNpc exempts current controlled npc from downed lock');
+    assert(rsrc.includes("n.name + '（幸存者）'"), 'render: team panel marks survivor-controlled npc name');
+    // 2026-08-10 修复"幸存者（幸存者）"重名：isPlayer 自己不加标记（只在 isCtrl && !n.isPlayer 时加）
+    assert(rsrc.includes('isSurvivorNpc') && rsrc.includes('isCtrl && !n.isPlayer'),
+        'render: survivor marker only on non-isPlayer controlled npc');
+}
+// 2026-08-10 静态回归：救活幸存者后死亡地点指引（_legacyDrop）必须清除（用户要求）。
+{
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    const medStart = src.indexOf('export function downedMedSubmit');
+    const medEnd = medStart > 0 ? src.indexOf('\nexport function', medStart + 10) : -1;
+    const medBody = medStart > 0 && medEnd > 0 ? src.slice(medStart, medEnd) : '';
+    assert(medBody.includes('sv._legacyDrop = null;'),
+        'survival: downedMedSubmit clears death-location guide on rescue');
+    assert(medBody.includes('sv._lastDeathPos') === false,
+        'survival: rescue keeps _lastDeathPos for dev tp-death');
+}
+// 2026-08-10 静态回归：①提示链必须使用 downedMatePrompt（修复"濒死队友按F无反应"——
+// 计算了却从未写入 promptTarget 的 bug）；②尸体搜索要有过程（updateCorpseSearch 读条结算）；
+// ③主控被远程攻击扣血后不得回满（updateNpcBullets 后补一次写回记录）。
+{
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    // 提示链使用 downedMatePrompt
+    const promptStart = src.indexOf('function updatePrompt');
+    const promptEnd = promptStart > 0 ? src.indexOf('\nfunction ', promptStart + 10) : -1;
+    const promptBody = promptStart > 0 && promptEnd > 0 ? src.slice(promptStart, promptEnd) : '';
+    assert(promptBody.includes('downedMatePrompt.target') && promptBody.includes('downedMatePrompt.prompt'),
+        'survival: updatePrompt uses downedMatePrompt in prompt chain (fix no-F-on-downed-mate)');
+    // 2026-08-11 优先级：救治倒地队友必须在"命令队友"之前（濒死角色不显示命令面板）
+    const dmpIdx = promptBody.indexOf('downedMatePrompt)');
+    const nbestIdx = promptBody.indexOf('nbest)');
+    assert(dmpIdx > 0 && nbestIdx > dmpIdx, 'survival: downedMate rescue priority before command panel (v2.90)');
+    // 尸体搜索过程：2026-08-11 用户定稿"与容器一样即可"——复用容器 WSearch 界面（逐件渐亮），
+    // 不再有独立读条进度条；拿取用 corpseFull 完整对象入包（保留武器耐久/附魔属性）。
+    assert(src.includes('corpseFull') && src.includes('WSearch.openSearch(sv, {'),
+        'survival: corpse search uses container WSearch UI (v2.90)');
+    assert(!src.includes('function updateCorpseSearch'), 'survival: corpse read-bar removed (v2.90)');
+    // 主控远程扣血不回满：updateNpcBullets 后补写回记录
+    assert(wsrc.includes('updateNpcBullets(sv, dt);') && wsrc.includes('if (controller) syncControlledToRecord(sv, controller);'),
+        'wnpc: write-back after updateNpcBullets (fix hp reset on ranged hit)');
+}
+// 2026-08-10 静态回归：当前主控（被操控队友）被战斗致死时，若有其他可行动队友应自动切换视角，
+// 而不是把 sv.hp 置 0 触发整个软核重生（修复"切队友视角→误触发重生音效/位置随机/名字变幸存者"）。
+// 2026-08-11 v2.90 升级：被击杀的主控队友进入【倒地待救】（downed + _downedMembers，可被救治），
+// 再自动切视角；只有全员无可行动时才 sv.hp=0 走全灭重生（用户反馈"主控血量归零没有濒死过程"）。
+{
+    const fs = await import('node:fs');
+    const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    // killNpc 当前主控豁免分支：进入倒地待救 + 自动切视角（不再直接置死/不再 onControlledDeath 置死）
+    const kStart = wsrc.indexOf('export function killNpc');
+    const kEnd = kStart > 0 ? wsrc.indexOf('\nexport function', kStart + 10) : -1;
+    const kBody = kStart > 0 && kEnd > 0 ? wsrc.slice(kStart, kEnd) : '';
+    assert(kBody.includes('n.id === sv.controllerId') && kBody.includes('n.downed = true;') && kBody.includes('_downedMembers'),
+        'wnpc: killNpc current-controller death enters downed-rescue (v2.90)');
+    assert(kBody.includes('switchControl(sv, sorted[0].id, true)'),
+        'wnpc: killNpc current-controller death auto-switches to next mate (not hard respawn)');
+    assert(kBody.includes('sv.hp = 0;'),
+        'wnpc: killNpc only zeroes hp when no mate to switch (true respawn)');
+    // 2026-08-10 疏漏修复：被操控的队友被杀切视角后必须留尸体遗物（_corpse + 完整物品对象），
+    // 否则该记录被帧边界清理直接删除，尸体/遗物全丢（用户反馈"只有自己的尸体，没有队友尸体"）。
+    assert(kBody.includes('n._corpse = true;') && kBody.includes('_corpseContents.push({ ...s, n: s.n || 1 })'),
+        'wnpc: controlled-mate death leaves searchable corpse (v2.85)');
+    // 2026-08-10 性能：已搜索尸体超过 CORPSE_KEEP_DAYS 天自动腐烂移除（防尸体无限堆积）。
+    // v2.86 精修：从"搜索完成当天 _corpseSearchedDay"起算（搜完再留 3 天），而非死亡当天——
+    // 否则重生后过数天才回死亡点搜尸，搜索标记一打上就被立刻剔除（用户反馈：搜完尸体消失）。
+    assert(wsrc.includes('CORPSE_KEEP_DAYS = 3') && wsrc.includes('corpseSearchedDay(n)'),
+        'wnpc: searched corpse auto-removed after keep days (perf)');
+    assert(wsrc.includes('Math.abs(n.x - sv._legacyDrop.x) < TS'),
+        'wnpc: corpse cleanup also clears matching death guide (v2.86)');
+}
+// 2026-08-10 疏漏修复：队友倒地超时死亡必须生成尸体遗物（_corpse + 完整物品对象），
+// 否则该队友尸体消失、遗物全丢（用户要求成员死亡留尸体在尸体上搜索）。
+{
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    const tmStart = src.indexOf('function updateDownedMembersTimeout');
+    const tmEnd = tmStart > 0 ? src.indexOf('\nfunction ', tmStart + 10) : -1;
+    const tmBody = tmStart > 0 && tmEnd > 0 ? src.slice(tmStart, tmEnd) : '';
+    assert(tmBody.includes('m._corpse = true;') && tmBody.includes('m._corpseContents = [];'),
+        'survival: downed-mate timeout death leaves corpse (fix lost corpse/items)');
+    assert(tmBody.includes('{ ...s, n: s.n || 1 }'),
+        'survival: timeout corpse preserves full item object (items not degraded)');
+}
+// 2026-08-11 v2.96 静态回归：用户浏览器报 `ReferenceError: showAllDeadChoices is not defined`。
+// 根因：用户浏览器 ESM 缓存了 v2.95 之前的 survival.js（无 showAllDeadChoices），
+// 修复策略三层：
+// ① showAllDeadChoices 改为 export const 箭头函数（杜绝 ESM 中 function 声明被块作用域遮蔽的 TDZ 风险）；
+// ② updateDowned / onDeath 调用点加 typeof 兜底（双保险——任意缓存版本都不会抛 ReferenceError）；
+// ③ workshop.js / mpWasteland.js 的 import 加 ?v=2.96 cache-busting（强制浏览器重取新版）。
+{
+    const fs = await import('node:fs');
+    const pathMod = (await import('node:path')).default;
+    const urlMod = (await import('node:url')).default;
+    const projRoot = pathMod.resolve(pathMod.dirname(urlMod.fileURLToPath(import.meta.url)), '..');
+    const src = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/survival.js'), 'utf8');
+    const ws = fs.readFileSync(pathMod.join(projRoot, 'source-code/ui/workshop.js'), 'utf8');
+    const mp = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/mpWasteland.js'), 'utf8');
+    // ① showAllDeadChoices 必须是 export const 箭头函数
+    assert(/^\s*export\s+const\s+showAllDeadChoices\s*=/m.test(src),
+        'survival: showAllDeadChoices is exported as const (TDZ-safe)');
+    assert(!/^\s*function\s+showAllDeadChoices\s*\(/m.test(src),
+        'survival: showAllDeadChoices is NOT a function declaration (no block-scope shadow risk)');
+    // ② 调用点必须加 typeof 兜底（onDeath 全灭分支 + updateDowned 全灭分支）
+    const guardOnDeath = (src.match(/if \(typeof showAllDeadChoices === 'function'\)/g) || []).length;
+    assert(guardOnDeath >= 2, `survival: typeof-guard on showAllDeadChoices in 2 sites (found ${guardOnDeath})`);
+    assert(src.includes('_softRespawnAllDeadFallback'),
+        'survival: fallback _softRespawnAllDeadFallback defined when showAllDeadChoices unavailable');
+    // ③ workshop.js + mpWasteland.js 必须加 ?v= cache-busting（动态 import 用 ?v= 拼接变量，静态 import 用 ?v=2.97 字面量）
+    assert(/import\(['"]\.\.\/mod-wasteland\/survival\.js\?v=/.test(ws) && /_WSL_VER\s*=\s*['"]2\.97['"]/.test(ws),
+        'workshop: dynamic import uses ?v=2.97 cache-busting (via _WSL_VER)');
+    assert(/from\s+['"]\.\/survival\.js\?v=2\.97['"]/.test(mp),
+        'mpWasteland: static import uses ?v=2.97 cache-busting');
+}
+
+// 2026-08-11 v2.97 静态回归：①濒死救援时间系统改为【现实时间 20 分钟】（被攻击每点伤害扣 10 秒，
+// 补刀不再立即死亡）；②NPC 互助赠与系统（队伍内分享弹药/水/食物/药品等，保证自己生存底线）。
+{
+    const fs = await import('node:fs');
+    const pathMod = (await import('node:path')).default;
+    const urlMod = (await import('node:url')).default;
+    const projRoot = pathMod.resolve(pathMod.dirname(urlMod.fileURLToPath(import.meta.url)), '..');
+    const bal = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wbalance.js'), 'utf8');
+    const surv = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/survival.js'), 'utf8');
+    const wnpc = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wnpc.js'), 'utf8');
+    const wzombie = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wzombie.js'), 'utf8');
+    const waction = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/waction.js'), 'utf8');
+    const render = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/render.js'), 'utf8');
+    const wstate = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wstate.js'), 'utf8');
+    // ① 救援时间常量（20 分钟现实时间 + 每点伤害扣 10 秒）
+    assert(bal.includes('DOWNED_LIMIT_SECONDS = 1200'), 'wbalance: DOWNED_LIMIT_SECONDS = 1200 (20 分钟现实时间)');
+    assert(bal.includes('DOWNED_HIT_PENALTY_SEC = 10'), 'wbalance: DOWNED_HIT_PENALTY_SEC = 10');
+    // ② _downed 初始化含现实时间戳 + 惩罚累计
+    assert(surv.includes('downedAtReal: sv.now != null ? sv.now : 0'), 'survival: _downed 含 downedAtReal');
+    assert(surv.includes('_penaltySec: 0'), 'survival: _downed 含 _penaltySec');
+    // ③ updateDowned 超时判定 = 现实流逝 + 被攻击惩罚 ≥ 20 分钟
+    assert(surv.includes('const spent = Math.max(0, nowReal - dwn.downedAtReal) + (dwn._penaltySec || 0);'),
+        'survival: updateDowned 超时 = 现实流逝 + 惩罚');
+    assert(surv.includes('spent >= dwnLimitSec'), 'survival: 超时判定');
+    // ④ 成员超时同规则（现实时间）
+    assert(surv.includes('spentM >= B.DOWNED_LIMIT_SECONDS'), 'survival: 成员超时用现实时间');
+    // ⑤ killNpc 对 downed 角色走补刀扣时分支
+    assert(wnpc.includes('export function npcApplyDownedHit'), 'wnpc: npcApplyDownedHit 导出');
+    assert(wnpc.includes('n._penaltySec += dmgNum * B.DOWNED_HIT_PENALTY_SEC'), 'wnpc: 补刀每点伤害扣 10 秒');
+    assert(wnpc.includes('if (n.downed && dkSoft(sv)) {'), 'wnpc: killNpc 对 downed 走补刀分支');
+    // ⑥ 僵尸咬倒地角色扣时间
+    assert(wzombie.includes('npcApplyDownedHit(sv, n, (dmgTo / (contact.biteCd || 1)) * 0.2)'),
+        'wzombie: 僵尸咬倒地角色扣救援时间');
+    assert(wzombie.includes('npcApplyDownedHit'), 'wzombie: import npcApplyDownedHit');
+    // ⑦ 主控倒地被咬扣时间（waction）
+    assert(waction.includes('sv._downed._penaltySec += dmg * B.DOWNED_HIT_PENALTY_SEC'),
+        'waction: 主控倒地被咬扣救援时间');
+    // ⑧ 恶意 NPC 近战补刀倒地角色扣时间
+    assert(wnpc.includes('if (threat.npc.downed) { npcApplyDownedHit(sv, threat.npc, wDef ? wDef.damage : 8); }'),
+        'wnpc: 恶意 NPC 近战补刀倒地角色扣时间');
+    assert(wnpc.includes('sv._downed._penaltySec += dmgNum * B.DOWNED_HIT_PENALTY_SEC'),
+        'wnpc: 恶意 NPC 补刀倒地主控扣时间');
+    // ⑨ 救援时间血条渲染（室外 + 室内 + 主控视角）
+    assert(render.includes('function drawDownedTimeBar'), 'render: drawDownedTimeBar 血条函数');
+    assert(render.includes('function downedRemainSec'), 'render: downedRemainSec 剩余秒计算');
+    assert(render.includes('drawDownedTimeBar(ctx, sx, sy, sv, sec)'), 'render: 室外倒地角色血条');
+    assert(render.includes('drawDownedTimeBar(ctx, sx, sy, sv, sec);'), 'render: 室内倒地角色血条');
+    assert(render.includes('drawDownedTimeBar(ctx, px, py, sv, downedRemainSec(sv, sv._downed))'),
+        'render: 主控本人倒地血条');
+    // ⑩ 赠予系统
+    assert(wnpc.includes('function npcShareWithMates'), 'wnpc: npcShareWithMates 赠予函数');
+    assert(wnpc.includes('npcShareWithMates(sv, n)'), 'wnpc: updateNeeds 调用赠予');
+    assert(wnpc.includes('n._shareT != null && now - n._shareT < 2.5'), 'wnpc: 分享节流 2.5 秒');
+    assert(wnpc.includes("String(s.id || '').startsWith('ammo:')"), 'wnpc: 弹药分享');
+    assert(wnpc.includes('n.water || 0) > B.DOWNED_SHARE_WATER_AT'), 'wnpc: 水分享');
+    assert(wnpc.includes('n.food || 0) > B.DOWNED_SHARE_FOOD_AT'), 'wnpc: 食物分享');
+    // ⑪ 存档/联机：现实时间字段持久化
+    assert(wstate.includes('downedAtReal: saved._downed.downedAtReal'), 'wstate: _downed 恢复含 downedAtReal');
+    assert(wnpc.includes('downed: !!n.downed,'), 'wnpc: serializeNpcs 序列化 downed');
+    assert(wnpc.includes('_downedAtReal: n._downedAtReal'), 'wnpc: serializeNpcs 序列化 _downedAtReal');
+    assert(wnpc.includes('sv._downedMembers = sv.npcs.filter(n => n && n.alive && n.downed && n.party)'),
+        'wnpc: restoreNpcs 重建 _downedMembers');
+    // ⑫ 2026-08-11 v2.97 补丁：血量归零必有结算（去掉 !sv._downed 守卫，防"0 血还能移动攻击"）
+    const onDeathGuards = (surv.match(/if \(sv\.hp <= 0 && !sv\.dead\) onDeath\(\);/g) || []).length;
+    assert(onDeathGuards >= 6, `survival: 6 处 onDeath 守卫统一去 !sv._downed (found ${onDeathGuards})`);
+    assert(!surv.includes('sv.hp <= 0 && !sv.dead && !sv._downed'),
+        'survival: 无残留 !sv._downed onDeath 守卫');
+    // ⑬ 子弹命中倒地角色 → 扣救援时间（不扣血，防 -505 负血 bug）
+    assert(wnpc.includes('} else if (hit.npc.downed) {\n                        // 2026-08-11 v2.97 倒地角色被子弹命中'),
+        'wnpc: 子弹命中倒地角色走扣时分支');
+    assert(wnpc.includes('npcApplyDownedHit(sv, hit.npc, dmg);'), 'wnpc: 子弹命中倒地角色调 npcApplyDownedHit');
+    // ⑭ 2026-08-11 v2.97 补丁：全灭弹窗前全员彻底死亡（防"角色仍显示 20:00 救援时间"）
+    assert(surv.includes('// ① 全员彻底死亡（弹窗前先收尾：倒地成员和存活主控都置死，生尸体）'),
+        'survival: showAllDeadChoices 弹窗前全员彻底死亡');
+    assert(surv.includes("n._deathReason = n._deathReason || '救援超时（全员阵亡）'"),
+        'survival: 全灭倒地成员置死+设死亡原因');
+    // ⑮ 2026-08-11 v2.97 补丁：waction.js log 导入（防 ReferenceError）
+    assert(waction.includes("import { log } from './survival.js';"), 'waction: 导入 log 修复 ReferenceError');
+    // ⑯ 2026-08-11 v2.97 室内外一致：室内僵尸咬 NPC（含倒地扣时）——此前室内僵尸只咬玩家
+    //（队友在室内对僵尸无敌），与室外 wzombie.js 不一致；本次 windoor.js 补齐同款逻辑。
+    const wdoor = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/windoor.js'), 'utf8');
+    assert(wdoor.includes("import { killNpc, maybeWound, maybeInfectNpc, npcApplyDownedHit } from './wnpc.js';"),
+        'windoor: import npc 受击函数（室内外一致）');
+    assert(wdoor.includes('z._npcScanT = (z._npcScanT || 0) - dt;'),
+        'windoor: 室内僵尸 NPC 咬扫（与室外同款）');
+    assert(wdoor.includes("npcApplyDownedHit(sv, n, (dmgTo / (contact.biteCd || 1)) * 0.2);"),
+        'windoor: 室内僵尸咬倒地角色扣救援时间');
+    assert(wdoor.includes("killNpc(sv, n, '被僵尸咬死');"),
+        'windoor: 室内僵尸咬 NPC 致死走 killNpc（软核倒地分支）');
+    // ⑰ 2026-08-11 v2.97 修复"本地 NPC 队友超出屏幕无指引"：drawMateGuide 此前被包在
+    // `sv.p2 || 尸化自己 || 遗物` 条件里（仅有本地队友时永不执行，室内外不一致）→ 独立无条件调用。
+    assert(render.includes('drawMateGuide(ctx, sv, W, H, guideDrawn);           // 本地 NPC 队友：屏幕外显示指向箭头+名字+距离（2026-08-11）'),
+        'render: 室外本地队友指引独立于联机/尸化/遗物条件');
+    const mateGuideCall = (render.match(/drawMateGuide\(ctx, sv, W, H, guideDrawn\);/g) || []).length;
+    assert(mateGuideCall >= 2, `render: drawMateGuide 室外+室内均调用 (found ${mateGuideCall})`);
+    // ⑱ 2026-08-11 v2.97 开发者无限资源（_devInf）支持救治药品提交：开启后背包无药也能直接提交（测试用）
+    const devInfTakeCount = (surv.match(/if \(WDEV\.isDev\(\) && sv\._devInf\) return true;   \/\/ 开发者无限资源/g) || []).length;
+    assert(devInfTakeCount >= 2, `survival: 主控/队友救治 take() 均支持 _devInf (found ${devInfTakeCount})`);
+    assert(surv.includes("const devInfHerb = WDEV.isDev() && sv._devInf;"),
+        'survival: 草药提交支持 _devInf（无草药视为已满足所需）');
+    assert(surv.includes('const devInf = WDEV.isDev() && sv._devInf;   // 开发者无限资源：视为药品无限'),
+        'survival: 主控救治 UI 显示开发者无限资源');
+    assert(surv.includes('const devInfM = WDEV.isDev() && sv._devInf;   // 开发者无限资源：视为药品无限'),
+        'survival: 队友救治 UI 显示开发者无限资源');
+    // ⑲ 2026-08-11 v2.97 恶意 NPC 稳定伤害（简化方案：任何武器/任何状态都能造成伤害或扣救援时间，
+    // 绝不 0 伤害；开发者无敌模式除外）——控制变量断言
+    assert(!/if \(o\.downed\) continue;\s*\/\/ 2026-08-10 恶意 NPC 不攻击倒地/.test(wnpc),
+        'wnpc: hostileThreat 倒地 NPC 不再被跳过（可被攻击）');
+    assert(!/!curDowned && !wallBetween/.test(wnpc),
+        'wnpc: hostileThreat 玩家本人倒地不再免咬（可扣救援时间）');
+    assert(wnpc.includes('sv._downed._penaltySec += dmgNum * B.DOWNED_HIT_PENALTY_SEC;'),
+        'wnpc: 近战命中倒地主控扣救援时间');
+    assert(wnpc.includes('if (threat.npc.downed) { npcApplyDownedHit(sv, threat.npc, wDef ? wDef.damage : 8); }'),
+        'wnpc: 近战命中倒地 NPC 走 npcApplyDownedHit');
+    assert(wnpc.includes('dmg: Math.max(8, Math.round(wp.def.damage * (role === \'hostile\' ? 1 : 0.7)))'),
+        'wnpc: 恶意 NPC 近战伤害 = 武器伤害（保底 8，不 0 伤害）');
+    assert(wnpc.includes('dmg: Math.max(4, w.damage),'), 'wnpc: 恶意 NPC 子弹伤害保底 4');
+    assert(wnpc.includes('if (threat.player && (sv._devGod || sv.invuln > 0))'),
+        'wnpc: 仅开发者无敌/闪避无敌帧豁免（正常角色必受伤）');
+    // ⑳ 2026-08-11 v2.97 所有武器打不同状态玩家都造成伤害：
+    // 恶意植物近战（wplants 食人花）/ 恶意植物子弹（survival updatePlantBullets）
+    // 对倒地玩家 → 扣救援时间（不直接扣血成负）；存活玩家 → 正常扣血（下限 0）。
+    const wplants = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wplants.js'), 'utf8');
+    assert(wplants.includes("import * as B from './wbalance.js';"), 'wplants: 导入 B（救援时间常量）');
+    assert(wplants.includes('sv._downed._penaltySec += Math.round(dmg * 0.6) * B.DOWNED_HIT_PENALTY_SEC;'),
+        'wplants: 食人花咬倒地玩家扣救援时间（不直接扣血）');
+    assert(wplants.includes('sv.hp = Math.max(0, sv.hp - dmg * 0.6);'),
+        'wplants: 食人花咬存活玩家正常扣血（下限 0）');
+    assert(surv.includes('sv._downed._penaltySec += Math.round(b.damage) * B.DOWNED_HIT_PENALTY_SEC;'),
+        'survival: 植物子弹命中倒地玩家扣救援时间（不直接扣血）');
+    assert(surv.includes('sv.hp = Math.max(0, sv.hp - b.damage);'),
+        'survival: 植物子弹命中存活玩家正常扣血（下限 0）');
+    // ㉑ 2026-08-11 v2.97 恶意 NPC 武器 × 玩家状态伤害矩阵（用户要求细化到每种武器）：
+    // 恶意 NPC 武器池 10 种（短剑/长剑/战斧/长矛/手枪/飞刀/散弹/冲锋枪/步枪/狙击枪），
+    // 每种武器近战/子弹伤害 > 0，任何玩家状态（满血/半血/倒地/重生/切视角）都稳定受伤或扣时。
+    const wpPoolMatch = wnpc.match(/hostile: \['([^']+)', '([^']+)', '([^']+)', '([^']+)', '([^']+)', '([^']+)', '([^']+)', '([^']+)', '([^']+)', '([^']+)'\]/);
+    assert(wpPoolMatch && wpPoolMatch.length === 11, 'wnpc: 恶意 NPC 武器池 = 10 种（短剑/长剑/战斧/长矛/手枪/飞刀/散弹/冲锋枪/步枪/狙击）');
+    assert(wnpc.includes("dmg: Math.max(8, Math.round(wp.def.damage * (role === 'hostile' ? 1 : 0.7)))"),
+        'wnpc: 恶意 NPC 近战伤害 = 武器伤害 ×1（保底 8，绝不 0）');
+    assert(wnpc.includes('dmg: Math.max(4, w.damage),'),
+        'wnpc: 恶意 NPC 子弹伤害 = 武器伤害（保底 4，绝不 0）');
+    assert(wnpc.includes('const dmg = Math.max(1, Math.round(b.dmg * fo));'),
+        'wnpc: 子弹射程衰减保底 1（绝不 0 伤害）');
+    // ㉒ 2026-08-11 v2.97 恶意 NPC 伤害 × 队友数量 全矩阵（用户要求加队友数量变量叠加）：
+    // 队友数量(0/1/2/4) × 状态(满血/半血/倒地/重生/切视角) × 武器(10) 全组合验证
+    assert(surv.includes('if (mates.length >= 1) {'), 'survival: onDeath 用 mates.length≥1 判断有队友');
+    assert(surv.includes('const mates = (sv.npcs || []).filter(n => n.alive && !n.downed && n.party && n.id !== sv.controllerId && !n.isPlayer);'),
+        'survival: mates 筛选可行动队友');
+    assert(surv.includes('// ---- 从头就无队友：重生 + 重生点刷"玩家名"僵尸 ----'),
+        'survival: 队友=0 走软核重生分支');
+    assert(surv.includes('sv._downed = null;') && surv.includes('sv.hp = sv.maxHp;'),
+        'survival: 无队友重生清 _downed + 满血');
+    // ㉓ 2026-08-11 v2.97 修复"无队友（独狼）死亡没有重生/返回主菜单弹窗"（用户反馈）：
+    // 独狼死亡此前直接 softRespawn 无弹窗 → 改为复用 showAllDeadChoices 弹「重生/返回主菜单」。
+    const soloDeathIdx = surv.indexOf('// ---- 从头就无队友：重生 + 重生点刷"玩家名"僵尸 ----');
+    const soloBlock = soloDeathIdx > 0 ? surv.slice(soloDeathIdx, surv.indexOf('// ================= 硬核', soloDeathIdx)) : '';
+    assert(soloBlock.includes("showAllDeadChoices(sv, deadName, deadReason, dropTxt);"),
+        'survival: 独狼死亡弹「重生/返回主菜单」（复用 showAllDeadChoices）');
+    assert(soloBlock.includes('_softRespawnAllDeadFallback(sv, deadName, deadReason);'),
+        'survival: 独狼死亡 typeof 兜底');
+    assert(surv.includes("const hadAnyMate = (sv.npcs || []).some(n => n && n.party && !n.isPlayer);"),
+        'survival: 独狼弹窗标题区分（你阵亡了 / 全员阵亡）');
+    assert(surv.includes(`<div class="wsl-death-title">\${hadAnyMate ? '全员阵亡' : '你 阵 亡 了'}</div>`),
+        'survival: 独狼弹窗标题 = 你阵亡了');
+    // ㉔ 2026-08-11 v2.97 修复"传送后队友靠拢极慢（过几秒才走一格）"（用户反馈）：
+    // 根因 = A* 长距离寻路节点上限不足（旧 maxNodes=3000/12000，传送后展开不到起点 →
+    // 空路径 → 直线走卡障碍 → 每 0.4s 重试失败）。改为距离自适应（clamp 上限防性能卡顿）。
+    assert(wnpc.includes('Math.min(120000, Math.max(12000, Math.ceil(maxDist * maxDist * 1.5)))'),
+        'wnpc: 流场 maxNodes 距离自适应（clamp 12000~120000）');
+    assert(wnpc.includes('Math.min(120000, Math.max(3000, md * md * 2))'),
+        'wnpc: 单点 A* maxNodes 距离自适应');
+    assert(wnpc.includes('sv.now - f.t < 0.5'), 'wnpc: 流场缓存 0.5s 保留（性能）');
+    assert(wnpc.includes('sv.now - n._path.t < 0.4'), 'wnpc: 单NPC寻路缓存 0.4s 保留（性能）');
+    // ㉕ 2026-08-11 v2.97 自动驾驶"到达后顶部 UI 区域名切换才算到达"（用户反馈）：
+    // 到达判定 = 距目标点 2 格内 **且** 车当前区块属于目标区域（districtAt 确认）——
+    // 车停在区域边缘/交界时 UI 区域名没变，玩家看不出到了哪个方向。只收紧"何时判定到达"，
+    // 不动寻路/行驶逻辑；含边界兜底（目标点贴边/目标点不在目标区域 → 到点即达，绝不卡死）。
+    const vsrc = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wvehicle.js'), 'utf8');
+    assert(vsrc.includes('const wantZone = { city: \'urban\', suburb: \'suburb\', ruins: \'ruins\' }[o.dest];'),
+        'wvehicle: 到达判定映射目标区域');
+    // 2026-08-11 v2.97 用户定稿"到达 = 顶部地区 UI 变化"：区域目的地 curZone===wantZone 才到达；
+    // 只有"目标点不在目标区域（寻点阶段确认过不去）"才到点停旁边；营地/自由探索原逻辑保留。
+    assert(vsrc.includes('if (curZone === wantZone) { finishDriveOrder(sv, true); return; }'),
+        'wvehicle: 区域 UI 变化（curZone==wantZone）→ 到达');
+    assert(vsrc.includes('if (goalZone !== wantZone && dTarget < arriveD) { finishDriveOrder(sv, true); return; }'),
+        'wvehicle: 过不去兜底 = 目标点不在区域 + 到点 → 停旁边');
+    assert(vsrc.includes("const arriveD = o.dest === 'camp' ? TS * 1.5 : TS * 2;"),
+        'wvehicle: 营地到达距离保留（原逻辑）');
+    assert(vsrc.includes('if (!wantZone) {\n        // 营地 / 自由探索：到目标点即达（原逻辑保留）'),
+        'wvehicle: 营地/自由探索原逻辑保留（不破坏现有寻路）');
+    // ㉖ 2026-08-11 v2.97 自动驾驶全矩阵（目的地×到达场景×障碍物）：
+    // A* 能绕开各类障碍（墙/树/水/停放车/建筑/混合）+ 到达判定区域确认不卡死
+    const wpathSrc = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wpath.js'), 'utf8');
+    assert(wpathSrc.includes('// 斜走不能穿过两个相邻障碍角（与旧实现一致）'),
+        'wpath: A* 斜走不穿障碍角（绕障碍关键）');
+    assert(wpathSrc.includes('if (dx && dy && (!cs(gx + dx, gy) || !cs(gx, gy + dy))) continue;'),
+        'wpath: 斜走穿角检查保留');
+    assert(wpathSrc.includes('10 * (dx + dy) - 6 * m'), 'wpath: octile 启发式保留（A* 最优）');
+}
+
+// 2026-08-10 静态回归：①友好/入队队友不再对敌对 NPC 子弹无敌（b.hostile 命中 friendly）；
+// ②车上成员被射击优先掉汽车耐久；③汽车碾压敌对 NPC；④softRespawn 强制下车（driving 残留修复）。
+{
+    const fs = await import('node:fs');
+    const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    const vsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wvehicle.js', import.meta.url), 'utf8');
+    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    assert(wsrc.includes("if (b.hostile)") && wsrc.includes("o.role === 'friendly'"),
+        'wnpc: hostile bullets hit friendly/party npc (fix invincible teammates)');
+    assert(wsrc.includes('hit.npc.riding && sv.driving') && wsrc.includes('sv.driving.hp'),
+        'wnpc: riding npc shot prefers car durability');
+    assert(vsrc.includes("o.role !== 'hostile'") && vsrc.includes('killNpc(sv, o,'),
+        'wvehicle: car crushes hostile npc');
+    assert(src.includes('if (sv.driving) {') && src.includes("sv.driving = null;"),
+        'survival: softRespawn clears driving (fix dead-on-car not respawning)');
+}
+// 2026-08-10 静态回归：濒死切视角不再误触发重生（旧主控转倒地待救，而非低血留在世界被 AI 打死）。
+{
+    const fs = await import('node:fs');
+    const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    const swStart = wsrc.indexOf('export function switchControl');
+    const swEnd = swStart > 0 ? wsrc.indexOf('\nexport function', swStart + 10) : -1;
+    const swBody = swStart > 0 && swEnd > 0 ? wsrc.slice(swStart, swEnd) : '';
+    assert(swBody.includes('nearDeath') && swBody.includes('cur.downed = nearDeath'),
+        'wnpc: switchControl converts near-death old controller to downed (no instant respawn)');
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`);

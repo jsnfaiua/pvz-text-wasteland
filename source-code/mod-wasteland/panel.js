@@ -234,6 +234,42 @@ export function addToArr(arr, id, n) {
     return left;
 }
 
+// 2026-08-10 完整物品入包（搜索尸体/掉落地拾取用）：保留物品对象全部自定义属性
+// （wpn: 武器耐久、附魔、特殊标记等），不能只存 {id,n} 否则功能失效。
+// 可堆叠（max>1）：堆叠进同 id 槽（保留属性）；不可堆叠：找空位放完整对象。
+// 返回剩余数量（>0 表示装不下，需掉地）。
+export function addItemObj(arr, item) {
+    const id = item.id, n = item.n || 1;
+    const max = maxStack(id);
+    let left = n;
+    if (max > 1) {
+        for (const s of arr) {
+            if (left <= 0) break;
+            if (s && s.id === id && s.n < max) {
+                const add = Math.min(max - s.n, left);
+                s.n += add; left -= add;
+            }
+        }
+    } else {
+        // 不可堆叠：逐件占格，放入时保留完整对象属性
+        for (let i = 0; i < arr.length && left > 0; i++) {
+            if (!arr[i]) {
+                arr[i] = { ...item, n: 1 };
+                left -= 1;
+            }
+        }
+        return left;
+    }
+    for (let i = 0; i < arr.length && left > 0; i++) {
+        if (!arr[i]) {
+            const add = Math.min(max, left);
+            arr[i] = { ...item, n: add };
+            left -= add;
+        }
+    }
+    return left;
+}
+
 // 开发者无限背包：同类无限堆叠（无视上限），空位不足自动扩容（背包 UI 按实际格数显示）
 function addToArrInf(arr, id, n) {
     let left = n;
@@ -522,6 +558,9 @@ function onBagClick(sv, i) {
         if (host && host.onUse) host.onUse(i);   // 战利品袋：打开搜索
     } else if ((ITEMS[s.id] || {}).heal) {
         if (host && host.onUse) host.onUse(i);   // 回血类交给主控（改 HP）
+    } else if (s.id === 'flag') {
+        // 2026-08-10 领地旗帜：左键使用进入"待放置"状态（按 G 插旗，ESC 取消；旗帜处 F 可收起重放）
+        if (host && host.onUse) host.onUse(i);
     }
     renderBag(sv);
 }
@@ -636,7 +675,21 @@ export function showDeath(html, onExit) {
 }
 // 死亡界面多按钮版：actions = [{ label, onClick, cls }]（cls 可选 'primary'/'danger'）
 export function showDeathChoices(html, actions) {
-    if (!deathEl) return;
+    // 2026-08-11 修复"HP 0/80 但没有死亡弹窗"（用户反复反馈）：deathEl 在 initPanel 中懒创建，
+    // 若玩家从未打开背包/角色面板/储物柜等触发 initPanel 的入口，deathEl 为 null，
+    // 原代码 `if (!deathEl) return` 会静默吞掉弹窗——世界看似继续跑（HP/队伍 UI 还在更新）但无结算。
+    // 修复：deathEl 缺失时按需创建（不依赖 initPanel 被调用），保证死亡弹窗必定显示。
+    if (!deathEl) {
+        const screen = document.getElementById('game-container');
+        if (screen) {
+            deathEl = document.createElement('div');
+            deathEl.id = 'wsl-death';
+            deathEl.className = 'wsl-death hidden';
+            screen.appendChild(deathEl);
+        } else {
+            return;   // 极端：容器都没有，无法显示
+        }
+    }
     const btns = (actions || []).map(a =>
         `<button class="menu-btn${a.cls ? ' ' + a.cls : ''}" id="wsl-death-opt">${a.label}</button>`).join('');
     deathEl.innerHTML = '<div class="wsl-scaler">' + html + btns + '</div>';

@@ -18,7 +18,7 @@ import * as B from './wbalance.js';
 import * as WW from './wwordcraft-rules.js';
 import { infectionLevelFromRoll } from './winfection.js';
 import { interiorZombieCount } from './windoor.js';
-import { killNpc, maybeWound, maybeInfectNpc, inAnyCamp } from './wnpc.js';
+import { killNpc, maybeWound, maybeInfectNpc, inAnyCamp, npcApplyDownedHit } from './wnpc.js';
 
 const PATH_MAX_NODES = 12000;
 const Z_GUEST_CHASE_RANGE = 12;   // 联机：僵尸转向追逐远端队友的半径（格，≈半屏内）
@@ -95,9 +95,29 @@ function getPlayerPathField(sv, zCanStand) {
 }
 
 export function spawnZombie(sv, type, x, y, horde) {
+    // 2026-08-10 室内生成支持：sv.interior 时生成到 sv.interior.zombies（室内渲染读该数组），
+    // 安全化用房间 tiles（IT.FLOOR=0 可走）而非室外 getTile（室内坐标在室外是空地/建筑外 → 判定错）。
+    const inInterior = !!sv.interior;
+    if (inInterior) {
+        const it = sv.interior;
+        const igx0 = Math.floor(x / TS), igy0 = Math.floor(y / TS);
+        if (igx0 < 1 || igx0 >= it.w - 1 || igy0 < 1 || igy0 >= it.h - 1 || it.tiles[igy0 * it.w + igx0] !== 0) {
+            let fx = null, fy = null;
+            for (let r = 1; r <= 8 && fx == null; r++) {
+                for (let dy = -r; dy <= r && fx == null; dy++) for (let dx = -r; dx <= r && fx == null; dx++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                    const cxx = igx0 + dx, cyy = igy0 + dy;
+                    if (cxx >= 1 && cxx < it.w - 1 && cyy >= 1 && cyy < it.h - 1 && it.tiles[cyy * it.w + cxx] === 0) {
+                        fx = (cxx + 0.5) * TS; fy = (cyy + 0.5) * TS;
+                    }
+                }
+            }
+            if (fx != null) { x = fx; y = fy; }
+        }
+    }
     // 生成点安全化：落在不可走格（建筑/障碍内）时就近找可走格，防卡墙
     const gx0 = Math.floor(x / TS), gy0 = Math.floor(y / TS);
-    if (!isWalk(getTile(sv, gx0, gy0))) {
+    if (!inInterior && !isWalk(getTile(sv, gx0, gy0))) {
         let fx = null, fy = null;
         for (let r = 1; r <= 8 && fx == null; r++) {
             for (let dy = -r; dy <= r && fx == null; dy++) for (let dx = -r; dx <= r && fx == null; dx++) {
@@ -127,7 +147,8 @@ export function spawnZombie(sv, type, x, y, horde) {
         textAbility: textDef ? textDef.ability : null,
         atkState: null, atkT: 0, atkCd: 0, atkAngle: 0, atkWindup: 0, hasHit: false, auraT: 0, comboLeft: 0,
     };
-    sv.zombies.push(z);
+    if (inInterior) { if (sv.interior) sv.interior.zombies.push(z); }
+    else sv.zombies.push(z);
     sv._zombiePathNeedsRebuild = true;
     AudioSystem.playZombieSpawn();
     return z;
@@ -542,6 +563,17 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
             z._npcScanT = 0.2;
             for (const n of sv.npcs) {
                 if (!n.alive) continue;
+                // 2026-08-11 v2.97 濒死角色被僵尸咬 → 不再"免伤跳过"，改为扣救援时间（每 1 点伤害减 10 秒）。
+                // 用户反馈"濒临死亡被补刀后完全不能救"：此前直接 continue 让倒地角色永不被攻击，
+                // 救援时间永远不被消耗，反而"卡死"在濒死（既不救活也不死透）。现在被咬会加速
+                // 救援倒计时，倒计时归零才彻底死亡——但仍保留"咬不造成致命一击"（补刀不是立刻死）。
+                if (n.downed) {
+                    if (Math.hypot(n.x - z.x, n.y - z.y) < B.Z_BITE_RANGE) {
+                        z.faceDir = Math.atan2(n.y - z.y, n.x - z.x);
+                        npcApplyDownedHit(sv, n, (dmgTo / (contact.biteCd || 1)) * 0.2);
+                    }
+                    continue;
+                }
                 if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控走玩家受伤路径
                 // 触发距离与玩家一致（Z_BITE_RANGE=44，覆盖相邻格）——修复 NPC 卡血：
                 // 原 Z_CONTACT_DIST+6=36 在僵尸贴相邻格(36px)时刚好不满足 → NPC 不掉血（用户反馈）
@@ -635,7 +667,7 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
             const half = B.Z_CHASE_RANGE * TS / 2;
             let bd = pdist * 0.9, bn = null;
             for (const n of sv.npcs) {
-                if (!n.alive || !n.party) continue;
+                if (!n.alive || !n.party || n.downed) continue;   // 2026-08-10 濒死角色不作为僵尸追逐目标
                 if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控（玩家）已在 pdist 覆盖
                 if (Math.abs(n.x - z.x) >= half || Math.abs(n.y - z.y) >= half) continue;   // 感应范围同玩家
                 const nd = Math.hypot(n.x - z.x, n.y - z.y);

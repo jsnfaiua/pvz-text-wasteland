@@ -22,6 +22,7 @@ import * as WNPC from './wnpc.js';
 import * as HUD from './whud.js';
 import * as WD from './windoor.js';
 import { showLookCreator, normalizeLook } from './wlook.js';
+import * as WMAP from './wmap.js';
 import AudioSystem from '../systems/audio.js';
 
 const SAVE_KEY = 'wasteland_save';
@@ -252,6 +253,10 @@ function buildHtml() {
             <button data-q="look">外观定制(捏脸)</button>
         </div>
         <div class="wsl-dev-quick">
+            <button data-q="map">开地图</button>
+            <button data-q="reveal">揭示全图</button>
+        </div>
+        <div class="wsl-dev-quick">
             <select id="wdev-wx-sel" class="wsl-dev-select" title="天气与强度（含雷阵雨闪电）"></select>
             <button data-q="wxset" id="wdev-wxset">设置天气</button>
         </div>
@@ -261,7 +266,13 @@ function buildHtml() {
         </div>
         <div class="wsl-dev-quick">
             <button data-q="tp" class="wsl-dev-mp">传送队友(TP)</button>
-            <button data-q="spawn">刷僵尸 ×6</button>
+            <button data-q="summonmate" title="召唤 NPC 队友瞬移到身边（调试用）">召唤队友</button>
+            <button data-q="tpdeath" title="传送到上次死亡位置（有死亡记录即可用，不依赖指引）">传送死亡点</button>
+            <button data-q="spawn">刷僵尸</button>
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#ccc;">
+                数量 <input data-q="zn" type="range" min="1" max="30" value="6" style="width:70px;vertical-align:middle;">
+                <span data-q="znv">6</span>
+            </label>
             <button data-q="horde">立即尸潮</button>
             <button data-q="killall">清屏僵尸</button>
             <button data-q="allitems">全部物资×1</button>
@@ -743,6 +754,13 @@ function bindEvents() {
         });
     });
 
+    // 2026-08-10 刷僵尸数量滑块：拖动即时显示数值
+    const znEl = devEl.querySelector('[data-q="zn"]');
+    const znvEl = devEl.querySelector('[data-q="znv"]');
+    if (znEl && znvEl) {
+        znEl.addEventListener('input', () => { znvEl.textContent = znEl.value; });
+    }
+
     // 快捷功能
     devEl.querySelectorAll('.wsl-dev-quick button[data-q]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -824,6 +842,54 @@ function bindEvents() {
                     }
                     break;
                 }
+                case 'map':
+                    // 2026-08-10 世界地图：开/关（仅室外；直接调用模块，无需 host 权威——探索记录世界档随存）
+                    if (sv.interior) { MSG.pushMsg(sv, '[DEV] 地图仅室外可用', '#FF8866'); break; }
+                    WMAP.toggle(sv);
+                    break;
+                case 'reveal': {
+                    // 2026-08-10 世界地图：揭示全图（已探索区块 = 全局；host 权威进世界档）
+                    if (sv.mp && sv.mp.role === 'guest') { reportDevCmd(sv, { cmd: 'reveal' }); break; }
+                    if (!sv.mods.explored) sv.mods.explored = {};
+                    const R = 400;   // 以原点为中心 ±400 区块（约 ±64 万格）
+                    for (let cx = -R; cx <= R; cx++) for (let cy = -R; cy <= R; cy++)
+                        sv.mods.explored[cx + ',' + cy] = 1;
+                    MSG.pushMsg(sv, '[DEV] 已揭示全图（±400 区块）', '#7DFF7D');
+                    break;
+                }
+                case 'summonmate': {
+                    // 2026-08-11 开发者召唤 NPC 队友瞬移到身边（调试用，不受冷却限制）。
+                    // 内联实现避免 wdev↔survival 循环依赖；联机 guest 上报 host 权威执行。
+                    if (sv.mp && sv.mp.role === 'guest') { reportDevCmd(sv, { cmd: 'summonmate' }); MSG.pushMsg(sv, '[DEV] 已请求召唤队友（同步中）', '#FFCC66'); break; }
+                    const mates = (sv.npcs || []).filter(n => n.alive && n.party && n.id !== sv.controllerId && !n.isPlayer && !n.downed && !n.riding);
+                    if (!mates.length) { MSG.pushMsg(sv, '[DEV] 队伍里没有可召唤的 NPC 队员', '#FF8866'); break; }
+                    let cnt = 0;
+                    for (const m of mates) {
+                        // 在玩家周围找可站立落点
+                        let spot = null;
+                        for (let r = 1; r <= 3 && !spot; r++) {
+                            for (let i = 0; i < 8 * r; i++) {
+                                const ang = (i / (8 * r)) * Math.PI * 2;
+                                const x = sv.px + Math.cos(ang) * r * TS * 0.9;
+                                const y = sv.py + Math.sin(ang) * r * TS * 0.9;
+                                if (sv.interior) {
+                                    const gx = Math.floor(x / TS), gy = Math.floor(y / TS);
+                                    const it = sv.interior;
+                                    if (it && gx >= 0 && gx < it.w && gy >= 0 && gy < it.h && it.tiles[gy * it.w + gx] !== 1) { spot = { x, y }; break; }
+                                } else if (isWalk(getTile(sv, Math.floor(x / TS), Math.floor(y / TS)))) { spot = { x, y }; break; }
+                            }
+                        }
+                        if (!spot) { spot = { x: sv.px, y: sv.py }; }
+                        if (sv.interior) {
+                            if (!m.inInterior) { m.inInterior = true; m.interiorKey = sv.interior.key || null; m.interiorFloor = sv.interior.floor || 1; }
+                        } else if (m.inInterior) { m.inInterior = false; m.interiorKey = null; m.interiorFloor = null; }
+                        m.x = spot.x; m.y = spot.y;
+                        m.state = 'follow'; m.campTask = null; m._path = null;
+                        cnt++;
+                    }
+                    MSG.pushMsg(sv, `[DEV] 已召唤 ${cnt} 名队友到身边`, '#7DFF7D');
+                    break;
+                }
                 case 'tp': {
                     // 联机：传送到真人队友身旁（sv.p2s 由 wpos 同步维护）
                     // 多队友：弹选择器指定某个玩家（旧版只能随机/唯一队友）
@@ -842,6 +908,34 @@ function bindEvents() {
                     }
                     if (slots.length === 1) { devTpTo(sv, slots[0]); break; }
                     devTpPicker(sv, slots);   // 多个队友：弹出选择器指定玩家
+                    break;
+                }
+                case 'tpdeath': {
+                    // 2026-08-10 传送上次死亡位置：优先用持久记录 sv._lastDeathPos（不随指引消失，
+                    // 兜底测试用）；无该记录时回退 sv._legacyDrop（死亡地点指引）。两者都没有才提示。
+                    // 2026-08-10 修复：用户反馈"操控 NPC 死亡重生后没有死亡指引，传送死亡点也用不了"——
+                    // 指引会因"走到点/尸体搜索完"被清除，传送功能不应依赖指引。
+                    if (sv.driving) { MSG.pushMsg(sv, '[DEV] 请先下车再传送', '#FF8866'); break; }
+                    const ld = sv._lastDeathPos || sv._legacyDrop;
+                    if (!ld || (ld.x == null && ld.px == null)) {
+                        MSG.pushMsg(sv, '[DEV] 尚无死亡位置记录（从未死亡）', '#FF8866');
+                        break;
+                    }
+                    const dtx = ld.x, dty = ld.y;
+                    // 若在室内：传送需退出室内回到室外（死亡点坐标是世界坐标）
+                    if (sv.interior) WD.exitInterior(sv, true);
+                    for (let tries = 0; tries < 24; tries++) {
+                        const ang = Math.random() * Math.PI * 2;
+                        const d = (1 + Math.random()) * TS;
+                        const gx = Math.floor((dtx + Math.cos(ang) * d) / TS);
+                        const gy = Math.floor((dty + Math.sin(ang) * d) / TS);
+                        if (!isWalk(getTile(sv, gx, gy))) continue;
+                        sv.px = (gx + 0.5) * TS; sv.py = (gy + 0.5) * TS;
+                        sv.faceX = 1; sv.faceY = 0;
+                        const dist = Math.round(Math.hypot(sv.px - dtx, sv.py - dty) / TS);
+                        MSG.pushMsg(sv, `[DEV] 已传送到上次死亡位置（${dist} 格）`, '#7DFF7D');
+                        break;
+                    }
                     break;
                 }
                 case 'horde':
@@ -865,12 +959,15 @@ function bindEvents() {
                     MSG.pushMsg(sv, '[DEV] 僵尸已清屏', '#FFB347');
                     break;
                 case 'spawn': {
+                    // 2026-08-10 数量自定义（进度滚轮）：读滑块值（默认 6，范围 1~30）
+                    const znEl = document.querySelector('[data-q="zn"]');
+                    const n = znEl ? Math.max(1, Math.min(30, parseInt(znEl.value) || 6)) : 6;
                     if (sv.mp && sv.mp.role === 'guest') {
-                        reportDevCmd(sv, { cmd: 'spawn', n: 6 });
-                        MSG.pushMsg(sv, '[DEV] 已请求召唤僵尸 ×6（同步中）', '#FF8866');
+                        reportDevCmd(sv, { cmd: 'spawn', n });
+                        MSG.pushMsg(sv, `[DEV] 已请求召唤僵尸 ×${n}（同步中）`, '#FF8866');
                         break;
                     }
-                    devSpawnZombies(sv, 6);
+                    devSpawnZombies(sv, n);
                     break;
                 }
                 case 'allitems': {
@@ -964,6 +1061,35 @@ export function applyDevCmd(p) {
         case 'npc':
             spawnNpcNear(sv, p.kind);
             break;
+        case 'summonmate': {
+            // 2026-08-11 host 权威执行 guest 的"召唤队友"请求（与本地 dev 按钮同逻辑）
+            const mates = (sv.npcs || []).filter(n => n.alive && n.party && n.id !== sv.controllerId && !n.isPlayer && !n.downed && !n.riding);
+            let cnt = 0;
+            for (const m of mates) {
+                let spot = null;
+                for (let r = 1; r <= 3 && !spot; r++) {
+                    for (let i = 0; i < 8 * r; i++) {
+                        const ang = (i / (8 * r)) * Math.PI * 2;
+                        const x = sv.px + Math.cos(ang) * r * TS * 0.9;
+                        const y = sv.py + Math.sin(ang) * r * TS * 0.9;
+                        if (sv.interior) {
+                            const gx = Math.floor(x / TS), gy = Math.floor(y / TS);
+                            const it = sv.interior;
+                            if (it && gx >= 0 && gx < it.w && gy >= 0 && gy < it.h && it.tiles[gy * it.w + gx] !== 1) { spot = { x, y }; break; }
+                        } else if (isWalk(getTile(sv, Math.floor(x / TS), Math.floor(y / TS)))) { spot = { x, y }; break; }
+                    }
+                }
+                if (!spot) { spot = { x: sv.px, y: sv.py }; }
+                if (sv.interior) {
+                    if (!m.inInterior) { m.inInterior = true; m.interiorKey = sv.interior.key || null; m.interiorFloor = sv.interior.floor || 1; }
+                } else if (m.inInterior) { m.inInterior = false; m.interiorKey = null; m.interiorFloor = null; }
+                m.x = spot.x; m.y = spot.y;
+                m.state = 'follow'; m.campTask = null; m._path = null;
+                cnt++;
+            }
+            MSG.pushMsg(sv, `[DEV] 对方召唤了 ${cnt} 名队友到身边`, '#FFB347');
+            break;
+        }
         case 'time':
             // 时间操作（host 权威，t/day 进 wsync 回传双端）
             if (p.op === 'day') { sv.day++; sv.t = B.DAY_LEN * 0.35; MSG.pushMsg(sv, `[DEV] 对方跳到第 ${sv.day} 天`, '#FFB347'); }
@@ -981,6 +1107,15 @@ export function applyDevCmd(p) {
             // 2026-08-09 风向（host 权威；_devWind 经 devflags 回传双端）
             applyWindSet(sv, p.wind || 'auto');
             MSG.pushMsg(sv, '[DEV] 对方设置了风向', '#FFB347');
+            break;
+        }
+        case 'reveal': {
+            // 2026-08-10 世界地图：guest 请求揭示全图 → host 权威执行（探索记录世界档随存）
+            if (!sv.mods.explored) sv.mods.explored = {};
+            const R = 400;
+            for (let cx = -R; cx <= R; cx++) for (let cy = -R; cy <= R; cy++)
+                sv.mods.explored[cx + ',' + cy] = 1;
+            MSG.pushMsg(sv, '[DEV] 对方揭示了全图（±400 区块）', '#FFB347');
             break;
         }
     }
@@ -1065,10 +1200,28 @@ function setAllStatsFull(sv) {
     }
 }
 
-// quick 面板的"刷僵尸 ×6"逻辑（bindEvents 与 applyDevCmd 共用）
+// quick 面板的"刷僵尸"逻辑（bindEvents 与 applyDevCmd 共用）
+// 2026-08-10 数量自定义（滑块值 n）+ 室内生成支持（室内时在房间可走格生成室内僵尸）。
 function devSpawnZombies(sv, n) {
     let made = 0;
-    for (let i = 0; i < 24 && made < n; i++) {
+    const limit = Math.max(1, Math.min(30, n || 6));
+    // 室内：在房间 tiles 里找 FLOOR 可走格生成（spawnZombie 已支持室内 → sv.interior.zombies）
+    if (sv.interior) {
+        const it = sv.interior;
+        for (let i = 0; i < 120 && made < limit; i++) {
+            const gx = 1 + Math.floor(Math.random() * Math.max(1, it.w - 2));
+            const gy = 1 + Math.floor(Math.random() * Math.max(1, it.h - 3));
+            if (it.tiles[gy * it.w + gx] !== 0) continue;   // 0 = IT.FLOOR 可走
+            const r = Math.random();
+            const type = r < 0.5 ? 'normal' : (r < 0.82 ? 'cone' : 'bucket');
+            spawnZombie(sv, type, (gx + 0.5) * TS, (gy + 0.5) * TS, false);
+            made++;
+        }
+        MSG.pushMsg(sv, `[DEV] 室内生成僵尸 ×${made}`, '#FF8866');
+        return made;
+    }
+    // 室外：玩家附近刷
+    for (let i = 0; i < 24 && made < limit; i++) {
         const ang = Math.random() * Math.PI * 2;
         const dist = (5 + Math.random() * 4) * TS;
         const x = sv.px + Math.cos(ang) * dist;

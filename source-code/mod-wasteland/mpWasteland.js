@@ -17,7 +17,7 @@
 //   wrejoin guest→host ×1  {}                                        客人断线重连后请求状态重同步
 // ============================================================
 
-import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, updateLootDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName, debugGetSv, downedMedSubmit } from './survival.js';
+import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, updateLootDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName, debugGetSv, downedMedSubmit, applyExplore } from './survival.js?v=2.97';
 import AudioSystem from '../systems/audio.js';
 import * as WDEV from './wdev.js';
 import { newSeed } from './world.js';
@@ -468,6 +468,14 @@ function dispatchWevt(evt, meta) {
         if (role === 'host' && evt.from === 'guest') {
             const net = mp();
             if (net) net.send('wevt', evt, meta && meta.conn ? { exclude: meta.conn.peer } : null);
+        }
+        return;
+    }
+    if (evt.type === 'explore') {
+        // 2026-08-10 世界地图：guest 探索上报 → host 权威合并进世界档；转发其他客人（3+ 人）
+        if (role === 'host') {
+            if (typeof evt.cx === 'number' && typeof evt.cy === 'number') applyExplore(evt.cx, evt.cy);
+            if (evt.from === 'guest') forwardToOtherGuests(evt, meta);
         }
         return;
     }

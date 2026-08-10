@@ -9,6 +9,7 @@ import AudioSystem from '../systems/audio.js';
 import * as B from './wbalance.js';
 import { TS } from './wconst.js';
 import { rollZombieInfection, addPlayerInfection, playerInfectionStage, PLAYER_INFECTION } from './winfection.js';
+import { log } from './survival.js';
 
 const STAM_DELAY = 0.5;     // 消耗后回复延迟
 const REGEN_NORMAL = 14;    // 正常回复速率 /s
@@ -198,6 +199,7 @@ export function moveMul(sv) {
     if (sv.sprinting) mul *= 1.65;
     if (sv.guarding) mul *= 0.55;
     if (sv.aiming) mul *= 0.6;
+    if (sv.squatting) mul *= 0.7;   // 2026-08-10 Ctrl 蹲下：移速 -30%（潜伏）
     if (sv.exhausted) mul *= 0.6;
     if (sv._atkSlowT > 0) mul *= 0.5;   // 扑咬控制/铁桶溅射减速
     if (sv._carryDowned) mul *= B.DOWNED_CARRY_SPEED;   // 2026-08-10 背起濒死玩家：移速减慢（负重）
@@ -315,6 +317,28 @@ export function resolvePlayerHit(sv, z, dmg, canStand) {
 // 血条如进度条缓慢减少（DPS = 原 dmg/biteCd，平均 DPS 与原咬击节奏完全一致）；
 // 啃咬音效/受击反馈/感染/特殊效果按 Z_BITE_INTERVAL(0.3s) 节拍触发一次（与掉血解耦）。
 export function resolvePlayerBiteTick(sv, z, dps, dt, canStand) {
+    // 2026-08-11 v2.97 濒死角色被咬：不再"免咬跳过"，而是扣救援时间（每 1 点伤害减 10 秒）。
+    // 用户反馈"濒临死亡被补刀后完全不能救"——此前濒死主角被咬直接 return，救援倒计时永不消耗、
+    // 也不会死透，卡在"既救不活也不死"的悬空态。现在：
+    //   · 当前主控本人倒地 → 不扣 hp（避免反复触发 onDeath/掉遗物），但扣 sv._downed 救援时间；
+    //   · 切到健康队友（记录未 downed）→ 照常被咬掉血，倒地主角本人仍走救援时间扣减。
+    if (sv._downed) {
+        const cur = sv.controllerId ? (sv.npcs || []).find(n => n.id === sv.controllerId) : null;
+        if (!cur || cur.downed) {
+            // 倒地角色被咬：扣救援时间（等效 1 点伤害/0.2s 扫描节拍的累计伤害）
+            if (sv._downed._penaltySec == null) sv._downed._penaltySec = 0;
+            const dmg = dps * B.Z_BITE_INTERVAL;
+            sv._downed._penaltySec += dmg * B.DOWNED_HIT_PENALTY_SEC;
+            // 提示（防刷屏：3 秒一次）
+            if (!sv._downed._hitLogT || (sv.now != null ? sv.now : 0) - sv._downed._hitLogT > 3) {
+                sv._downed._hitLogT = sv.now;
+                const spent = Math.max(0, (sv.now != null ? sv.now : 0) - (sv._downed.downedAtReal || 0)) + (sv._downed._penaltySec || 0);
+                const remainSec = Math.max(0, B.DOWNED_LIMIT_SECONDS - spent);
+                log(sv, `你被攻击！救援时间减少 ${Math.round(dmg * B.DOWNED_HIT_PENALTY_SEC)} 秒（剩余 ${Math.ceil(remainSec / 60)} 分钟）`, '#FF8866');
+            }
+            return;
+        }
+    }
     // 2026-08-09 开局昏迷苏醒：睁眼动画期间角色无敌（僵尸咬不伤），状态不变
     if (sv._wake && sv._wake.t < sv._wake.dur) return;
     if (sv.isJumping) return;

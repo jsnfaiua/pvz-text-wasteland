@@ -34,7 +34,7 @@ export const DIFF_TABLE = {
 
 // ---------- 僵尸 ----------
 export const Z_CHAR = { normal: '僵', cone: '障', bucket: '桶', pole: '杆', flag: '旗', door: '门', remnant: '残', deleter: '删', swapper: '换', giant: '巨' };
-export const Z_SPEED_MUL = 2.2;   // 僵尸速度倍率,2026-08-08 调慢 ~15%(用户:偏快)
+export const Z_SPEED_MUL = 1.9;   // 僵尸速度倍率,2026-08-10 调慢 ~14%(用户:需比角色略慢,对比见 v2.64 更新记录)
 // 尸化玩家精英僵尸（hardcore 死亡后留世；§13.1 数值收口）
 export const PZ_BASE_HP = 70;        // 基础生命（×天数/难度/环 ×精英系数）
 export const PZ_ELITE_MUL = 1.8;     // 精英系数（血量）
@@ -63,7 +63,7 @@ export function deathDropRate(count) {
     return Math.min(DEATH_DROP_BASE + Math.max(0, n - 1) * DEATH_DROP_STEP, DEATH_DROP_MAX);
 }
 // ---------- 倒地救治（软核，2026-08-09 用户定稿） ----------
-export const DOWNED_LIMIT_DAYS = 2;        // 倒地治疗限时（游戏天数）；超时主角彻底死亡
+export const DOWNED_LIMIT_DAYS = 2;        // 倒地治疗限时（游戏天数，旧档兼容）；v2.97 起改为现实时间 DOWNED_LIMIT_SECONDS
 export const DOWNED_RESCUE_MED = 'med:wound';  // 救治主角所需药品（对症伤口药；抗生素 med:pan 或草药可替代）
 export const DOWNED_NEED_MED = 1;          // 集齐瓶数（多玩家提交累计达到即救活）
 export const DOWNED_HERB_EQUIV = 3;        // 草药等价值（3 草药 = 1 瓶对症药）
@@ -71,6 +71,13 @@ export const DOWNED_PZ_DELAY_DAYS = 1;     // 主角彻底死亡（倒地超时�
 export const DOWNED_RESPAWN_PZ_DELAY_DAYS = 3;   // 软核无队友重生后，过 3 天重生点才刷"玩家名"僵尸（用户 2026-08-09）
 export const DOWNED_CARRY_SPEED = 0.65;          // 2026-08-10 背起濒死玩家时的移速倍率（负重变慢）
 export const DOWNED_BED_EXTEND = 0.25;           // 2026-08-10 背到室内床上躺下：存活限时延长 25%（即多活半天，对 DOWNED_LIMIT_DAYS=2 天）
+// 2026-08-11 v2.97 用户定稿：濒死救援改为【现实时间】倒计时
+export const DOWNED_LIMIT_SECONDS = 1200;  // 濒死可救治总时长（现实秒）= 20 分钟（玩家现实等待 20 分钟无人救 → 彻底死亡）
+export const DOWNED_HIT_PENALTY_SEC = 10;  // 濒死角色每受到 1 点攻击伤害，救援时间减少 10 秒
+export const DOWNED_SHARE_FOOD_AT = 60;    // 赠予系统：自己饱食高于此值才分享食物（保证自己生存）
+export const DOWNED_SHARE_WATER_AT = 60;   // 赠予系统：自己水分高于此值才分享水
+export const DOWNED_SHARE_AMMO_KEEP = 20;  // 赠予系统：弹药保留底线（低于此值不分享；高于则匀一半给缺弹药的队友）
+export const DOWNED_SHARE_MED_KEEP = 2;    // 赠予系统：药品保留底线（自己 ≥ 此值且队友受伤/生病才给）
 export const Z_DAY_SCALE = 0.05;
 export const Z_CHASE_RANGE = 8;       // 格：玩家周围总宽/高为 8 格的方形警戒区
 export const Z_WANDER_SPEED = 0.4;   // 闲逛速度,2026-08-08 调慢 ~11%
@@ -247,8 +254,8 @@ export const INF_VIS = [
     { stage: 5, name: '文尸', alpha: 0.32, noise: 1 },    // 90+ 更深 + 更快呼吸
 ];
 export function infVis(stage) { return INF_VIS[stage] || INF_VIS[0]; }
-export const Z_CHASE_SPEED_MUL = 1.3;  // 探测到玩家后追击加速倍率
-export const Z_HORDE_SPEED_MUL = 1.15;
+export const Z_CHASE_SPEED_MUL = 1.15;  // 探测到玩家后追击加速倍率,2026-08-10 调慢 ~12%(用户:比角色略慢)
+export const Z_HORDE_SPEED_MUL = 1.1;
 // 持续啃咬间隔（秒）（2026-08-09 用户要求）：僵尸贴近玩家/NPC/联机 guest 后按此固定节奏
 // 持续咬，单次伤害仍取 Z_CONTACT.dmg × 难度/夜晚倍率（§13.7 难度缩放由 dmgTo 承担，频率不随难度变）。
 // 手感调节点：觉得太凶回调 0.5/0.6，太弱收紧 0.2。
@@ -275,7 +282,7 @@ export const ZOMBIE_LOOT_TIER = {
 export const ZOMBIE_BAG_DROP_CHANCE = { normal: 0.50, variant: 0.65, elite: 0.85, boss: 1.00 };
 // 保留旧导出，供尚未迁移的外部调用兼容；模组内部不再使用。
 export const Z_DROP_CHANCE = ZOMBIE_BAG_DROP_CHANCE.variant;
-export const Z_NIGHT_STRENGTH_MUL = 1.12;
+export const Z_NIGHT_STRENGTH_MUL = 1.08;   // 2026-08-10 夜间提速倍率调温和（1.12→1.08）
 
 // ---------- 僵尸死亡战利品（道具化 + 品质） ----------
 // 品质概率：僵尸越强，高品质概率越高；品质越高整体越稀有
@@ -363,7 +370,7 @@ export const Z_CONTACT = {
     normal:  { dmg: 8,  biteCd: 1.0, speedMul: 1.0,  armor: 0,    lunge: 0,  stunTime: 0,   knockback: 0 },
     cone:    { dmg: 7,  biteCd: 0.9, speedMul: 1.25, armor: 0.10, lunge: 40, stunTime: 0.4, knockback: 0 },
     bucket:  { dmg: 18, biteCd: 1.6, speedMul: 0.65, armor: 0.45, lunge: 0,  stunTime: 0,   knockback: 12 },
-    pole:    { dmg: 6,  biteCd: 0.7, speedMul: 1.45, armor: 0,    lunge: 55, stunTime: 0.5, knockback: 0 },
+    pole:    { dmg: 6,  biteCd: 0.7, speedMul: 1.45, armor: 0,    lunge: 45, stunTime: 0.5, knockback: 0 },   // 2026-08-10 突进 55→45(用户:削弱瞬移体感)
     flag:    { dmg: 4,  biteCd: 1.2, speedMul: 1.1,  armor: 0.05, lunge: 0,  stunTime: 0,   knockback: 0 },
     door:    { dmg: 10, biteCd: 1.4, speedMul: 0.55, armor: 0.55, lunge: 0,  stunTime: 0,   knockback: 24 },
     remnant: { dmg: 14, biteCd: 1.1, speedMul: 0.9,  armor: 0.15, lunge: 0,  stunTime: 0,   knockback: 0 },
@@ -385,7 +392,7 @@ export const Z_ATK_STYLES = {
     normal: { windup: 0.60, dmg: 8, lunge: 0, strikeDist: 30, effect: 'headbutt' },
     cone:   { windup: 0.50, dmg: 7, lunge: 40, strikeDist: 30, effect: 'charge' },
     bucket: { windup: 1.00, dmg: 18, lunge: 0, strikeDist: 30, effect: 'slam' },
-    pole:   { windup: 0.42, dmg: 6, lunge: 55, strikeDist: 30, effect: 'thrust' },
+    pole:   { windup: 0.42, dmg: 6, lunge: 45, strikeDist: 30, effect: 'thrust' },   // 2026-08-10 与 Z_CONTACT.pole 同步 55→45
     flag:   { windup: 0.75, dmg: 4, lunge: 0, strikeDist: 30, effect: 'rally' },
     door:   { windup: 0.68, dmg: 10, lunge: 0, strikeDist: 30, effect: 'bash' },
     remnant: { windup: 0.80, dmg: 14, lunge: 0, strikeDist: 30, effect: 'scatter' },
@@ -501,7 +508,7 @@ export const STAM_REGEN_FUEL = 0.45;      // 加速回体时额外消耗饱食/�
 // ---------- 城区要素（M-β） ----------
 export const ROAD_SPEED = 1.25;     // 公路移动加速倍率
 export const BARRICADE_HP = 150;    // 路障耐久
-export const CAR_HP = 260;          // 汽车（掩护体）耐久
+export const CAR_HP = 3000;          // 汽车（掩护体）耐久（2026-08-11 用户要求提升至 3000）
 
 // ---------- 车辆燃油 ----------
 export const FUEL_MAX = 100;           // 油量上限（单位）

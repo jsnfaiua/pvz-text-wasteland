@@ -163,8 +163,11 @@ function renderDetail() {
     });
 
     // 进入模组（动态加载荒原，launch 供继续 / 新世界两个按钮复用）
+    // 2026-08-11 v2.97 加 ?v= 版本号强制 cache-busting：用户浏览器 ESM 缓存会复用旧版 survival.js，
+    // 导致 showAllDeadChoices 找不到 → ReferenceError 循环僵死。版本号变更必须同步。
+    const _WSL_VER = '2.97';
     const launchWasteland = (opts) => {
-        import('../mod-wasteland/survival.js').then(m => {
+        import('../mod-wasteland/survival.js?v=' + _WSL_VER).then(m => {
             m.enterWasteland(opts);
         }).catch(err => {
             console.error('[wasteland] 启动失败', err);
@@ -181,7 +184,8 @@ function renderDetail() {
         if (!cur.enabled) return;
         if (mod.id !== 'wasteland') { launchWasteland(cur.opts); return; }
         // 动态加载荒原模块后弹出开始界面（开始界面在 survival.js 实现）
-        import('../mod-wasteland/survival.js').then(m => {
+        // 2026-08-11 v2.96 同上：加 ?v= 防止 ESM 缓存返回旧版（v2.95 之前没有 showAllDeadChoices）
+        import('../mod-wasteland/survival.js?v=' + _WSL_VER).then(m => {
             m.showGameStartDialog({ onLaunch: launchWasteland, onLaunchMP });
         }).catch(err => {
             console.error('[wasteland] 开始游戏失败', err);

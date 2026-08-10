@@ -12,6 +12,7 @@ import { PLANTS } from '../core/constants.js';
 import { T, getTile, setTile, hash2 } from './world.js';
 import { TS } from './wconst.js';
 import AudioSystem from '../systems/audio.js';
+import * as B from './wbalance.js';
 
 // ---------- 荒原植物品种表（引用本体 PLANTS 名称/颜色，数值适配大世界） ----------
 export const WILD_SPECIES = {
@@ -204,7 +205,13 @@ export function updatePlants(sv, dt) {
                 if (sp.melee) {
                     // 2026-08-09 开局昏迷苏醒：睁眼动画期间玩家无敌（食人花咬不伤）
                     if (d < sp.range && !sv._devGod && !(sv._wake && sv._wake.t < sv._wake.dur)) {
-                        sv.hp -= dmg * 0.6;
+                        // 2026-08-11 v2.97 倒地玩家被植物咬 → 扣救援时间（不直接扣血，防负血）
+                        if (sv._downed && (!sv.controllerId || (sv.npcs || []).find(n => n.id === sv.controllerId && n.downed))) {
+                            if (sv._downed._penaltySec == null) sv._downed._penaltySec = 0;
+                            sv._downed._penaltySec += Math.round(dmg * 0.6) * B.DOWNED_HIT_PENALTY_SEC;
+                        } else {
+                            sv.hp = Math.max(0, sv.hp - dmg * 0.6);
+                        }
                         sv.hurtT = 0.3;
                         sv.effects.push({ kind: 'hit', x: sv.px, y: sv.py, life: 0.2, maxLife: 0.2, label: '咬' });
                         AudioSystem.playChomper();
