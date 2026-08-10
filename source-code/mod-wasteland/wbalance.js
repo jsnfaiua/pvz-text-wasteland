@@ -49,6 +49,28 @@ export const DEATH_VANISH_MAX = 0.6;    // 封顶
 export function deathVanishRate(count) {
     return Math.min(DEATH_VANISH_BASE + (count || 0) * DEATH_VANISH_STEP, DEATH_VANISH_MAX);
 }
+// ---------- 死亡掉落稀有度惩罚（2026-08-09 用户定稿） ----------
+// 死亡次数越多，遗物包裹里掉落的物品越多、越稀有（包裹内容更丰富），有上限。
+// 掉落判定确定性化：hash2(seed,死亡格,槽位,次数) < dropRate → 该格物品掉进遗物包裹。
+// 死亡次数 1/2/3+ → 掉落率 10%/+1%/封顶 90%（用户 2026-08-09 修改），
+// 高价值物品优先被判定掉落（按 itemValue 排序，使"包裹更丰富/更稀有"）。
+export const DEATH_DROP_BASE = 0.1;    // 第 1 次死亡掉落率（用户改：10%）
+export const DEATH_DROP_STEP = 0.01;   // 每次死亡递增（用户改：+1%）
+export const DEATH_DROP_MAX = 0.9;     // 封顶掉落率（用户改：90%）
+export function deathDropRate(count) {
+    const n = (count || 0);
+    // 第 1 次 = BASE（10%）；之后每多死 +STEP（+1%）；封顶 MAX（90%）
+    return Math.min(DEATH_DROP_BASE + Math.max(0, n - 1) * DEATH_DROP_STEP, DEATH_DROP_MAX);
+}
+// ---------- 倒地救治（软核，2026-08-09 用户定稿） ----------
+export const DOWNED_LIMIT_DAYS = 2;        // 倒地治疗限时（游戏天数）；超时主角彻底死亡
+export const DOWNED_RESCUE_MED = 'med:wound';  // 救治主角所需药品（对症伤口药；抗生素 med:pan 或草药可替代）
+export const DOWNED_NEED_MED = 1;          // 集齐瓶数（多玩家提交累计达到即救活）
+export const DOWNED_HERB_EQUIV = 3;        // 草药等价值（3 草药 = 1 瓶对症药）
+export const DOWNED_PZ_DELAY_DAYS = 1;     // 主角彻底死亡（倒地超时）后，重生点刷"玩家名"僵尸的延迟天数
+export const DOWNED_RESPAWN_PZ_DELAY_DAYS = 3;   // 软核无队友重生后，过 3 天重生点才刷"玩家名"僵尸（用户 2026-08-09）
+export const DOWNED_CARRY_SPEED = 0.65;          // 2026-08-10 背起濒死玩家时的移速倍率（负重变慢）
+export const DOWNED_BED_EXTEND = 0.25;           // 2026-08-10 背到室内床上躺下：存活限时延长 25%（即多活半天，对 DOWNED_LIMIT_DAYS=2 天）
 export const Z_DAY_SCALE = 0.05;
 export const Z_CHASE_RANGE = 8;       // 格：玩家周围总宽/高为 8 格的方形警戒区
 export const Z_WANDER_SPEED = 0.4;   // 闲逛速度,2026-08-08 调慢 ~11%
@@ -72,10 +94,60 @@ function wxHash(seed, a, b) {
     h ^= h >>> 16;
     return (h >>> 0) / 4294967296;
 }
+
+// ---------- 天气概率演进（2026-08-09 用户要求"完善天气概率"） ----------
+// 各气候出现概率按【季节 + 天数阶段】平滑变化（仍确定性：同一 seed/day 双端一致）。
+// 2026-08-10 用户定稿"按季节限定天气类型"：特定季节只有特定天气会触发——
+//   春：晴 / 雨（小雨·中雨·大雨·暴雨·阵雨·雷阵雨都可能）/ 雾   —— 无雪、无沙尘
+//   夏：晴 / 雨（含雷阵雨）/ 沙尘                                    —— 无雪、无雾
+//   秋：晴 / 雨 / 雾 / 沙尘                                          —— 无雪
+//   冬：晴 / 雪 / 雾                                                 —— 干燥不下雨、无沙尘
+// 雨/雪/雾/沙尘 出现后，其【强度档】（小雨~雷阵雨 / 小雪~大雪 / 薄雾~浓雾 / 弱沙~强沙）
+// 仍由 wxLevelAt 确定性派生——用户确认：春天不只细雨，各雨档都可能；夏天也不只雷阵雨。
+// 天数阶段叠加：前期（day≤2）温和（晴↑恶劣↓）；后期（day≥10）荒原恶化（恶劣↑）。
+// 权重和始终归一 = 1。
+export const SEASON_NAMES = ['春', '夏', '秋', '冬'];
+export const SEASON_DAYS = 7;             // 每季 7 天（1 现实小时 = 1 游戏天 → 一季约 7 天）
+export const SEASON_CYCLE = 28;           // 四季周期（天）
+// 季节索引：0 春 / 1 夏 / 2 秋 / 3 冬（与 wgrass.js SEASONS 渲染索引一致：草地颜色联动）
+export function seasonAt(day) {
+    return Math.floor((((Math.max(1, day | 0) - 1) % SEASON_CYCLE) + SEASON_CYCLE) % SEASON_CYCLE / SEASON_DAYS);
+}
+// 每季允许的天气类型池（key 必须存在 WX_TABLE；雨出现后强度档含小雨~雷阵雨）
+export const SEASON_WX = {
+    0: { clear: 0.44, rain: 0.34, fog: 0.22 },          // 春：晴 / 雨 / 雾
+    1: { clear: 0.40, rain: 0.34, sandstorm: 0.26 },    // 夏：晴 / 雨(含雷阵雨) / 沙尘
+    2: { clear: 0.38, rain: 0.30, fog: 0.18, sandstorm: 0.14 },   // 秋：晴 / 雨 / 雾 / 沙尘
+    3: { clear: 0.44, snow: 0.32, fog: 0.24 },          // 冬：晴 / 雪 / 雾（干燥不下雨）
+};
+// 天数阶段微调（叠加在季节池上）：前期晴↑恶劣↓ / 后期恶劣↑
+const WX_EARLY_BONUS = { clear: 0.10, rain: 0.02, snow: -0.03, fog: -0.04, sandstorm: -0.04 };
+const WX_LATE_BONUS  = { clear: -0.10, rain: 0.03, snow: 0.03, fog: 0.02, sandstorm: 0.02 };
+export function wxWeightsAt(day) {
+    const season = seasonAt(day);
+    const pool = SEASON_WX[season] || SEASON_WX[1];
+    const w = {};
+    let sum = 0;
+    for (const k in WX_TABLE) {
+        // 不在本季天气池的天气类型 → 权重 0（该季节绝不会出现）
+        let bw = pool[k] || 0;
+        if (bw > 0) {
+            if (day <= 2 && WX_EARLY_BONUS[k]) bw += WX_EARLY_BONUS[k];
+            else if (day >= 10 && WX_LATE_BONUS[k]) bw += WX_LATE_BONUS[k];
+            bw = Math.max(0.02, bw);
+        }
+        w[k] = bw;
+        sum += bw;
+    }
+    // 归一化（总和 = 1）
+    if (sum > 0) for (const k in w) w[k] /= sum;
+    return w;
+}
 export function weatherAt(seed, day) {
     const r = wxHash(seed, day | 0, 0x57AB);
+    const w = wxWeightsAt(day);
     let acc = 0;
-    for (const k in WX_TABLE) { acc += WX_TABLE[k].weight; if (r < acc) return k; }
+    for (const k in WX_TABLE) { acc += w[k]; if (r < acc) return k; }
     return 'clear';
 }
 
@@ -111,6 +183,19 @@ export const WX_WIND_PUSH = 26;
 // 风向（确定性，§13.2）：每天固定风向
 export function windDirAt(seed, day) {
     return wxHash(seed, day | 0, 0x77C1) * Math.PI * 2;
+}
+// 2026-08-09 用户要求"风向不是一成不变的"：
+// 风向随【游戏小时】平滑变化——每天在基础方向附近按小时确定性摆动（每 3 小时一段，段内平滑插值）。
+// 仍是确定性纯函数（§13.2）：同一 seed/day/hour 双端一致；渲染粒子与沙尘推玩家共用同一风向。
+// hour 可为小数（游戏时刻）；段间用线性插值避免 3 小时边界突变。
+export function windDirAtHour(seed, day, hour) {
+    const base = windDirAt(seed, day);
+    const seg = Math.floor((hour || 0) / 3);          // 每 3 小时一段
+    const f = ((hour || 0) / 3) - seg;                // 段内进度 0~1
+    const a0 = (wxHash(seed, day | 0, 0x33D2 + seg * 7) - 0.5);           // 段起点偏移
+    const a1 = (wxHash(seed, day | 0, 0x33D2 + (seg + 1) * 7) - 0.5);     // 段终点偏移
+    const sway = (a0 + (a1 - a0) * f) * (Math.PI / 3);                    // ±30° 摆动
+    return base + sway;
 }
 // 粒子速度系数（雨/雪/沙按强度；fog 无粒子、clear 无档 → 1）
 export function wxSpeedMul(type, level) {
@@ -164,7 +249,13 @@ export const INF_VIS = [
 export function infVis(stage) { return INF_VIS[stage] || INF_VIS[0]; }
 export const Z_CHASE_SPEED_MUL = 1.3;  // 探测到玩家后追击加速倍率
 export const Z_HORDE_SPEED_MUL = 1.15;
-export const Z_BITE_INTERVAL = 0.6;
+// 持续啃咬间隔（秒）（2026-08-09 用户要求）：僵尸贴近玩家/NPC/联机 guest 后按此固定节奏
+// 持续咬，单次伤害仍取 Z_CONTACT.dmg × 难度/夜晚倍率（§13.7 难度缩放由 dmgTo 承担，频率不随难度变）。
+// 手感调节点：觉得太凶回调 0.5/0.6，太弱收紧 0.2。
+export const Z_BITE_INTERVAL = 0.3;
+export const Z_BITE_SFX_INTERVAL = 0.5;  // 啃咬音效间隔（2026-08-09 用户要求：0.5s/次，原 0.3s 略快）
+                                          // 与 Z_BITE_INTERVAL(0.3s 掉血节拍) 解耦——掉血仍按 0.3s 节拍
+                                          // 累计（DPS 与原一致），仅音效频率独立放慢。
 export const Z_SPAWN_INTERVAL_MIN = 6;
 export const Z_SPAWN_INTERVAL_RAND = 4;
 export const Z_SPAWN_DIST_MIN = 18;
@@ -280,6 +371,12 @@ export const Z_CONTACT = {
     swapper: { dmg: 12, biteCd: 0.8, speedMul: 1.3,  armor: 0.05, lunge: 35, stunTime: 0.3, knockback: 0 },
 };
 export const Z_CONTACT_DIST = 30;
+// 持续啃咬触发距离（2026-08-09 修复"站着被咬血条完全不动"）：
+// 原用 Z_CONTACT_DIST=30 判定，但格大小 TS=36——僵尸追到玩家相邻格（中心距 36px）就停下，
+// pdist=36 > 30 → 持续啃咬【完全不触发】，血条一格不掉（用户实测"站着被咬 5 秒不动"）。
+// 加大到 44：覆盖相邻格中心距 36 + 8px 余量，僵尸贴身/相邻格都能持续啃咬。
+// 原版"咬一口 8 点"在 30px 内偶尔触碰到就有明显反馈；持续啃咬靠距离持续触发，必须覆盖相邻格。
+export const Z_BITE_RANGE = 44;
 export const Z_LUNGE_TRIGGER_DIST = 90;
 export const Z_LUNGE_CD = 4.0;
 
@@ -382,8 +479,17 @@ export const WATER_DEHYDRATE_SPEED = 0.75;// 缺水（归零）减速倍率
 export const WATER_DEHYDRATE_DMG = 1.2;   // 缺水每秒掉血（比挨饿慢）
 
 // ---------- 生命恢复 ----------
-export const HP_REGEN_NATURAL = 0.5;      // 血量<100% 且有粮有水时的自然缓慢回血 /s
-export const HP_REGEN_FED = 2.5;          // 饱食充足时额外回血速度（随饱食 60→100 线性增强） /s
+// 2026-08-09 调低（用户反馈"自然回复太快，单只僵尸啃咬几乎不掉血"）：
+//   原 NATURAL 0.5 + FED 2.5 = 最高 3/s，低攻僵尸（旗手 3.33/s）净掉血仅 0.33/s，
+//   "一格血条(10HP)要 30 秒" → 需好几只一起咬才见掉血。
+//   调低后最高 0.3+1.2 = 1.5/s：单只旗手净掉 1.8/s、普通僵尸净掉 6.5/s，血条持续可见下降。
+//   战斗中被咬期间自然回血暂停（survival.js 室外/室内回血块 _combatT>0 判定），
+//   营地回血同样受战斗暂停约束（wnpc.js）——战斗中回血不抵消持续啃咬。
+export const HP_REGEN_NATURAL = 0.3;      // 血量<100% 且有粮有水时的自然缓慢回血 /s（原 0.5）
+export const HP_REGEN_FED = 1.2;          // 饱食充足时额外回血速度（随饱食 60→100 线性增强） /s（原 2.5）
+export const HP_REGEN_MIN_SAFE = 20;      // 血量低于此值停止自然回血（2026-08-09 锁血修复）：
+                                          // 低血时若回血与啃咬 DPS 抵消 → 血量卡在 1 附近"锁血"（僵尸少时明显）。
+                                          // 低于 20% 血完全禁自然回血，保证被咬时血量稳定下降到 0。
 export const HP_REGEN_FED_AT = 60;        // 饱食达到此值启用"进食回血"
 export const HP_REGEN_FUEL = 0.45;        // 进食回血额外消耗饱食 /s（以更快消耗饱食换更快回血）
 
@@ -481,12 +587,35 @@ export function ageDeathChance(age) {
     if (age < 60) return 0;
     return Math.min(0.3, (age - 60) * 0.008);
 }
-// 营地新生命：满足条件时每日概率
-export const BIRTH_DAILY_CHANCE = 0.02;
+// 营地新生命：满足条件时每日概率（营地不"来新居民"，只通过"生育"添丁）
+export const BIRTH_DAILY_CHANCE = 0.005;   // 2026-08-09 营地生育概率（0.5%）
 export const BIRTH_CAMP_MIN = 2;      // 营地至少 2 名友善成员才可能添丁
-// 营地刷新：营地是 NPC 居住地，每日有概率来新的成年居民（有阵营归属 campId）
-export const CAMP_NEWCOMER_DAILY_CHANCE = 0.25;   // 每日来新居民概率
-export const CAMP_NEWCOMER_RADIUS = 8;            // 新居民出生在营地范围内（格）
+
+// 2026-08-09 野外随机 NPC 刷新（用户要求"野外刷新概率极低"）：
+// 无营地庇护的荒野外每日小概率在世界随机地点刷 1 名 NPC（友善/中立/恶意按权重）。
+// 野外 NPC 生存环境恶劣（无物资补给、易被僵尸/恶意 NPC 猎杀）→ 存活率低，符合设定。
+export const WILD_NPC_DAILY_CHANCE = 0.002;      // 2026-08-09 每日刷新概率（0.2%）
+export const WILD_NPC_RADIUS = 22;                // 刷新范围：距玩家 18~30 格（避免出生在眼前）
+export const WILD_NPC_MIN = 12;                   // 刷新区：距玩家至少 12 格
+export const WILD_NPC_ROLE_WEIGHT = { friendly: 0.45, neutral: 0.35, hostile: 0.20 };   // 角色权重
+
+// 2026-08-09 室内高楼层 NPC（用户要求"室内高楼层有概率刷新到 NPC"）：
+// 建筑 2 层及以上有概率出现"躲藏幸存者"（友善 NPC，占楼避世）。
+// 2 楼基准 0.15%，楼层每高一层 +0.03%（3 楼 0.18%、4 楼 0.21%…）。
+export const INTERIOR_NPC_CHANCE_BASE = 0.0015;  // 2 楼基准概率（0.15%）
+export const INTERIOR_NPC_CHANCE_PER_FLOOR = 0.0003;   // 每高一层递增（0.03%）
+export const INTERIOR_NPC_MAX = 2;                // 每层最多躲藏幸存者数
+
+// 2026-08-09 出生点屏幕保护：以出生点为圆心、一屏范围（约 15×9 格）内不刷新敌对/友方生物。
+// SPAWN 由 world.js 提供（格坐标）；这里用注入方式避免循环依赖（wbalance 不 import world）。
+// TS=36（wconst）；调用：nearSpawnScreen(SPAWN, x, y) —— x/y 为像素坐标，返回 true=在出生点屏幕内。
+const SCREEN_TS = 36;
+export function nearSpawnScreen(spawn, x, y) {
+    if (!spawn) return false;
+    const gx = Math.floor(x / SCREEN_TS), gy = Math.floor(y / SCREEN_TS);
+    const dx = gx - spawn.x, dy = gy - spawn.y;
+    return Math.abs(dx) <= 15 && Math.abs(dy) <= 9;   // 半屏宽 15 格 / 半屏高 9 格
+}
 
 // ---------- 生病系统 ----------
 // drain：每小时生命流失（游戏小时，未及时治疗几天内致命）；cure：治愈所需草药数（痢疾需同时有水）

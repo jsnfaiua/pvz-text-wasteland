@@ -305,6 +305,12 @@ export function stopDrive(sv, canStand) {
 function driveCommon(sv, dt) {
     const d = sv.driving;
     if (!d) return;
+    // 2026-08-10 修复"行驶中被僵尸隔空扣血"：riding 成员坐标上车时同步到车中心，
+    // 但驾驶中从未跟随车移动——车开走后僵尸仍在原地坐标咬"幽灵成员"。
+    // 每帧把 riding NPC 的坐标钉在车中心（僵尸咬扫/追击距离判定基于 n.x/n.y）。
+    if (sv.npcs) for (const n of sv.npcs) {
+        if (n.alive && n.riding) { n.x = d.x; n.y = d.y; }
+    }
     if (d.speed > 0) {
         // 没油：发动机熄火，只能滑行减速
         if (d.fuel > 0) {
@@ -352,7 +358,8 @@ function driveCommon(sv, dt) {
         sv._chauffeured = false;
         sv.driveOrder = null;
         sv.driving = null;
-        sv.hurtT = 0.4; sv.hp -= 10;
+        // 2026-08-09 开局昏迷苏醒：睁眼动画期间无敌，车祸不掉血
+        if (!(sv._wake && sv._wake.t < sv._wake.dur)) { sv.hurtT = 0.4; sv.hp -= 10; }
         log(sv, '汽车报废了！', '#FF5544');
         AudioSystem.playZombieDie && AudioSystem.playZombieDie();
     }

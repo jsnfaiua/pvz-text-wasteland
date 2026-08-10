@@ -18,6 +18,7 @@ import { zombieHitSound } from './wgear.js';
 import { districtAt, nearestCityAt, industrialAngleAt } from './wdistrict.js';
 import * as WV from './wvehicle.js';
 import { astarPath, astarField, gridKey } from './wpath.js';
+import { rollZombieInfection, addPlayerInfection, playerInfectionEffects, PLAYER_INFECTION } from './winfection.js';
 
 const NAMES = ['阿远', '老周', '小满', '铁柱', '阿珍', '老顾', '二丫', '栓子', '大牛', '秀兰',
     '阿彪', '老陈', '翠花', '石头', '阿花', '建国', '玉兰', '老李', '春妮', '大强'];
@@ -26,9 +27,17 @@ const NPC_VIEW = 7;               // 恶意 NPC 索敌半径（格）
 const NPC_FRIENDLY_FIGHT = 5;     // 友善 NPC 反击半径（格）
 const GROWTH_INTERVAL = 10;       // 成长间隔（天）：血量/伤害随年龄成长
 const MAX_AGE = 70;               // 超过此年龄每天有自然死亡概率
-const SWITCH_CD = 24 * 3600;      // 切换控制冷却（秒）= 24H
+const SWITCH_CD = 240;            // 2026-08-10 切换控制冷却（秒）= 240s（原 24H），所有成员共用此冷却
 const AI_FAR_DIST = 14 * TS;      // 距离玩家超过此距离的 NPC：AI 0.3s 一跳（性能）
 const NPC_CAP = 60;               // 世界 NPC 软上限（自然繁衍受限于此，玩家/开发面板不受限）
+// 2026-08-10 与玩家一致的生命体征参数（对齐 waction.js：奔跑 6/s、正常回体 14/s、力竭回体 10/s）
+const NPC_STAM_DELAY = 0.5;       // 体力消耗后回复延迟
+const NPC_STAM_NORMAL = 14;       // 正常回复速率 /s
+const NPC_STAM_EXHAUST = 10;      // 力竭期回复速率 /s
+const NPC_SPRINT_DRAIN = 6;       // 奔跑（speedMul>=1 急行）持续耗体力 /s
+const NPC_ATK_STAM_COST = 6;      // 拳头/无体力定义武器的近战消耗（有 stamina 字段的武器用其自身值）
+export const NPC_INFECTION_CURE_PAN = 25;  // NPC 界面"减感染"：抗生素 -25
+export const NPC_INFECTION_CURE_HERB = 15; // NPC 界面"减感染"：草药×3 -15
 
 function log(sv, m, c) { MSG.pushMsg(sv, m, c); }
 
@@ -77,6 +86,8 @@ export function makeNpc(sv, x, y, role, extra) {
         name, role: role || 'friendly', look,
         x, y, tx: x, ty: y,
         hp: base, maxHp: base, food: 80, water: 80,
+        // 2026-08-10 与玩家一致的生命体征：体力（移动/攻击消耗，可恢复）、感染值（被僵尸咬累积，减速/降血上限）
+        stamina: 100, maxStamina: 100, exhausted: false, infection: 0, _stamDelay: 0,
         dmg: Math.max(8, Math.round(wp.def.damage * (role === 'hostile' ? 1 : 0.7))),
         wpnKey: wp.key, wpnName: wp.def.name,
         inv,
@@ -124,18 +135,19 @@ function findWalkableNear(sv, x, y, r) {
     return { x, y };
 }
 
-// 初始 NPC：出生点附近 2 名友善（营地），城区建筑旁散布恶意
+// 初始 NPC：出生点屏幕内（15×9 格）不刷任何生物；友善开局伙伴放在屏幕外较近处，
+// 恶意 NPC 更远。用户要求"出生点屏幕内不会出现敌对/友方生物"。
 export function spawnInitialNpcs(sv) {
     if (!sv.npcs) sv.npcs = [];
     const sx = (SPAWN.x + 0.5) * TS, sy = (SPAWN.y + 0.5) * TS;
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 1; i++) {
         const ang = Math.random() * Math.PI * 2;
-        const d = (2 + Math.random() * 3) * TS;
+        const d = (17 + Math.random() * 4) * TS;   // 屏幕外（>15 格）的开局伙伴
         sv.npcs.push(makeNpc(sv, sx + Math.cos(ang) * d, sy + Math.sin(ang) * d, 'friendly'));
     }
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 2; i++) {
         const ang = Math.random() * Math.PI * 2;
-        const d = (12 + Math.random() * 10) * TS;
+        const d = (22 + Math.random() * 8) * TS;   // 更远（22~30 格），不堵出生点
         sv.npcs.push(makeNpc(sv, sx + Math.cos(ang) * d, sy + Math.sin(ang) * d, 'hostile'));
     }
 }
@@ -153,6 +165,8 @@ export function makePlayerEntry(sv) {
         name: '幸存者', role: 'friendly', look: sv.character || null,
         x: sv.px, y: sv.py, tx: sv.px, ty: sv.py,
         hp: sv.hp, maxHp: sv.maxHp || 100, food: sv.food, water: sv.water,
+        stamina: sv.stamina != null ? sv.stamina : 100, maxStamina: sv.maxStamina || 100,
+        exhausted: !!sv.exhausted, infection: sv.infection || 0, _stamDelay: 0,
         dmg: 10, inv: sv.inv, wpn: sv.wpn,
         attrs: born.attrs, talent: born.talent, congenital: born.congenital,
         act: { melee: 0, hit: 0, run: 0 },
@@ -194,6 +208,7 @@ export function updateNpcs(sv, dt, canStand) {
 
     for (const n of sv.npcs) {
         if (!n.alive) continue;
+        if (n.downed) continue;   // 2026-08-09 倒地主角由 updateDowned 专门管理（背人/救援），普通 AI 不驱动
         if (n._mpCtlT > 0) { n._mpCtlT -= dt; continue; }   // 联机：guest 正操控该 NPC，host 让渡 AI（位置由 npcctl 上报）
         if (n._mpRemote) {                                  // 联机 guest 端：host 权威 NPC，本地 AI 停摆只渲染
             // 位置向快照目标插值（与僵尸同款平滑；无人工否则 NPC 永远停在旧位置）
@@ -205,6 +220,7 @@ export function updateNpcs(sv, dt, canStand) {
             if (n.swingT > 0) n.swingT -= dt;
             continue;
         }
+        if (n.inInterior) continue;                            // 在室内：由室内跟随驱动（室外不驱）
         if (controller && n.id === controller.id) continue;   // 主控由玩家操控
         if (n.riding) continue;                               // 乘车中（渲染由车辆完成）
         if (sv.driveOrder && sv.driveOrder.driverId === n.id) {
@@ -227,7 +243,8 @@ export function updateNpcs(sv, dt, canStand) {
     if (controller) {
         syncRecordToControlled(sv, controller);
         // 主控患病：生命流失 + 有对症药品/草药自动服药（痢疾需有水）
-        if (controller.sick) {
+        // 2026-08-09 开局昏迷苏醒：睁眼动画期间状态冻结，不因疾病掉血
+        if (controller.sick && !(sv._wake && sv._wake.t < sv._wake.dur)) {
             sv.hp -= B.sickDrainPerSec(controller.sick.type) * dt;
             cureSick(sv, controller, sv.inv, sv.water);
         }
@@ -244,9 +261,16 @@ export function updateNpcs(sv, dt, canStand) {
         if (controller && controller.talent === 'nightowl') spd *= 1.1;
     }
     // 领地旗帜加成：范围内移速/体力恢复提升 + 缓慢回血
+    // 战斗中被咬期间暂停营地回血（与自然回血一致：持续啃咬卡 1 血修复，2026-08-09）
     if (inCamp) {
         spd *= B.CAMP_SPEED_MUL;
-        if (sv.hp < sv.maxHp) sv.hp = Math.min(sv.maxHp, sv.hp + B.CAMP_HP_REGEN * dt);
+        // HP_REGEN_MIN_SAFE：低血(<20)完全禁营地回血（同自然回血，2026-08-09 锁血修复）
+        // 2026-08-09 用户要求"脱战后低血量也回血要变慢"：hp 20~maxHp 区间按血量线性 ramp
+        // 让低血营地回血也变慢，不让玩家"挂着 30 血在营地站着就回满"。
+        if (sv.hp > B.HP_REGEN_MIN_SAFE && sv.hp < sv.maxHp && !((sv._combatT || 0) > 0) && !sv._biting) {
+            const hpRate = Math.min(1, Math.max(0, (sv.hp - B.HP_REGEN_MIN_SAFE) / Math.max(1, sv.maxHp - B.HP_REGEN_MIN_SAFE)));
+            sv.hp = Math.min(sv.maxHp, sv.hp + B.CAMP_HP_REGEN * hpRate * dt);
+        }
     }
     sv._bodyMul = spd;
     sv._hungerMul = cm.hungerMul;
@@ -281,13 +305,20 @@ export function inAnyCamp(sv, gx, gy) {
 function syncControlledToRecord(sv, n) {
     n.x = sv.px; n.y = sv.py;
     n.hp = sv.hp; n.food = sv.food; n.water = sv.water;
+    n.stamina = sv.stamina; n.maxStamina = sv.maxStamina; n.exhausted = sv.exhausted; n.infection = sv.infection || 0;
     n.inv = sv.inv; n.look = sv.character || n.look;
     n.maxHp = sv.maxHp;
     n.act = sv._actCounters || n.act;
 }
 function syncRecordToControlled(sv, n) {
     sv.px = n.x; sv.py = n.y;
-    sv.hp = Math.max(1, n.hp); sv.food = n.food; sv.water = n.water;
+    // 2026-08-09 修复"敌对 NPC 打不死玩家"：不再用记录 hp 覆盖 sv.hp——
+    // 原 `sv.hp = Math.max(1, n.hp)` 在 NPC 攻击（hostileAI 在 updateNpc 循环内）之后执行，
+    // 把玩家刚扣的血拉回记录值（攻击前快照）→ 玩家永远不掉血。
+    // 玩家实时 hp 由攻击/回血逻辑控制；记录 hp 由 syncControlledToRecord 维护（存档快照），
+    // 此处只同步位置/背包/外观/上限，不覆盖实时 hp。
+    sv.food = n.food; sv.water = n.water;
+    sv.stamina = n.stamina; sv.maxStamina = n.maxStamina || sv.maxStamina; sv.exhausted = n.exhausted; sv.infection = n.infection || 0;
     sv.inv = n.inv; sv.character = n.look;
     sv.maxHp = n.maxHp || sv.maxHp;
     sv._actCounters = n.act;
@@ -310,7 +341,10 @@ export function controlledAttrs(sv) {
     return (c && c.attrs) || { str: 10, con: 10, agi: 10, int: 10 };
 }
 
-function updateNpc(sv, n, dt, canStand, camp, controller) {
+export function updateNpc(sv, n, dt, canStand, camp, controller) {
+    // 每次 AI tick 先复位移动标记；本次若实际调用了 moveToward（移动）会置回 true。
+    // 停在原地/休息/打工时保持 false → 渲染层显示待机动画。
+    n._moving = false;
     // 玩家驾驶中：成员正走向上车集合点（上车动画），走到 2 格内自动上车（riding）
     if (n._boarding) {
         if (!sv.driving) { n._boarding = null; return; }
@@ -349,7 +383,8 @@ function updateNpc(sv, n, dt, canStand, camp, controller) {
 function isUiFrozen(sv, n) {
     return (sv.npcMenu && sv.npcMenu.id === n.id)
         || (sv.npcTrade && sv.npcTrade.id === n.id)
-        || (sv.charPanel && sv.charPanel.id === n.id);
+        || (sv.charPanel && sv.charPanel.id === n.id)
+        || (sv.npcMgr && n.party);   // 2026-08-10 队伍管理界面打开：全体队员原地待命（玩家可移动）
 }
 
 // 驾驶订单 walk 阶段：主控（玩家实体 sv.px/py）无移动输入时，复用 moveToward 寻路自动走向集合车；
@@ -367,16 +402,47 @@ function leadControllerToCar(sv, dt, canStand) {
     sv._leadPath = tmp._path; sv._leadProbe = tmp._probeDir; sv._leadWob = tmp._wobT;
 }
 
+// 2026-08-10 与玩家一致的生命体征：饱食/水分按玩家常量消耗；饥饿/缺水掉血（最低 1 血）；
+// 感染值被僵尸咬累积（wzombie.maybeInfectNpc），影响移速与血上限；体力移动/攻击消耗、静置回复。
 function updateNeeds(sv, n, dt, canStand) {
     const mods = personMods(n);
-    n.food = Math.max(0, n.food - 0.03 * mods.hungerMul * dt);
-    n.water = Math.max(0, n.water - 0.025 * dt);
+    // 饱食/水分：随时间消耗（速率与玩家一致 B.HUNGER_DRAIN / B.WATER_DRAIN）
+    n.food = Math.max(0, (n.food != null ? n.food : 80) - B.HUNGER_DRAIN * mods.hungerMul * dt);
+    n.water = Math.max(0, (n.water != null ? n.water : 80) - B.WATER_DRAIN * dt);
+    // 饥饿/缺水掉血（最低 1 血，与玩家一致：不会饿死/渴死，由玩家在管理界面喂食/喂水）
+    if (n.food <= 0) n.hp = Math.max(1, n.hp - B.HUNGER_STARVE_DMG * dt);
+    if (n.water <= 0) n.hp = Math.max(1, n.hp - B.WATER_DEHYDRATE_DMG * dt);
+    // 感染阶段效果（与玩家一致：减速 + 血量上限降低）；每帧重置移速缓存，治愈后恢复
+    n._infSpeedMul = 1;
+    if (n.infection > 0) {
+        const infEff = playerInfectionEffects(n.infection || 0);
+        n._infSpeedMul = infEff.speedMul;
+        const effMaxHp = Math.round(n.maxHp * infEff.maxHpMul);
+        if (n.hp > effMaxHp) n.hp = effMaxHp;
+    }
+    // 体力：不足置力竭；静置回复（进食/饮水充足时加速回复，代价是更快消耗二者，与玩家一致）
+    if (n.stamina == null) n.stamina = n.maxStamina || 100;
+    if (n.maxStamina == null) n.maxStamina = 100;
+    if ((n.stamina || 0) <= 0) n.exhausted = true;
+    n._stamDelay = Math.max(0, (n._stamDelay || 0) - dt);
+    if (n._stamDelay <= 0 && n.stamina < n.maxStamina) {
+        let rate = (n.exhausted ? NPC_STAM_EXHAUST : NPC_STAM_NORMAL) * (mods.stamMul || 1);
+        const fed = (n.food || 0) >= B.STAM_REGEN_FED_AT && (n.water || 0) >= B.STAM_REGEN_FED_AT;
+        if (fed) {
+            const ramp = Math.min(1, (Math.min(n.food, n.water) - B.STAM_REGEN_FED_AT) / (B.HUNGER_MAX - B.STAM_REGEN_FED_AT));
+            rate += B.STAM_REGEN_FED * ramp;
+            n.food = Math.max(0, n.food - B.STAM_REGEN_FUEL * dt);
+            n.water = Math.max(0, n.water - B.STAM_REGEN_FUEL * dt);
+        }
+        n.stamina = Math.min(n.maxStamina, n.stamina + rate * dt);
+        if (n.stamina >= n.maxStamina) n.exhausted = false;
+    }
     // 病：生命持续流失；有药/草药自动服药（痢疾需同时有水）
     if (n.sick) {
         n.hp -= B.sickDrainPerSec(n.sick.type) * dt;
         if (!cureSick(sv, n, n.inv, n.water) && n.hp <= 0) { killNpc(sv, n, '病死'); return; }
     }
-    if (n.hp <= 0) { killNpc(sv, n, '饿死/渴死/病死'); return; }
+    if (n.hp <= 0) { killNpc(sv, n, '病亡'); return; }
     // 自动进食/喝水（用自己背包）
     if (n.food < 35) eatFromInv(n);
     if (n.water < 35) drinkFromInv(n);
@@ -467,7 +533,7 @@ function rollNpcLoot() {
 }
 
 // ---------- 移动（A* 寻路：目标格路径场缓存 0.4s，跨墙绕行；近距直线兜底） ----------
-function moveToward(sv, n, tx, ty, dt, canStand, speedMul) {
+export function moveToward(sv, n, tx, ty, dt, canStand, speedMul) {
     const dist = Math.hypot(tx - n.x, ty - n.y);
     let mvx = tx - n.x, mvy = ty - n.y;
     if (dist > TS * 1.2) {
@@ -478,8 +544,23 @@ function moveToward(sv, n, tx, ty, dt, canStand, speedMul) {
             mvy = (step.y + 0.5) * TS - n.y;
         }
     }
+    // 动画状态（供渲染复用玩家走动精灵）：标记"正在走" + 朝向。
+    // 用 AI 侧 sticky 标记而非渲染逐帧位移差——远离玩家的 NPC 每 0.3s 才 moveToward 一跳，
+    // 逐帧判位移会因两次之间 n.x 不动而判定"没在走"→ 出现"平移/只在出生瞬间走一下"的假象。
+    n._moving = true;
+    n._faceX = mvx; n._faceY = mvy;
     const d = Math.hypot(mvx, mvy) || 1;
-    const spd = 95 * (speedMul || 1);
+    // 2026-08-10 与玩家一致：感染减速（playerInfectionEffects.speedMul）+ 力竭减速（同玩家力竭 0.6）
+    const spd = 95 * (speedMul || 1) * (n._infSpeedMul || 1) * (n.exhausted ? 0.6 : 1);
+    // 2026-08-10 与玩家一致：奔跑（speedMul>=1 急行/追敌/随队）持续耗体力；游荡(0.5)步行不耗。
+    // 主控由玩家动作系统管理（leadControllerToCar 传无 alive 的临时对象，此处自然跳过；主控 NPC 亦然）
+    if (n.alive && !(sv.controllerId && n.id === sv.controllerId) && n.stamina != null && (speedMul || 1) >= 1) {
+        if (n.stamina > 0) {
+            n.stamina = Math.max(0, n.stamina - NPC_SPRINT_DRAIN * dt);
+            n._stamDelay = NPC_STAM_DELAY;
+        }
+        if (n.stamina <= 0) n.exhausted = true;
+    }
     const nx = n.x + mvx / d * spd * dt, ny = n.y + mvy / d * spd * dt;
     const okX = canStand(nx, n.y), okY = canStand(n.x, ny);
     if (okX) n.x = nx;
@@ -605,16 +686,18 @@ function followAI(sv, n, dt, canStand) {
     const inFight = (sv._combatT || 0) > 0;
     if (combatThreat(sv, n, dt, canStand, inFight ? 8 : 6, inFight ? 8 : 4.5)) return;
     const dist = Math.hypot(sv.px - n.x, sv.py - n.y);
-    if (dist > 3.2 * TS) {
+    if (dist > 3.6 * TS) {
         moveToward(sv, n, sv.px, sv.py, dt, canStand, 1);
     } else {
-        // 警戒游荡：在玩家周围小范围巡逻警戒，随时准备出手
+        // 警戒游荡：在玩家周围中远距离自由巡逻警戒，随时准备出手
+        // 2026-08-10 用户要求：NPC 不要围得太紧，避免挡着玩家交互物品。
+        // 游荡半径从 1~2 格放宽到 2~3.5 格（保持护卫距离，不贴身）。
         // （目标点只在切换时重算一次并缓存，避免每帧随机导致原地抽搐）
         n.idleT = (n.idleT || 0) - dt;
         if (n.idleT <= 0 || n._wpX == null) {
-            n.idleT = 1.2 + Math.random() * 1.5;
+            n.idleT = 1.5 + Math.random() * 2;
             n.wanderDir = Math.random() * Math.PI * 2;
-            const r = 1 + Math.random();
+            const r = 2 + Math.random() * 1.5;
             n._wpX = sv.px + Math.cos(n.wanderDir) * r * TS;
             n._wpY = sv.py + Math.sin(n.wanderDir) * r * TS;
         }
@@ -649,9 +732,24 @@ function nearestThreat(sv, n, selfRange, playerRange) {
     return best;
 }
 
+// 2026-08-10 只有墙阻挡近战（容器/碎石/绿植不阻挡）：两点连线经过墙格返回 true
+function wallBetween(sv, x0, y0, x1, y1) {
+    const steps = Math.max(2, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (TS * 0.5)));
+    for (let s = 1; s < steps; s++) {
+        const fx = x0 + (x1 - x0) * (s / steps), fy = y0 + (y1 - y0) * (s / steps);
+        const gx = Math.floor(fx / TS), gy = Math.floor(fy / TS);
+        if (sv.interior) {
+            const it = sv.interior;
+            if (gx >= 0 && gx < it.w && gy >= 0 && gy < it.h && it.tiles[gy * it.w + gx] === 1) return true;   // 室内墙
+        } else if (getTile(sv, gx, gy) === T.WALL) {
+            return true;   // 室外墙
+        }
+    }
+    return false;
+}
 // 战斗/躲避：返回 true 表示正在交战（不执行跟随/游荡）
 // hostileMode=true：恶意 NPC 模式，威胁 = 玩家 + 非恶意 NPC，并带玩家受击逻辑
-function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) {
+export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) {
     // 性能：威胁搜索结果缓存 0.12s（多 NPC × 多僵尸时避免每帧全量扫描）
     n._threatT = (n._threatT || 0) - dt;
     let threat;
@@ -677,10 +775,12 @@ function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) 
         return true;
     }
     if (w && w.kind === 'ranged' && !wpnItem.broken) {
-        // 远程武器：保持距离射击（消耗弹药与耐久）
+        // 远程武器：保持距离射击（消耗弹药、耐久与体力——与玩家一致）
         if (d < (w.range || 300) && n.atkCd <= 0) {
             if (npcAmmoCount(n, w.ammoType) > 0) {
-                n.atkCd = 1.8;
+                if (!npcSpendStamina(n, w.stamina || NPC_ATK_STAM_COST)) { n.atkCd = 0.4; return true; }  // 力竭/体力不足：歇口气
+                // 2026-08-10 与角色一致：用武器 fireInterval（全自动用 autoInterval），不用固定 1.8
+                n.atkCd = w.autoInterval || w.fireInterval || 0.4;
                 fireNpcBullet(sv, n, threat);
             } else {
                 n.atkCd = 3;   // 没弹药：短暂蓄势后近身搏斗
@@ -708,7 +808,12 @@ function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) 
         // 挥砍/直刺/重劈：扇形距离判定（弧宽由武器 arc 决定，与玩家一致）
         canHit = tdist <= meleeReach;
     }
-    if (canHit && n.atkCd <= 0) {
+    // 2026-08-10 只有墙阻挡近战：NPC 与目标之间隔墙则打不到（继续走位接近）
+    if (canHit && n.atkCd <= 0 && !wallBetween(sv, n.x, n.y, threat.x, threat.y)) {
+        // 2026-08-10 与玩家一致：近战挥击消耗体力（不足则歇口气等回复，不空挥）
+        if (!npcSpendStamina(n, wDef ? (wDef.stamina || NPC_ATK_STAM_COST) : NPC_ATK_STAM_COST)) { n.atkCd = 0.4; return true; }
+        // 面向攻击目标（让渲染层在挥击期间锁定朝向，不再被走位方向干扰）
+        n._faceX = tdx / tdist; n._faceY = tdy / tdist;
         // 与玩家一致：冷却用武器 fireInterval，伤害用武器实际伤害
         n.atkCd = wDef ? (wDef.fireInterval || 0.35) : 0.5;
         if (threat.isZombie) {
@@ -716,6 +821,9 @@ function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) 
             threat.z.hurt = 0.12;          // 僵尸受击闪白（与玩家命中一致）
             zombieHitSound(sv, threat.z);      // 受击音（铁桶/路障护甲音，与玩家一致）
         } else if (threat.player) {
+            // 2026-08-09 开局昏迷苏醒：睁眼动画期间玩家无敌，恶意 NPC 近战打不伤
+            if (sv._wake && sv._wake.t < sv._wake.dur) { /* 苏醒中免伤 */ }
+            else {
             // 恶意 NPC 命中玩家：正常受击伤害 + 感染风险 + 提示（无敌/无敌帧由上方豁免）
             // 下限 0（与僵尸咬一致）：恶意 NPC 可以真正击败玩家；原 Math.max(1,…) 导致"永远打不死"
             sv.hp = Math.max(0, sv.hp - n.dmg);
@@ -725,6 +833,7 @@ function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) 
             if (c) { maybeWound(sv, c); addAct(sv, c, 'hit'); }
             addAct(sv, n, 'melee');
             if (sv._lastNpcHit !== n.id) { log(sv, `${n.name} 攻击了你！`, '#FF6644'); sv._lastNpcHit = n.id; }
+            }
         } else if (threat.npc) {
             // 恶意 NPC 打非恶意 NPC：真实扣血，可致死（含队员）
             threat.npc.hp -= wDef ? wDef.damage : 8;
@@ -743,7 +852,13 @@ function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) 
         sv.effects.push({ kind: 'hit', x: threat.x, y: threat.y, life: 0.15, maxLife: 0.15 });
         return true;
     }
-    if (tdist < meleeReach) { retreatFrom(sv, n, threat, dt, canStand, 0.6); return true; }
+    // 已在攻击范围内（挥击/冷却期间）：站定面向目标等下一次攻击——
+    // 修复 2026-08-09 "NPC 攻击动画左右抽插"：原逻辑攻击后冷却期 retreatFrom 后退，
+    // 渲染层同时画 swingDir(朝威胁) + 后退走位(朝反方向) → 每 0.35s 来回换向抽搐。
+    if (tdist <= meleeReach) {
+        n._faceX = tdx / tdist; n._faceY = tdy / tdist;
+        return true;
+    }
     // 围攻站位：每个 NPC 沿自己的角度绕圈贴近（每人固定随机偏移），多个队友围住目标不重叠
     if (n._jitter == null) n._jitter = (Math.random() - 0.5) * 0.5;
     const ang = Math.atan2(n.y - threat.y, n.x - threat.x) + n._jitter;
@@ -780,6 +895,15 @@ function npcAmmoCount(n, type) {
     let c = 0;
     for (const s of n.inv || []) if (s && s.id === 'ammo:' + type) c += s.n;
     return c;
+}
+// 2026-08-10 与玩家一致：NPC 攻击消耗体力（不足/力竭返回 false，攻击暂缓等回体）
+export function npcSpendStamina(n, cost) {
+    if (n.stamina == null) n.stamina = n.maxStamina || 100;
+    if (n.maxStamina == null) n.maxStamina = 100;
+    if (n.exhausted || (n.stamina || 0) < (cost || 0)) { if (!n.exhausted) n.exhausted = true; return false; }
+    n.stamina = Math.max(0, n.stamina - (cost || 0));
+    n._stamDelay = NPC_STAM_DELAY;
+    return true;
 }
 function npcTakeAmmo(n, type, need) {
     for (const s of n.inv || []) {
@@ -824,6 +948,12 @@ function updateNpcBullets(sv, dt) {
         b.traveled += Math.hypot(b.vx, b.vy) * dt;
         b.life -= dt;
         let dead = b.life <= 0;
+        // 2026-08-10 室内规则：只有墙阻挡子弹（容器/碎石/绿植可穿透）
+        if (!dead && sv.interior) {
+            const it = sv.interior;
+            const gx = Math.floor(b.x / TS), gy = Math.floor(b.y / TS);
+            if (gx >= 0 && gx < it.w && gy >= 0 && gy < it.h && it.tiles[gy * it.w + gx] === 1) dead = true;   // IT.WALL = 1
+        }
         if (!dead) {
             let hit = null, best = 14;
             for (const z of sv.zombies) {
@@ -841,7 +971,8 @@ function updateNpcBullets(sv, dt) {
             // 恶意 NPC 火力命中玩家（无敌/无敌帧豁免）
             if (!hit && b.hostile) {
                 const pd = Math.hypot(sv.px - b.x, sv.py - b.y);
-                if (pd < 12 && !sv._devGod && sv.invuln <= 0) hit = { player: 1, x: sv.px, y: sv.py };
+                // 2026-08-09 开局昏迷苏醒：睁眼动画期间玩家无敌（恶意弹丸打不中）
+                if (pd < 12 && !sv._devGod && sv.invuln <= 0 && !(sv._wake && sv._wake.t < sv._wake.dur)) hit = { player: 1, x: sv.px, y: sv.py };
             }
             if (hit) {
                 // 射程衰减：有效射程内满伤，超出后线性衰减至保底 40%（与玩家一致）
@@ -955,11 +1086,14 @@ function campTask(sv, n, dt, canStand, camp) {
             const d = Math.hypot(host.x - n.x, host.y - n.y);
             if (d > 42) moveToward(sv, n, host.x, host.y, dt, canStand, 1);
             else if (n.atkCd <= 0) {
+                if (!npcSpendStamina(n, NPC_ATK_STAM_COST)) { n.atkCd = 0.4; }   // 力竭歇口气等回体
+                else {
                 n.atkCd = 1.2;
                 host.hp -= n.dmg;
                 host.hurtT = 0.3;
                 wearNpcWeapon(sv, n);
                 if (host.hp <= 0) killNpc(sv, host, '被击杀');
+                }
             }
         } else {
             // 巡逻
@@ -1018,7 +1152,13 @@ export function applyPersonStats(n) {
     const a = n.attrs || { str: 10, con: 10, agi: 10, int: 10 };
     const base = n.isPlayer ? 100 : (n.role === 'hostile' ? 90 : 80);
     const wantMaxHp = Math.max(25, Math.round((base + (a.con - 10) * 2) * stage.hpMul * mods.maxHpMul));
-    const wantDmg = n.isPlayer ? n.dmg : Math.max(4, Math.round((n.role === 'hostile' ? 14 : 10) * stage.atkMul * mods.atkMul));
+    // 2026-08-09 用户要求"敌对 NPC 按武器造成不同伤害"：伤害取 NPC 装备武器的实际伤害
+    // （拳头 16 / 短剑 24 / 长剑 62 / 战斧 95 等），× 年龄阶段/属性倍率；
+    // 原固定 14/10 抹平了武器差异 → 所有敌对 NPC 伤害相同。
+    const wpnItem2 = npcWpnItem(n);
+    const wpnDmg = (n.wpnKey && WEAPONS[n.wpnKey] && WEAPONS[n.wpnKey].damage) ||
+        (wpnItem2 && WEAPONS[String(wpnItem2.id).slice(4)] ? WEAPONS[String(wpnItem2.id).slice(4)].damage : 16);
+    const wantDmg = n.isPlayer ? n.dmg : Math.max(4, Math.round(wpnDmg * stage.atkMul * mods.atkMul));
     if (wantMaxHp !== n.maxHp) {
         const diff = wantMaxHp - n.maxHp;
         n.maxHp = wantMaxHp;
@@ -1030,18 +1170,27 @@ export function applyPersonStats(n) {
 // ---------- 生老病死（每天一次；主角与 NPC 一视同仁） ----------
 export function ageNpcs(sv) {
     if (!sv.npcs) return;
-    // 营地刷新：营地是 NPC 居住地，每日有概率来新的成年居民（有阵营归属 campId）
-    if (sv.camp && sv.npcs.filter(m => m.alive).length < NPC_CAP) {
-        if (Math.random() < B.CAMP_NEWCOMER_DAILY_CHANCE) {
-            const a = Math.random() * Math.PI * 2;
-            const r = Math.random() * B.CAMP_NEWCOMER_RADIUS * TS;
-            const p = findWalkableNear(sv, sv.camp.x + Math.cos(a) * r, sv.camp.y + Math.sin(a) * r, 10);
-            const newcomer = makeNpc(sv, p.x, p.y, Math.random() < 0.7 ? 'friendly' : 'neutral');
-            newcomer.bornDay = sv.day - (20 + Math.floor(Math.random() * 15));   // 成年居民
-            newcomer.state = 'camp';
-            newcomer.campId = sv.camp.id || null;   // 阵营归属：投靠本营地
-            sv.npcs.push(newcomer);
-            log(sv, `${newcomer.name} 来到了营地，成为这里的居民`, '#FFD700');
+    // 2026-08-09 野外随机 NPC 刷新（概率极低）：无营地庇护的荒野每日小概率刷 1 名
+    // 友善/中立/恶意 NPC。刷在玩家 12~30 格外（不堵脸），受世界 NPC 软上限约束。
+    // 野外 NPC 无物资补给、易被僵尸/恶意猎杀 → 存活率低（符合用户设定）。
+    // 用户要求"出生点和营地都不刷新 NPC"：① 出生点(SPAWN)附近不刷；② 营地不再有
+    // "每日来新居民"刷新（营地新生由下方"生育"保留——营地包括生育出来的 NPC）。
+    if (sv.npcs.filter(m => m.alive).length < NPC_CAP) {
+        if (Math.random() < B.WILD_NPC_DAILY_CHANCE) {
+            const ang = Math.random() * Math.PI * 2;
+            const dist = (B.WILD_NPC_MIN + Math.random() * (B.WILD_NPC_RADIUS - B.WILD_NPC_MIN)) * TS;
+            const tx = sv.px + Math.cos(ang) * dist, ty = sv.py + Math.sin(ang) * dist;
+            // 2026-08-09 出生点屏幕内不刷 NPC（含友方/敌对）：主角初始地不凭空冒人
+            if (B.nearSpawnScreen(SPAWN, tx, ty)) return;
+            const p = findWalkableNear(sv, tx, ty, 12);
+            // 权重随机角色
+            let roll = Math.random(), role = 'friendly';
+            const w = B.WILD_NPC_ROLE_WEIGHT;
+            if (roll >= w.friendly) { roll -= w.friendly; role = roll < w.neutral ? 'neutral' : 'hostile'; }
+            const wanderer = makeNpc(sv, p.x, p.y, role);
+            wanderer.bornDay = sv.day - (18 + Math.floor(Math.random() * 20));   // 成年流浪者
+            wanderer.state = 'wander';
+            sv.npcs.push(wanderer);
         }
     }
     for (const n of sv.npcs) {
@@ -1116,6 +1265,16 @@ export function maybeWound(sv, n) {
     if (Math.random() < B.SICK_WOUND_CHANCE * m.sickMul) n.sick = { type: 'wound', day: sv.day };
 }
 
+// 2026-08-10 与玩家一致：NPC 被僵尸咬累积感染值（概率/单次量与玩家相同）。
+// 主控（isPlayer）由玩家感染系统处理（resolvePlayerBiteTick），此处跳过。
+export function maybeInfectNpc(sv, n) {
+    if (!n.alive || n.role === 'hostile' || n.isPlayer) return;
+    if (n.infection == null) n.infection = 0;
+    if (n.infection >= PLAYER_INFECTION.max) return;
+    const infGain = rollZombieInfection();
+    if (infGain > 0) n.infection = addPlayerInfection(n.infection, infGain);
+}
+
 // 人物属性效果汇总（力量/体质/敏捷/智力 + 天赋 + 先天病）
 function personMods(n) {
     const a = n.attrs || { str: 10, con: 10, agi: 10, int: 10 };
@@ -1174,6 +1333,26 @@ export function killNpc(sv, n, reason) {
     if (!n.alive) return;
     n.alive = false;
     n.hp = 0;
+    // 2026-08-10 用户需求：恶意 NPC（hostile）被击杀 → 掉落包裹，含该 NPC 背包里的所有物品。
+    // 掉落物复用 loot 袋格式（contents 数组，拾取后进背包）；室内 NPC 掉门口世界坐标（同遗物逻辑）。
+    if (n.role === 'hostile') {
+        let dx = n.x, dy = n.y;
+        if (sv.interior && typeof sv.interior.doorX === 'number') {
+            dx = sv.interior.doorX;
+            dy = sv.interior.doorY;
+        }
+        // 收集背包全部物品（含武器 wpn: 与弹药），空背包也掉一个空袋（可拾取确认击杀战利品）
+        const contents = [];
+        for (const s of n.inv || []) {
+            if (!s) continue;
+            contents.push({ id: s.id, n: s.n || 1 });
+        }
+        if (!sv.drops) sv.drops = [];
+        sv.drops.push({ x: dx, y: dy, id: 'loot:npcbag', n: 1, contents });
+        // 金币也掉落（作为 loot:npcbag 的一部分不可直接堆，单独放一袋金币）
+        if ((n.coins || 0) > 0) sv.drops.push({ x: dx, y: dy, id: 'coin', n: Math.max(1, Math.round((n.coins || 0) / 2)) });
+        log(sv, `${n.name} 被击杀，掉落了包裹（${contents.length} 件物品）`, '#FFD700');
+    }
     // 死亡提示只播报队员（陌生 NPC 的生老病死与我们无关，不刷屏）
     if (n.party) log(sv, `${n.name} 死亡（${reason}）`, '#FF8866');
     sv.effects.push({ kind: 'dead', x: n.x, y: n.y, life: 0.6, maxLife: 0.6, label: n.name });
@@ -1519,28 +1698,45 @@ function freshWpn() {
 // ---------- 切换控制（24H 冷却；只换视角，角色留在世界继续行动） ----------
 export function switchControl(sv, id, force) {
     const tgt = sv.npcs.find(n => n.id === id);
-    if (!tgt || !tgt.alive || !tgt.party) return false;
+    // 2026-08-10 不能切换到濒死（downed）队友身上：濒死队友需被救治，不可操控
+    if (!tgt || !tgt.alive || tgt.downed || !tgt.party) return false;
     if (!force && (sv._switchCd || 0) > 0) {
-        const left = Math.ceil((sv._switchCd || 0) / 3600);
-        log(sv, `切换冷却中：还需 ${left} 小时`, '#FFB347');
+        const left = Math.ceil((sv._switchCd || 0) / 1000);   // 2026-08-10 冷却 240s，按秒提示
+        log(sv, `切换冷却中：还需 ${left} 秒`, '#FFB347');
         return false;
     }
     const cur = controlledNpc(sv);
     // 当前主控状态写回记录（它留在世界里，继续由 AI 行动）
     if (cur) {
         cur.x = sv.px; cur.y = sv.py;
-        cur.hp = sv.hp; cur.food = sv.food; cur.water = sv.water;
+        // 2026-08-09 修复"切队友视角后另一角色死亡/无敌循环"：
+        // 死亡切视角时 sv.hp 已是 0，若直接写回 cur.hp=0，会把倒地主角记录写成
+        // alive=true 但 hp=0 → 出门后被室外 AI 判定死亡 → 触发各种循环切换。
+        // 与载入侧一致保底 1（倒地血），让记录保持"活着但濒死"，等救治/切换接手。
+        cur.hp = Math.max(1, sv.hp); cur.food = sv.food; cur.water = sv.water;
+        cur.stamina = sv.stamina; cur.maxStamina = sv.maxStamina; cur.exhausted = sv.exhausted; cur.infection = sv.infection || 0;
         cur.inv = sv.inv; cur.look = sv.character || cur.look; cur.wpn = sv.wpn;
         cur.maxHp = sv.maxHp;
     }
     // 载入目标
     sv.px = tgt.x; sv.py = tgt.y;
     sv.hp = Math.max(1, tgt.hp); sv.food = tgt.food; sv.water = tgt.water;
+    sv.stamina = tgt.stamina != null ? tgt.stamina : 100; sv.maxStamina = tgt.maxStamina || sv.maxStamina;
+    sv.exhausted = !!tgt.exhausted; sv.infection = tgt.infection || 0;
     sv.inv = tgt.inv; sv.character = tgt.look;
     sv.wpn = tgt.wpn || freshWpn();
     sv.maxHp = tgt.maxHp || sv.maxHp;
     sv.controllerId = id;
     sv._switchCd = SWITCH_CD;
+    // 2026-08-10 修复"濒死切视角后只能闪现不能移动"：切到可行动的队友后必须解除
+    // 原地等待（_waitDowned）限制——否则残留 true 会锁死 WASD 移动（室内外 update 的
+    // `if (sv._waitDowned) animMoving=false` 分支），只剩闪现(Q)能位移。
+    sv._waitDowned = false;
+    // 2026-08-09 修复"切队友视角位置互换"：室内模式下 updateInteriorMode 开头会
+    // `sv.px = it.px` 用房间记录坐标覆盖玩家位置。若 it.px/it.py 仍是旧主控的位置，
+    // 切视角后玩家会被拉回旧位置 → 队友位置和玩家位置来回跳（位置互换）。
+    // 载入目标后立即把房间记录坐标同步到目标位置，位置保持稳定。
+    if (sv.interior) { sv.interior.px = sv.px; sv.interior.py = sv.py; }
     log(sv, `现在操控 ${tgt.isPlayer ? '幸存者' : tgt.name}`, '#2EE6C0');
     return true;
 }
@@ -1549,7 +1745,8 @@ export function switchControl(sv, id, force) {
 export function onControlledDeath(sv) {
     const cur = controlledNpc(sv);
     if (cur) { cur.alive = false; cur.hp = 0; }
-    const alive = sv.npcs.filter(n => n.alive && n.party);
+    // 2026-08-10 只切给可行动的队友（排除濒死 downed）
+    const alive = sv.npcs.filter(n => n.alive && !n.downed && n.party);
     if (alive.length >= 1) {
         switchControl(sv, alive[0].id, true);
         log(sv, `${alive[0].isPlayer ? '幸存者' : alive[0].name} 接过了控制权`, '#2EE6C0');
@@ -1564,6 +1761,7 @@ export function serializeNpcs(sv) {
         people: (sv.npcs || []).filter(n => n.alive).map(n => ({   // 死尸不落盘（帧边界已移除，双保险）
             id: n.id, isPlayer: !!n.isPlayer, name: n.name, role: n.role, look: n.look,
             x: n.x, y: n.y, hp: n.hp, maxHp: n.maxHp, food: n.food, water: n.water,
+            stamina: n.stamina, maxStamina: n.maxStamina, exhausted: !!n.exhausted, infection: n.infection || 0,
             dmg: n.dmg, wpnKey: n.wpnKey, wpnName: n.wpnName, inv: n.inv, wpn: n.wpn,
             coins: n.coins || 0, sick: n.sick || null,
             attrs: n.attrs || null, talent: n.talent || null, congenital: n.congenital || null,
@@ -1572,6 +1770,8 @@ export function serializeNpcs(sv) {
             party: n.party, hired: n.hired, hireFee: n.hireFee, state: n.state,
             campId: n.campId || null,
             riding: !!n.riding,   // 骑乘状态（乘车中读档须还原，否则下车）
+            // 2026-08-09 室内外统一：在室内状态（读档还原，退出室内时带回室外）
+            inInterior: !!n.inInterior, interiorKey: n.interiorKey || null, interiorFloor: n.interiorFloor || null,
             workLog: n.workLog, _paidDay: n._paidDay, age: n.age, _grown: n._grown,
         })),
         controllerId: sv.controllerId || null,
@@ -1580,7 +1780,16 @@ export function serializeNpcs(sv) {
 }
 export function restoreNpcs(sv, data) {
     if (!data) { sv.npcs = []; sv.camp = null; return; }
-    sv.npcs = (data.people || []).map(p => ({ ...p, atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2 }));
+    // 2026-08-10 生命体征字段旧档兜底（老档无 stamina/infection 字段时补默认）
+    sv.npcs = (data.people || []).map(p => ({
+        ...p,
+        stamina: p.stamina != null ? p.stamina : 100,
+        maxStamina: p.maxStamina != null ? p.maxStamina : 100,
+        exhausted: !!p.exhausted,
+        infection: p.infection != null ? p.infection : 0,
+        _stamDelay: 0,
+        atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
+    }));
     sv.controllerId = data.controllerId || null;
     sv.camp = data.camp || null;   // 营地由领地旗帜确立，开局没有
     initRoster(sv);   // 旧档无 isPlayer 记录：自动补原主角记录
@@ -1594,6 +1803,8 @@ export function applyControlled(sv) {
     if (!c) return;
     sv.px = c.x; sv.py = c.y;
     sv.hp = Math.max(1, c.hp); sv.food = c.food; sv.water = c.water;
+    sv.stamina = c.stamina != null ? c.stamina : 100; sv.maxStamina = c.maxStamina || sv.maxStamina;
+    sv.exhausted = !!c.exhausted; sv.infection = c.infection || 0;
     sv.inv = c.inv; sv.character = c.look; sv.wpn = c.wpn || freshWpn();
     sv.maxHp = c.maxHp || sv.maxHp;
     sv._sick = c.sick || null;

@@ -33,6 +33,8 @@
 //   zombies[].inv/hotbar/wpnKey null                      尸化僵尸继承的装备背包
 //   legacyDrop                null                        正常模式死亡遗物包裹{位置,内容}
 //   _deathCount               0                           死亡次数（遗物永久消失代价递增）
+//   _downed                   null                        软核倒地救治状态{name,px,py,dayDead,med,herb}
+//   coins                     0                           金币=货币（独立于背包；旧档 inv coin 自动迁移）
 //   新增字段规则：①白名单序列化函数同步补字段；②apply 端给默认值；
 //   ③旧档无该字段时必须安全缺省（不得抛错）；④联机快照字段双端同改。
 // ============================================================
@@ -60,8 +62,11 @@ export function serializeSV(sv, deps) {
         py: sv.py,
         wpnMag: sv.wpn ? sv.wpn.mag : {},
         _devInfBag: !!sv._devInfBag,
+        coins: sv.coins || 0,   // 2026-08-10 金币货币
         // 死亡次数（正常模式遗物包裹永久消失代价：死亡越多丢越多；角色跨世界保留）
         _deathCount: sv._deathCount || 0,
+        // 软核倒地救治状态（2026-08-09）：{ name, px, py, dayDead, med, herb }
+        _downed: sv._downed || null,
         mods: sv.mods,
         homeBed: sv.homeBed || null,
         lastRestDay: sv.lastRestDay,
@@ -106,6 +111,7 @@ export function createRunDefaults(opts, deps) {
         mouse: { x: 0, y: 0, inside: false }, mouseDown: false,
         world: null, mods: { tiles: {}, chests: {}, boxLoot: {} },
         homeBed: null, wpn: null, curSlot: 'ranged', stamina: 100, maxStamina: 100,
+        _downed: null,   // 软核倒地救治状态（默认无）
         build: false, buildSel: 0, buildOk: false, woodCount: 0,
         wpnText: '', chestKey: null, hotbar: Array(HOTBAR_SIZE).fill(null), hotbarSel: -1,
         sprinting: false, dashing: false, dashTimer: 0, dashDir: { x: 1, y: 0 },
@@ -116,6 +122,8 @@ export function createRunDefaults(opts, deps) {
         food: B.HUNGER_MAX, water: B.WATER_MAX, _starved: false, _starveLogT: 0,
         character: null, npcs: [], camp: null, controllerId: 'player',
         characterName: '幸存者',
+        coins: 0,   // 2026-08-10 金币=货币：独立于背包，拾取/交易直接增减
+        _season: 1,   // 2026-08-10 季节（0春 1夏 2秋 3冬）：由 updateWeather 按天幂等同步，草地渲染联动
         infection: 0, _infLogT: 0,
         effects: [],
         mp: null,            // 联机标记 {role:'host'|'guest'}；null=单机（sv.mp 开关，Phase 1+）
@@ -166,6 +174,13 @@ export function applySnapshot(run, saved, deps) {
             const cap = (deps.saveData.devMode && saved._devInfBag) ? saved.inv.length : BAG_SIZE;
             run.inv = saved.inv.slice(0, Math.max(cap, BAG_SIZE));
             while (run.inv.length < BAG_SIZE) run.inv.push(null);
+            // 2026-08-10 旧档迁移：背包格 coin 物品累计进 coins 并清空该格
+            let legacyCoins = 0;
+            for (let i = 0; i < run.inv.length; i++) {
+                const s = run.inv[i];
+                if (s && s.id === 'coin') { legacyCoins += s.n || 0; run.inv[i] = null; }
+            }
+            run.coins = (typeof saved.coins === 'number' ? Math.floor(saved.coins) : 0) + legacyCoins;
         }
         if (typeof saved.px === 'number') run.px = saved.px;
         if (typeof saved.py === 'number') run.py = saved.py;
@@ -174,6 +189,13 @@ export function applySnapshot(run, saved, deps) {
         run._savedMag = saved.wpnMag || null;
         run.curSlot = saved.curSlot || 'ranged';
         run._deathCount = typeof saved._deathCount === 'number' ? Math.max(0, Math.floor(saved._deathCount)) : 0;
+        // 软核倒地救治状态（旧档无则 null）
+        run._downed = (saved._downed && typeof saved._downed === 'object') ? {
+            name: saved._downed.name || null,
+            px: saved._downed.px || 0, py: saved._downed.py || 0,
+            dayDead: saved._downed.dayDead || 0,
+            med: saved._downed.med || 0, herb: saved._downed.herb || 0,
+        } : null;
         if (Array.isArray(saved.hotbar)) {
             run.hotbar = saved.hotbar.slice(0, HOTBAR_SIZE);
             while (run.hotbar.length < HOTBAR_SIZE) run.hotbar.push(null);
@@ -224,6 +246,7 @@ export function serializeCharacter(sv, deps) {
         maxStamina: sv.maxStamina,
         wpnMag: sv.wpn ? sv.wpn.mag : {},
         _devInfBag: !!sv._devInfBag,
+        coins: sv.coins || 0,   // 2026-08-10 金币货币（角色跨世界保留）
     };
 }
 
@@ -236,10 +259,19 @@ export function applyCharacter(run, data, deps) {
     const PLAYER_INFECTION = deps.PLAYER_INFECTION;
     run.characterName = typeof data.name === 'string' && data.name ? data.name : '幸存者';
     run.character = deps.normalizeLook(data.character);
+    // 2026-08-10 金币=货币：新字段 coins 直接读；旧档背包里的 coin 物品迁移到 coins（不占格）
+    if (typeof data.coins === 'number' && data.coins >= 0) run.coins = Math.floor(data.coins);
     if (Array.isArray(data.inv)) {
         const cap = (deps.saveData.devMode && data._devInfBag) ? data.inv.length : BAG_SIZE;
         run.inv = data.inv.slice(0, Math.max(cap, BAG_SIZE));
         while (run.inv.length < BAG_SIZE) run.inv.push(null);
+        // 旧档迁移：背包格中的 coin 物品累计进 coins 并清空该格（新档 addItem 直接入 coins）
+        let legacyCoins = 0;
+        for (let i = 0; i < run.inv.length; i++) {
+            const s = run.inv[i];
+            if (s && s.id === 'coin') { legacyCoins += s.n || 0; run.inv[i] = null; }
+        }
+        if (legacyCoins > 0) run.coins = (run.coins || 0) + legacyCoins;
     }
     if (Array.isArray(data.hotbar)) {
         run.hotbar = data.hotbar.slice(0, HOTBAR_SIZE);
@@ -264,6 +296,11 @@ export function applyCharacter(run, data, deps) {
 export function serializeWorld(sv, deps) {
     return {
         seed: sv.world.seed,
+        // 世界名称 + 难度（2026-08-09：创建时锁定，之后不可改；旧档无则回退种子号/默认难度）
+        name: sv.worldName || ('世界 #' + sv.world.seed),
+        difficulty: sv.diffKey || 'normal',
+        // 绑定的角色名（2026-08-09：一个世界对应一个角色，进世界自动带出该角色）
+        characterName: sv.characterName || null,
         t: sv.t,
         day: sv.day,
         playT: sv.playT,
@@ -289,6 +326,8 @@ export function serializeWorld(sv, deps) {
             x: sv._legacyDrop.x, y: sv._legacyDrop.y,
             contents: (sv.drops.find(d => d.id === 'loot:legacy') || {}).contents || null,
         } : null,
+        // 软核倒地救治状态（跟世界：倒地位置/限时/已提交药品，重进世界恢复）
+        downed: sv._downed || null,
     };
 }
 
@@ -311,6 +350,11 @@ export function applyWorld(run, data, deps) {
         if (typeof data.playT === 'number') run.playT = data.playT;
         run.lastRestDay = data.lastRestDay || 0;
         run.homeBed = data.homeBed || null;
+        // 世界名称/难度（旧档兼容：名称回退种子号，难度默认 normal）
+        run.worldName = typeof data.name === 'string' && data.name ? data.name : ('世界 #' + data.seed);
+        run.diffKey = (data.difficulty === 'hardcore' || data.difficulty === 'normal') ? data.difficulty : 'normal';
+        // 世界绑定的角色名（旧档无则 null；开始游戏时若选了世界会带出该角色）
+        if (typeof data.characterName === 'string' && data.characterName) run.worldCharName = data.characterName;
         if (data.horde) {
             // L7：进行中的尸潮进度恢复（pending/total/batchT），旧布尔档兼容
             run.horde = typeof data.horde === 'object'
@@ -340,6 +384,15 @@ export function applyWorld(run, data, deps) {
             if (Array.isArray(data.legacyDrop.contents) && data.legacyDrop.contents.length) {
                 run.drops.push({ x: data.legacyDrop.x, y: data.legacyDrop.y, id: 'loot:legacy', n: 1, contents: data.legacyDrop.contents });
             }
+        }
+        // 软核倒地救治状态恢复（旧档无则 null）
+        if (data.downed && typeof data.downed === 'object') {
+            run._downed = {
+                name: data.downed.name || null,
+                px: data.downed.px || 0, py: data.downed.py || 0,
+                dayDead: data.downed.dayDead || 0,
+                med: data.downed.med || 0, herb: data.downed.herb || 0,
+            };
         }
         out.loaded = true;
     } catch {
@@ -383,8 +436,10 @@ export function serializeMpSnapshot(sv, deps, zombieList, cull) {
         day: sv.day,
         hordePhase: sv.horde ? sv.horde.phase : null,
         weather: sv._weather || null,   // 天气（host 权威确定性；guest 端渲染同款）
+        season: sv._season != null ? sv._season : 1,   // 2026-08-10 季节（host 权威 → guest 草地渲染同款）
         wxLevel: sv._wxLevel != null ? sv._wxLevel : null,   // dev 手动强度覆盖（host 权威 → 双端同档）
         announce: sv.announce ? { text: sv.announce.text, t: sv.announce.t, color: sv.announce.color || null } : null,   // 大字公告（天气切换提示等，host → guest）
+        downed: sv._downed || null,   // 软核倒地救治状态（host 权威 → guest 双端一致，2026-08-09）
         evt: sv._evt ? { type: sv._evt.type, endT: sv._evt.endT } : null,   // 随机事件（blackout 视觉同步）
         zombies: zombies.map(z => ({
             id: z.id, type: z.type, char: z.char, color: z.color, name: z.name,

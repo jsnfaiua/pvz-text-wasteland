@@ -124,6 +124,17 @@ assert(typeof B.PLAYER_SPEED === 'number', 'wbalance.PLAYER_SPEED');
     assert(typeof B.WX_WIND_PUSH === 'number' && B.WX_WIND_PUSH > 0, 'balance:WX_WIND_PUSH');
 }
 
+// 死亡掉落/倒地救治（§13.1 数值收口，2026-08-09）
+{
+    assert(typeof B.deathDropRate === 'function', 'balance:deathDropRate exists');
+    assert(B.deathDropRate(1) === 0.1, 'balance:deathDropRate 第1次 10%');
+    assert(B.deathDropRate(2) === 0.11, 'balance:deathDropRate 第2次 +1%');
+    assert(B.deathDropRate(1) < B.deathDropRate(3) && B.deathDropRate(3) <= 0.9, 'balance:deathDropRate 递增且有封顶 90%');
+    assert(B.deathDropRate(100) === 0.9, 'balance:deathDropRate 封顶 90%');
+    assert(B.DOWNED_LIMIT_DAYS > 0 && B.DOWNED_NEED_MED > 0 && B.DOWNED_HERB_EQUIV > 0, 'balance:downed 救治数值有效');
+    assert(B.DOWNED_RESPAWN_PZ_DELAY_DAYS >= 1, 'balance:无队友重生刷尸延迟 >= 1 天');
+}
+
 // wconst
 assert(TS === 36, 'wconst.TS === 36');
 

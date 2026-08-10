@@ -8,7 +8,7 @@ import { ACTION, GRAVITY, JUMP_VELOCITY, JUMP_CD } from '../core/constants.js';
 import AudioSystem from '../systems/audio.js';
 import * as B from './wbalance.js';
 import { TS } from './wconst.js';
-import { rollZombieInfection, addPlayerInfection, playerInfectionStage } from './winfection.js';
+import { rollZombieInfection, addPlayerInfection, playerInfectionStage, PLAYER_INFECTION } from './winfection.js';
 
 const STAM_DELAY = 0.5;     // 消耗后回复延迟
 const REGEN_NORMAL = 14;    // 正常回复速率 /s
@@ -30,6 +30,8 @@ export const BULLET_TIME_SCALE = 0.2;      // 子弹时间倍速（0.2 = 5 倍�
 
 // 移动输入（WASD + 方向键，与单机一致）
 export function moveInput(sv) {
+    // 2026-08-09 昏迷苏醒状态：刚进入荒野时不能移动（黑灰眨眼过渡，等待醒来的感觉）
+    if (sv._wake && sv._wake.t < sv._wake.dur) return { mx: 0, my: 0 };
     let mx = 0, my = 0;
     if (sv.keys['a'] || sv.keys['arrowleft'])  mx -= 1;
     if (sv.keys['d'] || sv.keys['arrowright']) mx += 1;
@@ -198,7 +200,7 @@ export function moveMul(sv) {
     if (sv.aiming) mul *= 0.6;
     if (sv.exhausted) mul *= 0.6;
     if (sv._atkSlowT > 0) mul *= 0.5;   // 扑咬控制/铁桶溅射减速
-    // 饥饿惩罚：低饱食减速，挨饿（归零）更慢
+    if (sv._carryDowned) mul *= B.DOWNED_CARRY_SPEED;   // 2026-08-10 背起濒死玩家：移速减慢（负重）
     if (sv.food != null) {
         if (sv.food <= 0) mul *= B.HUNGER_STARVE_SPEED;
         else if (sv.food < B.HUNGER_LOW) mul *= B.HUNGER_LOW_SPEED;
@@ -278,6 +280,10 @@ export function resolvePlayerHit(sv, z, dmg, canStand) {
     }
     sv.effects.push({ kind: 'hit', x: sv.px, y: sv.py, life: 0.2, maxLife: 0.2, label: '击' });
     AudioSystem.playZombieEating();
+    // 联机啃咬音效双端（§5.1 检查项4）：本端已播，outbox sfx 让对端也听到（mpWasteland playRemoteSfx 'zbite'）
+    if (sv.mp && (sv.mp.role === 'host' || sv.mp.role === 'guest')) {
+        (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'sfx', snd: 'zbite' });
+    }
     const infGain = rollZombieInfection();
     if (infGain > 0) {
         const prevStage = playerInfectionStage(sv.infection || 0);
@@ -293,6 +299,116 @@ export function resolvePlayerHit(sv, z, dmg, canStand) {
         sv.effects.push({ kind: 'quake', x: z.x, y: z.y, life: 0.4, maxLife: 0.4 });
     }
     // 铁门盾击：把玩家击退一段距离
+    if (z.type === 'door') {
+        const a = Math.atan2(sv.py - z.y, sv.px - z.x);
+        const kb = 36;
+        const nx = sv.px + Math.cos(a) * kb, ny = sv.py + Math.sin(a) * kb;
+        if (canStand(nx, sv.py)) sv.px = nx;
+        if (canStand(sv.px, ny)) sv.py = ny;
+    }
+    if (z.textAbility && Math.random() < B.Z_TEXT_ABILITY_CHANCE) {
+        resolveTextAbility(sv, z.textAbility);
+    }
+}
+
+// 持续啃咬（2026-08-09 用户要求）：僵尸贴近玩家期间每帧调用——
+// 血条如进度条缓慢减少（DPS = 原 dmg/biteCd，平均 DPS 与原咬击节奏完全一致）；
+// 啃咬音效/受击反馈/感染/特殊效果按 Z_BITE_INTERVAL(0.3s) 节拍触发一次（与掉血解耦）。
+export function resolvePlayerBiteTick(sv, z, dps, dt, canStand) {
+    // 2026-08-09 开局昏迷苏醒：睁眼动画期间角色无敌（僵尸咬不伤），状态不变
+    if (sv._wake && sv._wake.t < sv._wake.dur) return;
+    if (sv.isJumping) return;
+    if (sv.invuln > 0) {
+        // 完美闪避（子弹时间）：无敌帧内被咬触发一次（与原 resolvePlayerHit 逻辑一致）
+        if (sv.dashing && sv._dodgePerfectWindow > 0 && !sv._bulletT) {
+            sv._bulletT = BULLET_TIME_DURATION;
+            sv.perfectFlash = 0.35;
+            sv.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.35, maxLife: 0.35, label: '完美闪避' });
+        }
+        return;
+    }
+    // 僵尸攻击时面向玩家（与咬 NPC/啃植物一致：攻击动作朝向目标）
+    z.faceDir = Math.atan2(sv.py - z.y, sv.px - z.x);
+    // 0.3s 节拍计时（音效/受击反馈/感染/特效按此节拍，与平滑掉血解耦）
+    z._biteSfxT = (z._biteSfxT || 0) - dt;
+    const tick = z._biteSfxT <= 0;
+    if (tick) z._biteSfxT = B.Z_BITE_INTERVAL;
+    // 格挡：全程无伤；完美格挡在节拍触发防反（防反不随每帧重复推僵尸）
+    if (sv.guarding) {
+        if (tick && inPerfectGuard(sv)) {
+            z.stunT = ACTION.perfectStunTime;
+            z.hurt = 0.2;
+            sv.perfectFlash = 0.35;
+            const a = Math.atan2(z.y - sv.py, z.x - sv.px);
+            const nx = z.x + Math.cos(a) * 34, ny = z.y + Math.sin(a) * 34;
+            if (canStand(nx, z.y)) z.x = nx;
+            if (canStand(z.x, ny)) z.y = ny;
+            sv.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.35, maxLife: 0.35, label: '防反' });
+        }
+        return;
+    }
+    // 2026-08-09 修复"属性全满（_devGod）时僵尸咬人无音效"：
+    // 原 `if (sv._devGod) return;` 在音效/受击反馈之前直接返回 → 开了属性全满后
+    // 僵尸咬人完全无声（玩家不知道被咬）。改为：_devGod 只跳过【掉血/感染】，
+    // 音效/受击/节拍反馈照常播放（无敌是"不受伤"，不是"僵尸咬不到你"）。
+    const godNoDmg = !!sv._devGod;
+    // 2026-08-10 修复"啃咬音效 0.5s 一次不准确"：原音效块放在 `if(!tick) return` 之后，
+    // 导致 _biteAudioT 只在 0.3s 掉血节拍时才递减（每次仅减一个 dt）→ 实际间隔约 0.6s 且
+    // 依赖帧率。改为：音效节拍独立于此，每帧都递减、精确 0.5s 播放一次，与掉血节拍解耦。
+    z._biteAudioT = (z._biteAudioT || 0) - dt;
+    if (z._biteAudioT <= 0) {
+        z._biteAudioT = B.Z_BITE_SFX_INTERVAL;
+        AudioSystem.playZombieEating();
+        // 联机啃咬音效双端（§5.1 检查项4）：本端已播，outbox sfx 让对端也听到
+        if (sv.mp && (sv.mp.role === 'host' || sv.mp.role === 'guest')) {
+            (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'sfx', snd: 'zbite' });
+        }
+    }
+    // 持续掉血：血条缓慢减少（DPS 与原平均一致，由调用方传 dmgTo/biteCd）
+    // 2026-08-09 锁血修复（决定性 v4）：掉血改为"按 0.3s 节拍扣整段 dmg"——
+    // CDP 实测复现"hp 到 ~0.9 后卡死"：微小累计掉血（dps*dt）在低血时被浮点/时序问题
+    // 吞掉（drop 恒为 0），单只僵尸要半分钟才死。改为每 tick（Z_BITE_INTERVAL=0.3s）扣
+    // 一整段 dps*Z_BITE_INTERVAL（8*0.3=2.4 点），彻底绕开微小累加——1 血到死最多 1 个 tick。
+    // 平均 DPS 不变（8/s），只是从"每帧微小掉"变为"每 0.3s 掉 2.4"，血条仍平滑可见下降。
+    if (tick && dps > 0 && isFinite(dps) && !godNoDmg) {
+        sv.hp = Math.max(0, sv.hp - dps * B.Z_BITE_INTERVAL);
+    }
+    // 2026-08-09 修复"血量卡在 1 血站着不死"：
+    // ① _combatT 每帧刷新（战斗暂停回血），② _biting 每帧标记（回血块硬性跳过）。
+    // 双保险确保被啃咬期间自然回血/营地回血完全失效，hp 稳定持续下降直到归零。
+    sv._combatT = 4;
+    sv._biting = true;   // 本帧正被啃咬 → 回血块禁用（survival.js 检查）
+    if (!tick) return;
+    // ---- 节拍反馈（0.3s/次）----
+    sv._zombieHitF = true;   // 搜索界面打开时据此自动关闭（饥饿掉血不打断）
+    sv.hurtT = 0.3;
+    if (sv.npcs) {
+        const c = sv.npcs.find(n => n.id === sv.controllerId);
+        if (c) {
+            if (!sv._actCounters) sv._actCounters = { melee: 0, hit: 0, run: 0 };
+            sv._actCounters.hit = (sv._actCounters.hit || 0) + 1;
+        }
+    }
+    sv.effects.push({ kind: 'hit', x: sv.px, y: sv.py, life: 0.2, maxLife: 0.2, label: '击' });
+    // 感染：原每次咬 roll 一次。节拍化后概率等比缩放，期望感染速率与原一致
+    // （原期望/秒 = chance×avgAmt/biteCd；现 = (chance×interval/biteCd)×avgAmt/interval，相等）
+    const bcd = (B.Z_CONTACT[z.type] || B.Z_CONTACT.normal).biteCd || 1;
+    if (!godNoDmg && Math.random() < PLAYER_INFECTION.zombieHitChance * (B.Z_BITE_INTERVAL / bcd)) {
+        const [lo, hi] = PLAYER_INFECTION.zombieHitAmount;
+        const infGain = lo + Math.floor(Math.random() * (hi - lo + 1));
+        const prevStage = playerInfectionStage(sv.infection || 0);
+        sv.infection = addPlayerInfection(sv.infection || 0, infGain);
+        const newStage = playerInfectionStage(sv.infection);
+        if (newStage.stage > prevStage.stage) {
+            sv.effects.push({ kind: 'infect', x: sv.px, y: sv.py, life: 1.2, maxLife: 1.2, label: newStage.name });
+        }
+    }
+    // 铁桶重砸：命中溅射，短暂减速玩家（节拍触发，防每帧重复）
+    if (z.type === 'bucket') {
+        applyAtkSlow(sv, B.Z_SPLASH_SLOW_TIME);
+        sv.effects.push({ kind: 'quake', x: z.x, y: z.y, life: 0.4, maxLife: 0.4 });
+    }
+    // 铁门盾击：把玩家击退一段距离（节拍触发）
     if (z.type === 'door') {
         const a = Math.atan2(sv.py - z.y, sv.px - z.x);
         const kb = 36;

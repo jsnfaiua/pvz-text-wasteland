@@ -13,7 +13,7 @@ import { drawMsg } from './wmsg.js';
 import { TS } from './wconst.js';
 import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H } from './windoor.js';
 import { districtAt, districtProfile, infectionAt } from './wdistrict.js';
-import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED, wxSpeedMul, fogRadius } from './wbalance.js';
+import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED, wxSpeedMul, fogRadius, windDirAt, windDirAtHour, SEASON_NAMES, seasonAt } from './wbalance.js';
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
 export { TS };
 
@@ -380,7 +380,7 @@ function drawTileInfection(ctx, x, y, level, word, seed, options) {
     ctx.drawImage(cached, x, y);
 }
 
-function zombieBodyColorAt(px, py, type, coat, skin) {
+function zombieBodyColorAt(px, py, type, coat, skin, hair) {
     let color = null;
     if (px >= 7 && px < 12 && py >= 31 && py < 36) color = '#222628';
     if (px >= 16 && px < 21 && py >= 31 && py < 36) color = '#222628';
@@ -389,7 +389,7 @@ function zombieBodyColorAt(px, py, type, coat, skin) {
     if (px >= 6 && px < 21 && py >= 14 && py < 26) color = coat;
     if (px >= 2 && px < 7 && py >= 16 && py < 27) color = skin;
     if (px >= 21 && px < 25 && py >= 14 && py < 26) color = skin;
-    if (px >= 8 && px < 21 && py >= 4 && py < 15) color = '#5c7657';
+    if (px >= 8 && px < 21 && py >= 4 && py < 15) color = hair || '#5c7657';
     if (px >= 7 && px < 9 && py >= 6 && py < 13) color = '#31432f';
     if (px >= 16 && px < 18 && py >= 8 && py < 10) color = '#d5c37b';
     return color;
@@ -411,8 +411,30 @@ function zombieGearColorAt(px, py, type) {
         if (px >= 24 && px < 26 && py >= 0 && py < 30) return '#79534a';
         if (px >= 26 && px < 28 && py >= 0 && py < 7) return '#8d3e3e';
     }
+    if (type === 'pole') {
+        if (px >= 0 && px < 2 && py >= 12 && py < 30) return '#7a6a4a';
+    }
     return null;
 }
+
+// 2026-08-09 僵尸按类型差异化配色（"很多种类的僵尸，颜色还挺好看"）：
+// 每种类型一套专属皮肤/头发/外衣色板，多类型一眼可辨且整体协调。
+// 皮肤/头发：按类型取色；外衣用各类型既有 def.color（传入 color 参数）。
+// 尸化玩家精英（playerzombie）保留继承的 z.skin。
+const ZOMBIE_PALETTE = {
+    normal:   { skin: '#78936b', hair: '#5c7657' },
+    cone:     { skin: '#8a9a5e', hair: '#6a7a44' },
+    bucket:   { skin: '#9aa8a0', hair: '#6a7a76' },
+    door:     { skin: '#a08464', hair: '#6e5a44' },
+    flag:     { skin: '#b8906a', hair: '#806a44' },
+    pole:     { skin: '#7aa2a4', hair: '#5a7a7e' },
+    remnant:  { skin: '#9486ae', hair: '#74649a' },
+    deleter:  { skin: '#a87264', hair: '#80604a' },
+    swapper:  { skin: '#6a9e72', hair: '#4a7452' },
+    giant:    { skin: '#a06a7a', hair: '#7a4a5a' },
+    playerzombie: { skin: null, hair: '#3a4a42' },
+};
+function zombiePalette(type) { return ZOMBIE_PALETTE[type] || ZOMBIE_PALETTE.normal; }
 
 function drawPixelZombie(ctx, z, sx, sy, color) {
     const level = z.infection || 0;
@@ -421,6 +443,7 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
     const skinState = z.stunT > 0 ? 2 : (z.hurt > 0 ? 1 : 0);
     const lvQ = Math.round(level * 8);
     // 尸化玩家精英：肤色混入缓存 key（否则不同肤色共用缓存 → 颜色串用）
+    const pal = zombiePalette(z.type);
     const skinHash = z.skin ? ((parseInt(z.skin.slice(1), 16) || 0) & 0x3FF) : 0;
     const cacheKey = (z.type.charCodeAt(0) * 1000 + lvQ * 10 + skinState + skinHash * 64) | 0;
     let cached = cacheGet(_zombieCache, cacheKey);
@@ -430,7 +453,8 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
         octx.imageSmoothingEnabled = false;
         const textPixels = getTextSet('尸', width, height, 1, 0);
         const transitionColor = '#5a4a48', textColor = '#a87980';
-        const skin = skinState === 2 ? '#858585' : (skinState === 1 ? '#b65454' : (z.skin || '#78936b'));
+        const skin = skinState === 2 ? '#858585' : (skinState === 1 ? '#b65454' : (z.skin || pal.skin || '#78936b'));
+        const hair = pal.hair || '#5c7657';
         const coat = color || '#58656d';
         const seed = z.type.charCodeAt(0) * 7919;
         for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
@@ -442,7 +466,7 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
                 octx.fillRect(px, py, 1, 1);
                 continue;
             }
-            const entityColor = zombieBodyColorAt(px, py, z.type, coat, skin);
+            const entityColor = zombieBodyColorAt(px, py, z.type, coat, skin, hair);
             const isTextPixel = textPixels.has(px * 100 + py);
             if (!entityColor && !isTextPixel) continue;
             const edge = Math.min(px / (width - 1), (width - 1 - px) / (width - 1),
@@ -915,12 +939,37 @@ const _tintCache = new Map();
 //       * 头顶（ny<0.55）被判为 shoes → 改判最近的非 shoes 部位（防"头顶鞋色"）
 //       * 底部（ny>0.80）被判为 hair → 改判 shoes（防"鞋底变发色"）
 //     hair 色 [55,36,21] 与鞋底暗棕 [39,25,15] 接近，无位置约束时随机配色会互相污染
-function nearestPart(r, g, b, ny = 0.5) {
+function nearestPart(r, g, b, ny = 0.5, nx = 0.5, face = 'front') {
     let best = null, bestD = 1e9;
     for (const k of MC_KEYS) {
         for (const p of MC_PAL[k]) {
             const d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b);
             if (d < bestD) { bestD = d; best = k; }
+        }
+    }
+    // 眼睛保护（2026-08-09 用户反馈"眼睛像有头发的像素"）：
+    // 眼睛/眼窝/眉骨阴影是暖棕深色（R 55-170 暖棕），会命中下方色相约束被强制染成发色，
+    // 导致眼睛周围一圈发色（换亮发色时尤其明显）。
+    // 在眼睛位置（正面 nx 0.32-0.68 / 侧视 nx>0.68，脸部高度带）内、
+    // 距 eyes 色板较近(eyeD<1500≈距离39)的像素改判 eyes——保留深色阴影原色，不染发色。
+    // 阈值选 1500：真实刘海/发丝如 [100,66,31] eyeD≈3497 不命中（仍染发色）；
+    // 眼窝阴影 [60,40,30] eyeD≈150 命中（保留深色）。
+    if (face !== 'back' && ny < 0.30) {
+        // 区域收窄到眼睛实际位置（诊断：front 眼睛候选 ny 0.13-0.22 / side nx 0.70-0.92, ny 0.14-0.27）。
+        // 太宽会把刘海（ny 0.10-0.16）和后脑头发保护住 → 亮发色下保留深棕块（用户 2026-08-09 反馈）。
+        const inZone = face === 'side'
+            ? (nx > 0.70 && nx < 0.92 && ny >= 0.14 && ny <= 0.27)
+            : (nx >= 0.36 && nx <= 0.64 && ny >= 0.13 && ny <= 0.22);
+        if (inZone) {
+            let eyeD = 1e9;
+            for (const p of MC_PAL.eyes) {
+                const d = (p[0] - r) * (p[0] - r) + (p[1] - g) * (p[1] - g) + (p[2] - b) * (p[2] - b);
+                if (d < eyeD) eyeD = d;
+            }
+            // eyeD<500(距离<22)：眼窝阴影 [60,40,30] eyeD≈150 命中；
+            // 头发 [74,46,22]（=hair[1]）eyeD≈706 不命中（保留发色染色，避免侧视头发留深棕块）；
+            // 刘海 [100,66,31] eyeD≈3497 不命中。
+            if (eyeD < 500) return 'eyes';
         }
     }
     // 头发区域色相硬约束（用户 2026-08-09 反馈"侧面头发色差大"）：
@@ -932,7 +981,10 @@ function nearestPart(r, g, b, ny = 0.5) {
     // 诊断数据（2026-08-09）：发色像素集中 0-30%（头发真实区），
     // 30-50% 的"发色像素"是眼睛/脸/袖子被误判——若 ny 放宽到 0.42 会让
     // 眼睛变发色、袖子横截一半被头发影响（用户反馈）。收紧到 0.30。
-    if (ny < 0.30 && r > g && g > b && r >= 55 && r <= 170 && g >= 38 && g <= 115 && b >= 8 && b <= 70) {
+    // 收紧到 ny<0.22（2026-08-09 修复"待机脖子有头发杂色"）：
+    // 诊断数据 front/side 待机帧 ny 0.26-0.30 的脖子/脸颊阴影（#a26843=[162,104,67] 等暖棕）
+    // 命中色相约束被染成发色 → 脖子上头发杂色。真正头发集中在头部 0-22%，收紧后脖子区不再强制 hair。
+    if (ny < 0.22 && r > g && g > b && r >= 55 && r <= 170 && g >= 38 && g <= 115 && b >= 8 && b <= 70) {
         return 'hair';
     }
     // 头部区域 shoes→hair：仅真正头发带（ny<0.25）才把误判为 shoes 的像素改判 hair。
@@ -942,6 +994,27 @@ function nearestPart(r, g, b, ny = 0.5) {
     // 注：曾加 shirt→hair（ny<0.30）把"头发区绿色像素"改判头发，但误伤脖子衣领
     // （[43,84,40] 等绿色衣服像素，ny 0.25-0.30 的衣领被判给 hair → 脖子到肩膀变发色）。
     // 已删除：头发区真正的杂色已由色相约束（暖棕发色系）覆盖，无需 shirt→hair。
+    // 鞋区暖棕硬约束（2026-08-09 用户反馈"东西走鞋子杂色"）：
+    // 侧视走路帧鞋面棕调/鞋底深棕被 eyes 暗棕变体([45,30,22]/[50,35,25])
+    // 和 skin 暗色变体([117,75,50])吸走 → 眼睛不染色(保留原棕=杂色)、皮肤染成肤色(鞋上肤色斑)。
+    // 鞋区(ny>=0.78)任何暖棕(R>G>B)像素强制判给 shoes，染成玩家鞋色。
+    // 裤脚是蓝灰(R<B)天然免疫；脚踝亮肤色 R~200+ 不在范围内。
+    // 诊断数据：walk-side-f0~f3 鞋区被判给 eyes/skin 的暖棕像素 1028-1977px，98% 在范围内。
+    // 下限放宽到 r>=8/g>=4/b>=1：鞋底/鞋缘极暗阴影(#0c0800/#170f03 等 R<20，位于 ny>=0.85 底部)
+    // 也要纳入 shoes 染成玩家鞋色暗部，否则换亮鞋色时鞋底保留原黑=杂色。
+    // 极暗像素全部 R>G>B 暖棕、位于鞋区底部/边缘，判给 shoes 合理；纯黑描边(r=g=b)天然免疫。
+    if (ny >= 0.78 && r > g && g > b && r >= 8 && r <= 180 && g >= 4 && g <= 120 && b >= 1 && b <= 80) {
+        return 'shoes';
+    }
+    // 鞋区中性灰硬约束（2026-08-09 用户反馈"东西走鞋子杂色"补充）：
+    // 待机侧视帧 sprite-side.png 鞋后跟/鞋底边缘有中性灰像素(#797e80 等, R≈G≈B 低饱和)，
+    // 被判给 skin 暗色变体([120,78,53]) → 染成肤色 = 鞋边缘肤色杂色。
+    // 鞋区(ny>=0.78)真正中性灰(三通道两两差<=25, 中高亮度 r>=60)强制判给 shoes。
+    // 裤子蓝灰(B 明显高于 R, 如 #6b7d8f 的 B-R=36)因两两差超标而免疫。
+    // 诊断数据：sprite-side.png 鞋区 324px 中性灰被 skin 吸走，全部满足该条件。
+    if (ny >= 0.78 && r >= 60 && r <= 230 && g >= 55 && g <= 235 && b >= 50 && b <= 230) {
+        if (Math.abs(r - g) <= 25 && Math.abs(g - b) <= 25 && Math.abs(r - b) <= 25) return 'shoes';
+    }
     if (bestD >= 12000) return null; // 远处杂色不染色
     // shoes 位置硬约束（用户 2026-08-09 明确）：棕色像素只在鞋区（ny>=0.78）才判为 shoes，
     // 其他位置的棕色像素是 sprite 设计层的"杂色"——不染色（保留原色），
@@ -950,10 +1023,37 @@ function nearestPart(r, g, b, ny = 0.5) {
     // hair 在底部（ny>0.80）：鞋底暗棕 [39,25,15] 距 hair[0]=[55,36,21] 极近（d²≈540），
     // 随机黑发时鞋底全黑。底部只能是鞋，改判 shoes 保持鞋底可见为玩家色。
     if (best === 'hair' && ny > 0.80) return 'shoes';
+    // 脖子/手臂/衣服边缘发色修复（2026-08-09 用户反馈"脖子上有头发、和手相夹的缝隙有头发"）：
+    // 诊断数据：走路帧 ny 0.30-0.60 仍有大量像素距离匹配判给 hair——
+    //   walk-front-f2 1765px / f3 1529px（样本 #283009/#3c3625 是手臂轮廓/衣服边缘的深绿棕描边），
+    //   walk-side-f0~f3 69-245px、walk-back-f0 55px。
+    // 这些是脖子阴影、手臂与身体夹缝、衣服边缘的描边色，染成发色=刺眼杂色。
+    // 改为保留原色（null）——原图描边色在角色上是自然阴影，不产生"发色块"。
+    // 真实垂发如果延伸到 ny 0.30+ 会保留原棕，但相比脖子/手臂染成亮发色的杂色，可接受。
+    if (best === 'hair' && ny >= 0.30 && ny <= 0.80) return null;
     // pants 出现在上衣区（ny 0.28-0.55）：衣服阴影 [30,50,69] 与裤子 [28,48,66] 色系相近，
     // 会被误判为 pants → 绿色上衣出现蓝色斑块（用户反馈"袖口贴着的位置有杂色"）。
     // 上衣区必为 shirt（袖口边缘/衣服阴影），改判 shirt。
     if (best === 'pants' && ny >= 0.28 && ny < 0.55) return 'shirt';
+    // 2026-08-09 修复"待机头发后面黑黑的一块 + 脖子杂色"：
+    // sprite-front.png 中央 x≈0.32 处有一条深蓝色 (R≈0,G≈15,B≈27) 垂直暗线，
+    // 实际从肩膀 (ny≈0.55) 延伸到腰/腿 (ny≈0.86)，跨整个身体中部。
+    // 这些像素最近色是 eyes (d²≈914)，但不在眼睛保护 inZone 内（nx=0.32<0.36），
+    // tintSprite 的 `part==='eyes' continue` 把它们当成眼睛阴影保留原色 → 显示为深蓝黑色。
+    // 用户看到的"头发后面黑黑的东西"和"脖子杂色"就是这条线（玩家本体 28 像素高，
+    // 头部 ny≈0.0-0.22、脖子 ny≈0.30-0.40 视觉上都能看到深蓝暗线的延续）。
+    // 修复：inZone 外的 eyes 最佳匹配不应返回 eyes，按位置改判（头部→hair、脸颈肩→skin、
+    // 身体→shirt、腿→pants），让它们被染成玩家对应部位色，消除深蓝黑线。
+    // inZone 内真正的眼睛已被眼睛保护提前 return 'eyes'，不受影响。
+    // 注意：不能排除 back 方向——back 无眼睛，其后脑勺/脖子深色阴影（最近色 eyes）同样
+    // 会保留原色成为杂色（2026-08-09 用户反馈"朝北待机头发后面有杂色"），也要改判对应部位。
+    if (best === 'eyes') {
+        if (ny < 0.30) return 'hair';
+        if (ny >= 0.30 && ny < 0.55) return 'skin';
+        if (ny >= 0.55 && ny < 0.78) return 'shirt';
+        if (ny >= 0.78 && ny <= 0.95) return 'pants';
+        return null;
+    }
     return best;
 }
 function hexRgb(hex) {
@@ -1003,12 +1103,17 @@ export function tintSprite(img, look) {
     // 像素纵向位置（相对 bbox，0=顶 1=底）：供 nearestPart 位置软约束使用
     const bb = getSpriteBBox(img);
     const bbH = Math.max(1, bb.h);
+    const bbW = Math.max(1, bb.w);
+    // 方向（用于眼睛保护：正面眼睛在中央、侧视眼睛在脸侧/后脑无眼睛）
+    const src = img.src || img._tintBase || '';
+    const face = /(^|[/_])side([/_.]|$)/.test(src) ? 'side' : (/(^|[/_])back([/_.]|$)/.test(src) ? 'back' : 'front');
     for (let i = 0; i < d.length; i += 4) {
         if (d[i + 3] === 0) continue;
         const idx = i / 4;
         const r = d[i], g = d[i + 1], b = d[i + 2];
         const ny = ((idx / sw | 0) - bb.y) / bbH;
-        const part = nearestPart(r, g, b, ny);
+        const nx = ((idx % sw | 0) - bb.x) / bbW;
+        const part = nearestPart(r, g, b, ny, nx, face);
         if (!part || part === 'eyes') continue; // 眼睛/深阴影保持原色
         const t = hexRgb(L[part]);
         if (!t) continue;
@@ -1055,6 +1160,20 @@ function getSpriteBBox(img) {
     return b;
 }
 
+// NPC 名牌 Y 坐标（相对脚底 sy 的偏移）：用角色精灵"内容 bbox 顶边"定位，确保名牌
+// 悬浮在渲染小人上方，而不压到小人身上（sprite 含大片透明留白，按整图算会错位）。
+function npcNameplateY(n) {
+    const dir = n._animDir || 'down';
+    const sprKey = dir === 'up' ? 'back' : (dir === 'left' || dir === 'right') ? 'side' : 'front';
+    const img = _mcSprites[sprKey] || _mcSprites['front'];
+    const H = 48;   // 与 drawPixelPlayerBody 的 TARGET_H 一致
+    if (!img || !img.height) return -(H / 2 + 20);   // 兜底：sy - 44
+    const scale = H / img.height;
+    const bb = getSpriteBBox(img);
+    const topInRender = (bb.y || 0) * scale;   // 内容顶边在渲染框内距顶部的像素
+    return -(H - topInRender + 8);             // 内容顶边再上移 8px 作为名牌中心
+}
+
 export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, look, anim) {
     const level = (infection || 0) / 100;
     const a = anim || {};
@@ -1071,6 +1190,12 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
         if (sprKey === 'side') {
             const fi = a.frame % 4;
             if (_mcWalk.side[fi]) img = _mcWalk.side[fi];
+        } else if (sprKey === 'back') {
+            // 2026-08-09 用户确认：没有为向北（back）行走做走路帧动画。
+            // 原逻辑切 walk-back-f0~f3 多帧（各帧形状/尺寸不同）→ 行走时"一大一小"跳变、
+            // 左手缩放不对称。向北行走/待机统一用 sprite-back 单图 + 呼吸浮动
+            // （行走时呼吸略快、待机略慢），不再切换走路帧。
+            idleAnim = true;   // 呼吸浮动标记（下方按 moving 区分频率）
         } else if (_mcWalk[sprKey][a.frame]) {
             img = _mcWalk[sprKey][a.frame];
         }
@@ -1098,13 +1223,14 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
     }
     if (level <= 0.01) {
         if (idleAnim) {
-            // 待机动画：上半身（bbox 上部 72%）平滑浮动 ±1px，腿（底部 28%）固定
+            // 待机/单图呼吸动画：上半身（bbox 上部 72%）平滑浮动 ±1px，腿（底部 28%）固定
             // 2026-08-08 21:05 用户反馈修正：
             //   ① 呼吸频率调慢：sin 平滑 0.6Hz（周期 ~1.6s），不再 10fps 急促
             //   ② 上下身 1px 重叠（源多取 1px），消除浮动时双腿之间像素断裂
+            // 2026-08-09 用户要求（向北无走路帧）：行走时呼吸略快（0.9Hz）、待机略慢（0.6Hz）
             const bb = getSpriteBBox(img);
             if (bb.w > 0 && bb.h > 0) {
-                const bob = Math.round(Math.sin(performance.now() / 1000 * Math.PI * 1.2));   // 0.6Hz 平滑呼吸
+                const bob = Math.round(Math.sin(performance.now() / 1000 * Math.PI * (moving ? 1.8 : 1.2)));   // 走 0.9Hz / 待机 0.6Hz
                 const upperFrac = 0.78;   // 上半身 78%（含整个裤子+裆部），分割线远离裆部避免 bob 经过深色裤缝
                 const upperSrcH = Math.round(bb.h * upperFrac);
                 const legSrcH = bb.h - upperSrcH;
@@ -1208,8 +1334,10 @@ export function draw(ctx, sv) {
         sv.camY = sv.py - H / 2 + shake.y;
         const camX = sv.camX, camY = sv.camY;
 
+        // 2026-08-09 用户要求"草在地面之上、物体之下、不长到人行道"：
+        // 草层插入 drawWorld 内部——先画地面层（静态草底），再画动态草，最后画物体层
+        // （树/箱/车/建筑等盖过草）。草只长在 GROUND/WEED（grassRenderLayer 内部已过滤）。
         drawWorld(ctx, sv, camX, camY, W, H);
-        WGRASS.grassRenderLayer(ctx, sv, camX, camY, W, H);   // 动态草层（风摆 + 玩家踩动）
         drawCampFlag(ctx, sv, camX, camY);
         drawDrops(ctx, sv, camX, camY);
         drawZombies(ctx, sv, camX, camY);
@@ -1258,6 +1386,66 @@ export function draw(ctx, sv) {
     }
     // 饥饿光晕（室内外通用，盖在最上层）：昏黄呼吸光 + 边缘暗角，模拟快晕倒的眩晕感
     drawStarveVignette(ctx, sv, W, H);
+    // 2026-08-09 昏迷苏醒过渡：黑灰眨眼几次（像素氛围），期间叠加"荒野中醒来"字样
+    drawWakeOverlay(ctx, sv, W, H);
+}
+
+// 昏迷苏醒：从"模模糊糊昏暗"逐渐"明亮清晰"（单调变亮，不再中途变暗），
+// 配合开场视线模糊（blur）与灰雾，睁眼般越来越清楚；配合移动锁定更代入感。
+// easeOutCubic 后半段更快的"睁眼"感。
+function easeOutCubic(x) { const t = clamp(x, 0, 1) - 1; return 1 + t * t * t; }
+let _wakeOC = null;   // 离屏画布（用于模糊重绘当前画面）
+function drawWakeOverlay(ctx, sv, W, H) {
+    const wk = sv._wake;
+    if (!wk || wk.t >= wk.dur) return;
+    const t = wk.t, dur = wk.dur;
+    const prog = clamp(t / dur, 0, 1);
+    const a = 1 - easeOutCubic(prog);      // 暗度：1→0 单调变亮（无中间变暗）
+    const blurPx = 5 * (1 - prog);         // 开场模糊 → 越来越清晰
+    const veil = 0.5 * (1 - prog);         // 灰雾（昏暗看不清）→ 清明
+    if (a <= 0.01 && blurPx <= 0.3 && veil <= 0.01) return;
+    // 1) 视线模糊：把当前画面拷到离屏再模糊重绘（保持背景活动，只做视觉模糊）
+    if (blurPx > 0.3) {
+        if (!_wakeOC) _wakeOC = document.createElement('canvas');
+        _wakeOC.width = W; _wakeOC.height = H;
+        _wakeOC.getContext('2d').drawImage(ctx.canvas, 0, 0, W, H);
+        ctx.save();
+        ctx.filter = 'blur(' + blurPx.toFixed(1) + 'px)';
+        ctx.drawImage(_wakeOC, 0, 0, W, H, 0, 0, W, H);
+        ctx.filter = 'none';
+        ctx.restore();
+    }
+    // 2) 暗度蒙层（单调变亮）
+    if (a > 0.01) {
+        ctx.save();
+        ctx.globalAlpha = clamp(a, 0, 1);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+    }
+    // 3) 灰雾（模糊昏暗的"看不清"感），逐渐清明
+    if (veil > 0.01) {
+        ctx.save();
+        ctx.globalAlpha = clamp(veil, 0, 1);
+        ctx.fillStyle = '#262b36';
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+    }
+    // 4) 苏醒文字：睁眼前半段浮现、持续、结尾淡出
+    const ta = prog < 0.4 ? prog / 0.4 : (prog < 0.82 ? 1 : clamp((1 - prog) / 0.18, 0, 1));
+    if (ta > 0.02) {
+        const wob = Math.round(Math.sin(sv.now * 1.5) * 1);
+        ctx.save();
+        ctx.globalAlpha = ta;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 20px "Microsoft YaHei", monospace';
+        ctx.fillStyle = '#B8C6D6';
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 8;
+        ctx.fillText('你在荒野中醒来…', W / 2 + wob, H * 0.42);
+        ctx.restore();
+    }
 }
 
 // ---------- 昼夜系统（1 现实小时 = 1 游戏天，DAY_LEN=3600s） ----------
@@ -1312,18 +1500,27 @@ function drawWeatherOverlay(ctx, sv, W, H) {
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, W, H);
     } else if (sv._weather === 'fog') {
-        // 大雾：可视半径（近清远朦，屏幕最远端完全看不清）——以角色（屏幕中心）为中心，radius 按强度
-        const rPx = fogRadius(sv._weather, level) * TS;
-        // 最远端白蒙 → 完全看不清（浓雾 ≈ 1.0；薄雾 0.42 轻度白蒙），呼吸微动
-        const aFar = Math.min(1, (0.55 + 0.15 * breathe) * mul);
-        // 平滑渐变：半径内清楚 → 中段 22% → 外段 60% → 最远端 100%
-        const g = ctx.createRadialGradient(W / 2, H / 2, rPx, W / 2, H / 2, Math.max(rPx + 40, rPx * 1.6));
-        g.addColorStop(0, 'rgba(228,234,238,0)');                               // 可视半径内：清楚
-        g.addColorStop(0.45, `rgba(228,234,238,${(aFar * 0.22).toFixed(3)})`);   // 开始朦胧
-        g.addColorStop(0.75, `rgba(228,234,238,${(aFar * 0.6).toFixed(3)})`);    // 渐浓
-        g.addColorStop(1, `rgba(228,234,238,${aFar.toFixed(3)})`);               // 最远端：完全看不清
-        ctx.fillStyle = g;
+        // 2026-08-09 用户要求：大雾复用"荒野中醒来"的模糊+灰雾效果（渐变的看不清，无圆环）。
+        // 原径向渐变以屏幕中心为圆心，边缘有明显圆形边界；改为全屏轻微 blur（越浓越糊）
+        // + 均匀灰雾蒙层（呼吸微动），画面整体"渐变的看不清"，无任何可见圆圈。
+        const blurPx = 0.8 + 1.8 * mul;   // 雾越浓越模糊（薄雾 ~1.2px / 浓雾 ~2.6px）
+        const veilA = Math.min(0.8, (0.20 + 0.07 * breathe) * Math.max(0.6, mul) * 1.5);
+        if (blurPx > 0.3) {
+            if (!_wakeOC) _wakeOC = document.createElement('canvas');
+            _wakeOC.width = W; _wakeOC.height = H;
+            _wakeOC.getContext('2d').drawImage(ctx.canvas, 0, 0, W, H);
+            ctx.save();
+            ctx.filter = 'blur(' + blurPx.toFixed(1) + 'px)';
+            ctx.drawImage(_wakeOC, 0, 0, W, H, 0, 0, W, H);
+            ctx.filter = 'none';
+            ctx.restore();
+        }
+        // 均匀灰雾：整屏蒙层让视野"雾蒙蒙看不清"，渐变感由 blur 提供，无硬边圆圈
+        ctx.save();
+        ctx.globalAlpha = Math.max(0.03, Math.min(0.8, veilA));
+        ctx.fillStyle = '#c8d2da';
         ctx.fillRect(0, 0, W, H);
+        ctx.restore();
     } else if (sv._weather === 'rain' || sv._weather === 'snow') {
         // 雨雪天色偏冷：冷调 × 强度（暴雨更冷、小雪更淡）
         ctx.fillStyle = sv._weather === 'rain'
@@ -1348,6 +1545,17 @@ function ensureWxParticles() {
     }
     return wxParticles;
 }
+// 重置天气粒子（重生时调用）：
+// 粒子是【世界坐标】固定池，玩家位置从死亡点瞬移到重生点 → 旧粒子留在远端全部越界被丢弃，
+// 顶部边界补充需要 1~2 秒才能填满全屏，视觉上"先稀疏后变密"。
+// 这里把所有粒子的 kind 清零 → 下一帧 drawWeatherParticles 触发「全屏均匀撒点」分支，
+// 重生瞬间全屏均匀，无"先稀后密"的过渡。
+export function resetWeatherParticles() {
+    if (!wxParticles) return;
+    for (let i = 0; i < wxParticles.length; i++) wxParticles[i].kind = 0;
+    // spd 也清零，强制下一帧重新初始化速度（避免旧速度残留在新坐标产生奇怪轨迹）
+    for (let i = 0; i < wxParticles.length; i++) wxParticles[i].spd = 0;
+}
 function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
     const wx = wxInfo(sv._weather);
     if (wx.particles === 0 || wx.particles === 3) return;   // 雾用覆盖层，无粒子
@@ -1362,90 +1570,117 @@ function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
     const nowMs = performance.now();
     const fdt = Math.min(0.05, (nowMs - (sv._wxPartT || nowMs)) / 1000);
     sv._wxPartT = nowMs;
+
+    // ---------- 风向系统（2026-08-09）----------
+    // 风向 = 世界每天确定性的 windDirAt(seed, day)（§13.2：world 态禁随机）。
+    // 风向只影响粒子【视觉】（倾斜角 + 水平漂移），不影响逻辑/存档/结算。
+    // 水平分量 windH = cos(wd)：
+    //   东风（wd≈0°）→ windH≈+1 → 雨向右倾斜；西风（wd≈180°）→ windH≈-1 → 雨向左倾斜；
+    //   南风（wd≈90°）/北风（wd≈270°）→ windH≈0 → 垂直下落，无水平偏移（符合"南风正常、北风没效果"）。
+    // 垂直分量 windV = sin(wd) 只影响玩家被风吹（已在 updateWind 处理），不影响粒子水平倾斜。
+    // 风向（2026-08-09 开发者模式可覆盖）：sv._devWind（弧度）为开发者测试风向；
+    // 否则用随游戏小时变化的 windDirAtHour（风向不是一成不变，§13.2 确定性双端一致）
+    const wd = sv._devWind != null ? sv._devWind : windDirAtHour(sv.world.seed, sv.day, (sv.t / sv.dayLen) * 24);
+    const windH = Math.cos(wd);
     ctx.save();
     // 重生策略（双轨）：
     // ① 切换天气/初始化（kind 变）→ 撒全屏：切换瞬间立即全屏均匀（无"只有顶部"）；
     // ② 越界（稳态）→ 顶部边界进入：持续从顶部补充 → 稳态各高度密度 = 流量/速度恒定，
     //    顶部永远有雨（修复"全屏随机重生"稳态密度 ∝ y 线性递增 → 顶部空/底部密）。
+    // 2026-08-09 修复"右侧无雨"：原固定向左漂移 0.28 → 右侧列粒子下落时左移出列，
+    //    又未越界（x 仍在屏内）→ 右端底部长期空白（CDP 实测最右列密度仅最左列的 1/9）。
+    //    现生成带按风向加宽 [camX-|windShift|, camX+W+|windShift|]，漂移后仍覆盖全屏；
+    //    且风向为 0（南北风）时无水平漂移，全屏自然均匀。
     const colsOf = (i, n, W2, H2) => {
         const cols = Math.max(6, Math.ceil(Math.sqrt(n * W2 / Math.max(1, H2))));
         return { gx: i % cols, cols };
     };
-    const spawnFull = (p, c, i, n, W, H, camX, camY) => {
-        p.x = camX + (c.gx + 0.5) * (W / c.cols) + (Math.random() - 0.5) * 20;
-        p.y = camY + Math.random() * H;
-    };
-    const spawnTop = (p, c, i, n, W, H, camX, camY) => {
-        p.x = camX + (c.gx + 0.5) * (W / c.cols) + (Math.random() - 0.5) * 20;
+    // 生成 x 覆盖全屏 + 向漂移【反方向】延伸（保证漂移后仍全屏均匀，无"右侧无雨"）：
+    // 东风（windH>0，粒子向右漂）→ 左端粒子漂走 → 需向【左】延伸生成（genXMin 左移）；
+    // 西风（windH<0，粒子向左漂）→ 右端粒子漂走 → 需向【右】延伸生成（genXSpan 加宽向右）。
+    // 统一：x 落在 [camX - max(0, windH)*shiftW, camX - max(0, windH)*shiftW + W + shiftW]
+    //       = [camX - max(0,windH)*shiftW, camX + W + max(0,-windH)*shiftW]
+    const shiftW = Math.abs(windH) * 0.28 * H;   // 全屏单方向漂移量
+    const genXMin = camX - Math.max(0, windH) * shiftW;
+    const genXSpan = W + shiftW;   // 覆盖全屏 + 漂移方向的余量
+    const genTop = (p, c, W, H, camX) => {
+        p.x = genXMin + (c.gx + 0.5) * (genXSpan / c.cols) + (Math.random() - 0.5) * 20;
         p.y = camY - 30 - Math.random() * 50;   // 顶部边界上方进入
     };
-    if (wx.particles === 1) {   // 雨：斜线下落（侧风），世界坐标；速度/长度/粗细随强度
+    const genFull = (p, c, W, H, camX, camY) => {
+        p.x = genXMin + (c.gx + 0.5) * (genXSpan / c.cols) + (Math.random() - 0.5) * 20;
+        p.y = camY + Math.random() * H;
+    };
+    if (wx.particles === 1) {   // 雨：斜线下落，倾斜角由风向决定；世界坐标；速度/长度/粗细随强度
         ctx.strokeStyle = 'rgba(140,180,220,0.55)';
         ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度（小雨 0.8 / 雷阵雨 1.6）
+        const hspd = windH * WX_PART_SPEED.rain * 0.28;   // 水平漂移速度（风向×基准侧风系数）
         for (let i = 0; i < n; i++) {
             const p = parts[i];
             if (p.kind !== partKind || !p.spd) {
-                // ① 切换/初始化：撒全屏（立即均匀）
-                const c = colsOf(i, n, W, H);
-                spawnFull(p, c, i, n, W, H, camX, camY);
-                p.spd = WX_PART_SPEED.rain * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);   // 基准×强度系数 ±6%
-                const sm = wxSpeedMul(sv._weather, level); p.len = (6 + Math.random() * 9) * sm;   // 长度∝速度（大雨更长）
+                const c = colsOf(i, n, genXSpan, H);
+                genFull(p, c, W, H, camX, camY);
+                p.spd = WX_PART_SPEED.rain * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
+                const sm = wxSpeedMul(sv._weather, level); p.len = (6 + Math.random() * 9) * sm;
                 p.kind = partKind;
             } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 60 || p.x > camX + W + 60) {
-                // ② 越界：顶部边界进入（稳定流）
-                const c = colsOf(i, n, W, H);
-                spawnTop(p, c, i, n, W, H, camX, camY);
+                const c = colsOf(i, n, genXSpan, H);
+                genTop(p, c, W, H, camX);
             }
             p.y += p.spd * fdt;
-            p.x -= p.spd * 0.28 * fdt;
+            p.x += hspd * fdt;   // 风向水平漂移（东风向右、西风向左、南北风≈0）
             const sx = p.x - camX, sy = p.y - camY;
             ctx.beginPath();
             ctx.moveTo(sx, sy);
-            ctx.lineTo(sx - p.len * 0.28, sy - p.len);
+            ctx.lineTo(sx - windH * p.len * 0.28, sy - p.len);
             ctx.stroke();
         }
-    } else if (wx.particles === 2) {   // 雪：慢速飘落小点 + 左右摇摆；速度/大小随强度
+    } else if (wx.particles === 2) {   // 雪：慢速飘落小点 + 左右摇摆 + 风向偏移；速度/大小随强度
         ctx.fillStyle = 'rgba(238,246,255,0.85)';
-        const pSize = 1.5 + level * 0.5;   // 雪花大小随强度（小雪 1.5 / 大雪 2.5）
+        const pSize = 1.5 + level * 0.5;
+        const hspd = windH * WX_PART_SPEED.snow * 0.6;   // 雪更缓 → 风向水平占比略大
         for (let i = 0; i < n; i++) {
             const p = parts[i];
             if (p.kind !== partKind || !p.spd) {
-                const c = colsOf(i, n, W, H);
-                spawnFull(p, c, i, n, W, H, camX, camY);
+                const c = colsOf(i, n, genXSpan, H);
+                genFull(p, c, W, H, camX, camY);
                 p.spd = WX_PART_SPEED.snow * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
                 p.seed = Math.random() * 6.28;
                 p.kind = partKind;
             } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 40 || p.x > camX + W + 40) {
-                const c = colsOf(i, n, W, H);
-                spawnTop(p, c, i, n, W, H, camX, camY);
+                const c = colsOf(i, n, genXSpan, H);
+                genTop(p, c, W, H, camX);
             }
             p.y += p.spd * fdt;
-            p.x += Math.sin(sv.now * 1.2 + p.seed) * 16 * fdt;
+            p.x += hspd * fdt + Math.sin(sv.now * 1.2 + p.seed) * 16 * fdt;   // 风向偏移 + 原有左右摇摆
             ctx.fillRect(p.x - camX, p.y - camY, pSize, pSize);
         }
-    } else if (wx.particles === 4) {   // 沙尘：横向快速飞沙（沙尘暴）；速度/长度/粗细随强度
+    } else if (wx.particles === 4) {   // 沙尘：横向飞沙，风向主导方向（原随机左右 → 单一风向）；速度/长度/粗细随强度
         ctx.strokeStyle = 'rgba(205,175,115,0.5)';
-        ctx.lineWidth = 0.8 + level * 0.2;   // 飞沙粗细随强度（扬沙 0.8 / 强沙暴 1.6）
+        ctx.lineWidth = 0.8 + level * 0.2;
+        // 沙尘主要受风向水平分量驱动：风向越偏横向越强；南北风时沙尘缓慢飘落
+        const sandH = windH * WX_PART_SPEED.sand;
+        const sandV = Math.abs(windH) < 0.3 ? -30 : 0;   // 南北风（近垂直）→ 沙尘缓慢下沉
         for (let i = 0; i < n; i++) {
             const p = parts[i];
             if (p.kind !== partKind || !p.spd) {
-                const c = colsOf(i, n, W, H);
-                p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
+                const c = colsOf(i, n, genXSpan, H);
+                p.x = camX + (windH >= 0 ? -40 : W + 40) + (Math.random() - 0.5) * 40;   // 从风向逆侧进入
                 p.y = camY + Math.random() * H;
                 p.spd = WX_PART_SPEED.sand * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
-                p.len = (4 + Math.random() * 7) * wxSpeedMul(sv._weather, level);   // 飞沙长度∝速度
+                p.len = (4 + Math.random() * 7) * wxSpeedMul(sv._weather, level);
                 p.kind = partKind;
             } else if (p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {
-                const c = colsOf(i, n, W, H);
-                p.x = camX + (Math.random() < 0.5 ? -30 : W + 30);
+                const c = colsOf(i, n, genXSpan, H);
+                p.x = camX + (windH >= 0 ? -40 : W + 40) + (Math.random() - 0.5) * 40;
                 p.y = camY + (c.gx + 0.5) * (H / c.cols) + (Math.random() - 0.5) * 16;
             }
-            p.x += (Math.random() < 0.5 ? 1 : -1) * p.spd * fdt;
-            p.y += (Math.random() - 0.5) * 50 * fdt;
+            p.x += sandH * fdt;   // 风向水平驱动（东风右、西风左）
+            p.y += sandV * fdt + (Math.random() - 0.5) * 20 * fdt;   // 轻微下沉/抖动
             const sx = p.x - camX, sy = p.y - camY;
             ctx.beginPath();
             ctx.moveTo(sx, sy);
-            ctx.lineTo(sx - p.len, sy);
+            ctx.lineTo(sx - (windH >= 0 ? 1 : -1) * p.len, sy);
             ctx.stroke();
         }
     }
@@ -1640,8 +1875,12 @@ function drawCollectible(ctx, sx, sy, text, color, now, tx, ty, highlight) {
 // 可交互容器带边缘高亮（与资源箱同款）；地面底由统一叠加规则绘制（见 drawWorld：groundTypeAt）。
 const STREET_CONTAINER = { '垃圾桶': 1, '纸箱': 1, '消防栓': 1, '报刊亭': 1, '废弃轮胎': 1 };
 // 容器高亮：未搜 或 仍有可取物品 才显示；已掏空的储物容器不再高亮（但仍可点开存取）。
+// 2026-08-10 用户要求：消防栓/纸箱不做光圈交互提示（远处反复闪的呼吸描边干扰视线），
+// F 交互仍可用，仅去掉发光脉冲。
 function containerHighlight(sv, t, tx, ty) {
     if (t === T.TIRES) return false;
+    if (t === T.HYDRANT) return false;   // 消防栓：不显示光圈
+    if (t === T.CARDBOX) return false;   // 纸箱：不显示光圈
     const key = tx + ',' + ty;
     const chest = sv.mods.chests && sv.mods.chests['box:' + key];
     const boxL = sv.mods.boxLoot && sv.mods.boxLoot[key];
@@ -2314,33 +2553,56 @@ function drawGroundTile(ctx, sv, tx, ty, camX, camY, forcedType) {
 // ============================================================
 // 世界渲染：静态背景离屏缓存 + 动态覆盖层
 // 静态层（地块/建筑/树木/停放车辆/容器底座）只在"地块修改"或"镜头切格"时重绘一次，
-// 静止/步行/驾驶期间每帧只贴一张离屏图 + 少量动态覆盖，消除逐帧重绘地块的 CPU 峰值；
+// 静止/步行/驾驶期间每帧只贴两张离屏图（地面层 + 物体层）+ 中间插一层动态草 + 少量动态覆盖，
+// 消除逐帧重绘地块的 CPU 峰值。层级：地面(静态草底) → 动态草 → 物体(树/箱/车/建筑) → 动态覆盖。
 // 交互脉冲（车辆高亮、容器发光、植物本体与血条）等动画留在动态层按帧绘制。
 // ============================================================
-let _worldLayerCache = null;
+let _worldGroundCache = null;   // 地面层（BIOME_BG + 地面格，不透明）
+let _worldObjectCache = null;   // 物体层（树/建筑/箱/车等，背景透明——画在草之上）
 
 function drawWorld(ctx, sv, camX, camY, W, H) {
     const t0x = Math.floor(camX / TS) - 1, t0y = Math.floor(camY / TS) - 1;
     const t1x = Math.ceil((camX + W) / TS) + 1, t1y = Math.ceil((camY + H) / TS) + 1;
     const rev = sv._zombiePathRevision || 0;   // setTile 时递增：地块变化 → 静态层失效重建
-    let c = _worldLayerCache;
-    if (!c || c.rev !== rev || c.seed !== sv.world.seed ||
-        c.t0x !== t0x || c.t0y !== t0y || c.t1x !== t1x || c.t1y !== t1y) {
-        const cw = (t1x - t0x + 1) * TS, chh = (t1y - t0y + 1) * TS;
-        if (!c) { c = _worldLayerCache = {}; }
-        if (!c.canvas || c.canvas.width !== cw || c.canvas.height !== chh) {
-            c.canvas = makeOffscreen(cw, chh);
-            c.bctx = c.canvas.getContext('2d');
+    const cw = (t1x - t0x + 1) * TS, chh = (t1y - t0y + 1) * TS;
+    // 2026-08-09 修复"垂直移动地图物体重影/复制粘贴"：
+    // 拆层前只有一张缓存 blit 一次；拆成地面/物体两层后若各自 Math.round 取整，
+    // camY 为小数时两层取整误差不同 → 物体相对地面每帧 ±1px 抖动 → 重影。
+    // 修复：两层共用同一个取整坐标（bdx/bdy），相对位置恒定。
+    const bdx = Math.round(t0x * TS - camX);
+    const bdy = Math.round(t0y * TS - camY);
+    // ① 地面层（不透明背景：BIOME_BG + 所有格地面）
+    let g = _worldGroundCache;
+    if (!g || g.rev !== rev || g.seed !== sv.world.seed ||
+        g.t0x !== t0x || g.t0y !== t0y || g.t1x !== t1x || g.t1y !== t1y) {
+        if (!g) { g = _worldGroundCache = {}; }
+        if (!g.canvas || g.canvas.width !== cw || g.canvas.height !== chh) {
+            g.canvas = makeOffscreen(cw, chh);
+            g.bctx = g.canvas.getContext('2d');
         }
-        c.rev = rev; c.seed = sv.world.seed;
-        c.t0x = t0x; c.t0y = t0y; c.t1x = t1x; c.t1y = t1y;
-        c.dyn = { cars: [], pulses: [], plants: [] };
-        drawWorldStatic(c.bctx, sv, t0x * TS, t0y * TS, cw, chh, c.dyn);
+        g.rev = rev; g.seed = sv.world.seed;
+        g.t0x = t0x; g.t0y = t0y; g.t1x = t1x; g.t1y = t1y;
+        drawWorldGroundStatic(g.bctx, sv, t0x * TS, t0y * TS, cw, chh);
     }
-    // blit 坐标取整：camX/camY 是小数（玩家移动任意）→ 亚像素 blit 会双线性插值，
-    // 每 36px 格边缘产生半像素色带 = "格子状分割线"（预览页无相机滚动所以看不到）
-    ctx.drawImage(c.canvas, Math.round(t0x * TS - camX), Math.round(t0y * TS - camY));
-    drawWorldDynamic(ctx, sv, camX, camY, W, H, c.dyn);
+    ctx.drawImage(g.canvas, bdx, bdy);
+    // ② 动态草层（在地面之上、物体之下；只长在 GROUND/WEED，grassRenderLayer 内部已过滤）
+    WGRASS.grassRenderLayer(ctx, sv, camX, camY, W, H);
+    // ③ 物体层（树/建筑/箱/车/路障等，背景透明 → 物体盖过草）
+    let o = _worldObjectCache;
+    if (!o || o.rev !== rev || o.seed !== sv.world.seed ||
+        o.t0x !== t0x || o.t0y !== t0y || o.t1x !== t1x || o.t1y !== t1y) {
+        if (!o) { o = _worldObjectCache = {}; }
+        if (!o.canvas || o.canvas.width !== cw || o.canvas.height !== chh) {
+            o.canvas = makeOffscreen(cw, chh);
+            o.bctx = o.canvas.getContext('2d');
+        }
+        o.rev = rev; o.seed = sv.world.seed;
+        o.t0x = t0x; o.t0y = t0y; o.t1x = t1x; o.t1y = t1y;
+        o.dyn = { cars: [], pulses: [], plants: [] };
+        drawWorldObjectStatic(o.bctx, sv, t0x * TS, t0y * TS, cw, chh, o.dyn);
+    }
+    ctx.drawImage(o.canvas, bdx, bdy);
+    drawWorldDynamic(ctx, sv, camX, camY, W, H, o.dyn);
 }
 
 function drawWorldDynamic(ctx, sv, camX, camY, W, H, dyn) {
@@ -2381,6 +2643,7 @@ function drawWorldDynamic(ctx, sv, camX, camY, W, H, dyn) {
         let col = pv.color;
         if (pv.type === 'tamed' || pv.type === 'player') col = '#7CFF9E';
         if (pData && pData.hostile) col = '#FF7755';
+        if (pv.hurt > 0) col = '#FFFFFF';   // 被僵尸啃咬受击闪白（与玩家/NPC 受击一致）
         drawPixelPlantBody(ctx, sx, sy, col, pv.name);
         if (pData && pData.hp < pData.maxHp) {
             const ratio = Math.max(0, pData.hp / pData.maxHp);
@@ -2396,8 +2659,10 @@ function drawWorldDynamic(ctx, sv, camX, camY, W, H, dyn) {
             ctx.fillText('怒', sx + TS / 2, sy - 14);
         }
     }
-    // 交互目标金色描边（碎石不是容器：可 F 开采但无宝箱式交互框，避免误导）
-    if (sv.promptTarget && sv.promptTarget.t !== T.RUBBLE) {
+    // 交互目标金色描边（碎石不是容器：可 F 开采但无宝箱式交互框，避免误导；
+    // 2026-08-10 汽车也不画金色十字框——靠近汽车只保留 F 提示（操作汽车），去掉描边框）
+    if (sv.promptTarget && sv.promptTarget.t !== T.RUBBLE
+        && sv.promptTarget.t !== T.CAR && sv.promptTarget.t !== T.CARWRECK) {
         ctx.strokeStyle = '#FFD700';
         ctx.lineWidth = 2;
         ctx.strokeRect(sv.promptTarget.x * TS - camX + 2, sv.promptTarget.y * TS - camY + 2, TS - 4, TS - 4);
@@ -2431,7 +2696,9 @@ function drawWorldDynamic(ctx, sv, camX, camY, W, H, dyn) {
 }
 
 // 静态层：确定性地块渲染（地块/建筑/树木/停放车辆/容器底座），只在地块变化或切格时调用
-function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
+// 静态地面层：BIOME_BG 背景 + 每格实际地面（含静态草底/人行道/公路/楼缝阴影草地）。
+// 与物体层分开缓存 → 动态草层可插入"地面之上、物体之下"。
+function drawWorldGroundStatic(ctx, sv, camX, camY, W, H) {
     const cs = CHUNK * TS;
     const c0x = Math.floor(camX / cs), c0y = Math.floor(camY / cs);
     for (let cy = c0y; cy <= c0y + Math.ceil(H / cs); cy++)
@@ -2440,6 +2707,23 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
             ctx.fillRect(cx * cs - camX, cy * cs - camY, cs, cs);
         }
 
+    const t0x = Math.floor(camX / TS), t0y = Math.floor(camY / TS);
+    const t1x = Math.ceil((camX + W) / TS), t1y = Math.ceil((camY + H) / TS);
+    for (let ty = t0y; ty <= t1y; ty++) {
+        for (let tx = t0x; tx <= t1x; tx++) {
+            const t = getTile(sv, tx, ty);
+            if (isGroundTile(t)) drawGroundTile(ctx, sv, tx, ty, camX, camY);
+            else drawGroundTile(ctx, sv, tx, ty, camX, camY, groundTypeAt(sv, tx, ty));
+        }
+    }
+}
+
+// 静态物体层：树/建筑/箱/车/路障/野生草材等（背景透明 → 物体盖过动态草层）。
+function drawWorldObjectStatic(ctx, sv, camX, camY, W, H, dyn) {
+    // 2026-08-09 修复"垂直移动地图物体复制粘贴/重影"：物体层画布是透明背景，
+    // 若复用同尺寸 canvas 时不先清空，旧位置的物体残留在画布上（叠加绘制），
+    // 每次切格重建后同一个消防栓/容器被画多次 → 垂直移动出现"复制粘贴"。
+    ctx.clearRect(0, 0, W, H);
     const t0x = Math.floor(camX / TS), t0y = Math.floor(camY / TS);
     const t1x = Math.ceil((camX + W) / TS), t1y = Math.ceil((camY + H) / TS);
     ctx.textAlign = 'center';
@@ -2502,12 +2786,12 @@ function drawWorldStatic(ctx, sv, camX, camY, W, H, dyn) {
         for (let tx = t0x; tx <= t1x; tx++) {
             const t = getTile(sv, tx, ty);
             const sx = tx * TS - camX + TS / 2, sy = ty * TS - camY + TS / 2;
+            // 地面格：纯地面由 drawWorldGroundStatic 画在底层（静态草底），物体层跳过
             if (isGroundTile(t)) {
-                drawGroundTile(ctx, sv, tx, ty, camX, camY);
+                continue;
             } else {
-                // 统一叠加规则：先完整绘制该位置的实际地面（人行道/公路/草地——不区分物体类型），
-                // 物体作为上层叠加在地面之上，不携带任何背景、不改变下方地面。
-                drawGroundTile(ctx, sv, tx, ty, camX, camY, groundTypeAt(sv, tx, ty));
+                // 物体作为上层叠加：物体脚下地面（人行道/公路/草地）已由地面层画好，
+                // 物体层只画物体本身，背景透明 → 动态草夹在地面层与物体层之间。
                 if (t === T.SPROUT || t === T.PLOT) {
                     // 植物统一走动态层：野生芽也可能被激活物化进 mods.plants（成长/受击），
                     // 静态层缓存会残留旧外观 → 全部按帧绘制（此类地块数量极少，开销可忽略）
@@ -3596,13 +3880,68 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
     for (const n of sv.npcs) {
         if (!n.alive) continue;
         if (n.riding) continue;   // 乘车中：由车辆渲染
+        if (n.inInterior) continue;   // 在室内：由室内渲染绘制（2026-08-09 室内外统一）
         if (controllerId && n.id === controllerId) continue;   // 主控角色画成玩家
         const sx = n.x - camX, sy = n.y - camY;
         // 性能：屏幕外 NPC 不绘制（含名条/血条/特效）
         if (sx < -80 || sx > W + 80 || sy < -80 || sy > H + 80) continue;
-        const tint = n.party ? '#66CCFF'
-            : (n.role === 'hostile' ? '#FF5544'
-                : (n.role === 'friendly' ? '#39d98a' : '#FFD700'));
+        // 阵营不再用特殊颜色标识（友善/中立/敌对远近看不出区别）；统一用捏脸上衣色，
+        // 只有走近到可交互距离才显示名字（§用户需求：走近才能认清谁是谁/哪个阵营）。
+        const nameColor = '#D6DDE6';   // 中性浅色名牌，无阵营色彩
+        // 玩家与 NPC 距离（判定名字显示：可交互距离 ~2 格内才露出名牌）
+        const nameDist = Math.hypot(n.x - sv.px, n.y - sv.py);
+        const showName = nameDist < 2.2 * TS;
+        // 逐帧动画：复用玩家待机/行走精灵。用 AI 侧的 sticky 移动标记 n._moving（由 wnpc.moveToward 置真、
+        // updateNpc 每 tick 复位）判断是否在走——避免"远离玩家每 0.3s 才跳一格"导致的平移假象。
+        const nMoving = !!n._moving;
+        // 朝向：AI 移动向量 n._faceX/_faceY → 上/下/左/右
+        const fX = n._faceX || 0, fY = n._faceY || 0;
+        let nDir = n._animDir || 'down';
+        // 2026-08-09 攻击抽搐修复：挥击期间（swingT>0）朝向锁定为攻击方向 swingDir，
+        // 避免"围攻走位朝威胁绕圈 + 攻击时 swingDir 朝威胁"两个方向互相覆盖 → 左右抽插。
+        // 攻击时 NPC 面向目标（僵尸在右 → 朝右），走位方向不再干扰攻击动画朝向。
+        if (n.swingT > 0 && n.swingDir != null) {
+            const a2 = n.swingDir;
+            if (Math.abs(Math.cos(a2)) > Math.abs(Math.sin(a2))) nDir = Math.cos(a2) > 0 ? 'right' : 'left';
+            else nDir = Math.sin(a2) > 0 ? 'down' : 'up';
+            n._animDir = nDir;
+        } else if (nMoving) {
+            if (Math.abs(fY) > Math.abs(fX)) nDir = fY < 0 ? 'up' : 'down';
+            else if (fX !== 0) nDir = fX > 0 ? 'right' : 'left';
+            n._animDir = nDir;
+            // 步频与玩家一致（survival.js 玩家同款公式）：朝南 0.432s、东西向 0.24s、朝北 0.36s
+            // 每换一帧才前进一帧、4 帧一循环——不再用固定 10fps，避免 NPC 走路"迈腿频率"和玩家不一致。
+            const nowMs = performance.now();
+            const wdt = n._lastWT != null ? Math.min(0.1, (nowMs - n._lastWT) / 1000) : 0;
+            n._lastWT = nowMs;
+            n._stepT = (n._stepT || 0) - wdt;
+            if (n._stepT <= 0) {
+                const stepInt = (fY > 0 && Math.abs(fY) >= Math.abs(fX)) ? 0.432 : (Math.abs(fX) > 0.7 ? 0.24 : 0.36);
+                n._stepT = stepInt;
+                n._walkT = ((n._walkT || 0) + 1) % 4;
+            }
+        }
+        const nAnim = { dir: nDir, moving: nMoving, frame: nMoving ? (n._walkT || 0) : 0 };
+        // 名牌显示在渲染图片上方（用精灵实际内容 bbox 顶边，避免压到小人身上）
+        const nameY = npcNameplateY(n);
+        // 倒地主角（软核救治中，2026-08-10）：保持主控形象朝南站立待机的"定格帧"（不播动画），
+        // 叠加红色濒死画面效果（头顶倒悬红标 + 名牌"濒临死亡"），队友可见前来救治
+        if (n.downed) {
+            // 站姿定格：dir='down' 取正面朝南单图，frame=1 强制不播放待机呼吸动画（静态一帧）
+            const shirt = (n.look && n.look.shirt) || '#8f9baa';
+            drawPixelPlayerBody(ctx, sx, sy, shirt, 0, n.look, { dir: 'down', moving: false, frame: 1 });
+            // 濒死画面效果：红圈呼吸光圈 + 头顶倒悬红标
+            const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 1000 * 3);
+            ctx.strokeStyle = 'rgba(255,60,50,' + (0.5 + 0.4 * pulse) + ')';
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(sx, sy - 18, 14 + 2 * pulse, 0, 7); ctx.stroke();
+            ctx.fillStyle = '#FF5544';
+            ctx.font = 'bold 12px "Microsoft YaHei", monospace';
+            ctx.fillText('↓', sx, sy - TS / 2 - 16);
+            if (showName) drawNameplate(ctx, sx, sy - TS / 2 - 26, `${n.name}（濒临死亡）`, '#FF5544');
+            continue;
+        }
+
         // 患病 NPC：头顶病色十字，一眼可辨谁生病
         if (n.sick && SICKNESS[n.sick.type]) {
             const col = sickColor(n.sick.type);
@@ -3615,17 +3954,13 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
             ctx.fillRect(sx - 12, sy - 17, 28, 33);
             ctx.globalAlpha = 1;
         }
-        drawNameplate(ctx, sx, sy - TS / 2 - 14, n.name, tint);
-        ctx.save();
-        ctx.shadowColor = tint;
-        ctx.shadowBlur = n.hurtT > 0 ? 14 : 5;
-        // 上衣取 NPC 的捏脸外观（阵营由名条+光晕辨识）
-        drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || tint, 0, n.look);
-        ctx.restore();
+        if (showName) drawNameplate(ctx, sx, nameY, n.name, nameColor);
+        // 上衣取 NPC 的捏脸外观；无外观时用中性灰（不再按阵营发光/染色）
+        drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', 0, n.look, nAnim);
         // 近战挥击特效（与玩家同一套：按武器样式差异化绘制）
         // 圆心取角色身体中部（sy 是脚底）
         drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, n.swingT, n.swingDir, n.swingWeapon);
-        if (n.hp < n.maxHp || n.role === 'hostile' || n.party) {
+        if (showName && (n.hp < n.maxHp)) {
             const bw = TS + 4;
             ctx.fillStyle = 'rgba(30,10,10,0.85)';
             ctx.fillRect(sx - bw / 2, sy - TS / 2 - 8, bw, 3);
@@ -3855,9 +4190,11 @@ function drawTeamPanel(ctx, sv, W, H) {
         ctx.font = '9px "Microsoft YaHei", monospace';
         ctx.fillStyle = '#7a8b95';
         ctx.fillText(n.wpnName || '拳头', x + 14 + nameW, y + 10, Math.max(18, pw - 56 - nameW));
-        // 状态徽标（病/营/随/战）
+        // 状态徽标（濒/病/累/营/随/战）
         let st = '', sc = '#8a9aa2';
-        if (n.sick) { st = '病'; sc = '#FF8866'; }
+        if (n.downed) { st = '濒'; sc = '#FF5544'; }   // 2026-08-10 用户要求：倒地主角 UI 标注"濒临死亡"
+        else if (n.sick) { st = '病'; sc = '#FF8866'; }
+        else if (n.exhausted) { st = '累'; sc = '#9FB4C0'; }   // 2026-08-10 与玩家一致：体力耗尽力竭
         else if (n.state === 'camp') { st = '营'; sc = '#FFD700'; }
         else if (n.state === 'follow') { st = '随'; sc = '#39d98a'; }
         else if (n.state === 'fight') { st = '战'; sc = '#FF5544'; }
@@ -4549,19 +4886,24 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
     const dName = districtNameOverride || districtProfile(sv.world.seed, pcx, pcy).name;
     ctx.fillStyle = '#DDDDDD';
     ctx.fillText(`第 ${sv.day} 天  ${hh}:${mm}  [${dName}]`, 232, 17);
-    // 天气指示（实时，与渲染同源）：强度名 + 天气色
+    // 2026-08-10 季节 + 天气实时（时间城区右边）：[季节名] · 天气强度名（天气色）
+    const wxBase = `第 ${sv.day} 天  ${hh}:${mm}  [${dName}]`;
+    const seasonName = SEASON_NAMES[seasonAt(sv.day)] || '夏';
+    ctx.fillStyle = '#A8C8A8';
+    ctx.fillText(`  [${seasonName}]`, 232 + ctx.measureText(wxBase).width + 6, 17);
     if (sv._weather && wxInfo(sv._weather).particles !== 0) {
         const wxT = wxIntensity(sv._weather, wxLevelCur(sv));
         ctx.fillStyle = wxInfo(sv._weather).color;
-        ctx.fillText(` · ${wxT.name}`, 232 + ctx.measureText(`第 ${sv.day} 天  ${hh}:${mm}  [${dName}]`).width + 6, 17);
+        ctx.fillText(` · ${wxT.name}`, 232 + ctx.measureText(wxBase + `  [${seasonName}]`).width + 6, 17);
+    } else {
+        ctx.fillStyle = '#A8C8A8';
+        ctx.fillText(' · 晴朗', 232 + ctx.measureText(wxBase + `  [${seasonName}]`).width + 6, 17);
     }
 
-    // 背包占用 + 金币
-    let coins = 0;
-    if (sv.inv) for (const s of sv.inv) if (s && s.id === COIN_ID) coins += s.n;
+    // 背包占用 + 金币（2026-08-10 金币=货币：独立字段 sv.coins，不占背包格）
     ctx.fillStyle = '#AABBCC';
     ctx.textAlign = 'right';
-    ctx.fillText(`背包 ${sv.inv.filter(Boolean).length}/24 · 金币 ${coins}`, W - 12, 17);
+    ctx.fillText(`背包 ${sv.inv.filter(Boolean).length}/24 · 金币 ${sv.coins || 0}`, W - 12, 17);
 
     // 体力条（常态黄绿 #CCDD44，力竭变红 #AA2222）
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
@@ -4682,6 +5024,41 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
 }
 
 // ---------- 顶部 / 底部 HUD ----------
+// 2026-08-10 底部操作提示循环横幅：文本从右向左滚动，循环往复。
+// 每帧按 performance.now 推进偏移，offset 取模 (textWidth + W + gap) → 无缝循环。
+let _bannerCache = null;   // { text, width, color, font } → 复用 measureText 结果
+function drawScrollBanner(ctx, sv, W, H, text, color) {
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    const font = '12px "Microsoft YaHei", monospace';
+    const key = text;
+    if (!_bannerCache || _bannerCache.key !== key) {
+        ctx.font = font;
+        _bannerCache = { key, width: ctx.measureText(text).width };
+    }
+    const speed = 40;                    // 滚动速度 px/s（恒定，从右向左）
+    const gap = 120;                     // 相邻两段文本之间的间隔
+    const w = _bannerCache.width;
+    const total = w + gap;               // 一段的完整周期 = 文本宽 + 间隔
+    const t = (performance.now() / 1000) * speed;
+    // 从右向左恒定速度滚动：phase 在 [0, total) 内线性增长 → off 从 W 单调减到 W-total，
+    // 取模回绕 → 循环往复。速度恒定（off 对时间的导数恒为 -speed）。
+    const phase = t % total;
+    const off = W - phase;               // 当前段左缘 x
+    // 绘制黑色半透明底条
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, H - 26, W, 26);
+    ctx.font = font;
+    ctx.fillStyle = color || '#888888';
+    ctx.textAlign = 'left';
+    // 画三段（当前段 + 前后邻段），其中与屏幕 [−w, W] 相交的都会显示：
+    // 任意时刻至少一段覆盖屏幕 → 从右飘入、向左移出、再从右缓缓出现，永不中断。
+    ctx.fillText(text, off - total, H - 13);
+    ctx.fillText(text, off, H - 13);
+    ctx.fillText(text, off + total, H - 13);
+    ctx.restore();
+}
+
 function drawHUD(ctx, sv, W, H) {
     ctx.textBaseline = 'middle';
     drawStatusHUD(ctx, sv, W);
@@ -4697,15 +5074,10 @@ function drawHUD(ctx, sv, W, H) {
         }
     }
 
-    // 底部操作提示
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(0, H - 26, W, 26);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#888888';
-    ctx.font = '12px "Microsoft YaHei", monospace';
-    ctx.fillText(sv.build
+    // 底部操作提示（2026-08-10 循环滚动横幅：从右飘到左，往复循环；不含开发者模式）
+    drawScrollBanner(ctx, sv, W, H, sv.build
         ? '建造模式：1-5 选择 · 左键放置 · F 拆除 · G/ESC 退出'
-        : 'WASD 移动 · Shift 奔跑 · Q 闪现 · E 格挡 · 空格 跳跃 · 左键/J 攻击 · F 交互 · G 建造 · B 背包 · P 暂停 · F11 全屏', W / 2, H - 13);
+        : 'WASD 移动 · Shift 奔跑 · Q 闪现 · E 格挡 · 空格 跳跃 · 左键/J 攻击 · F 交互 · V 背起/放下 · G 建造 · B 背包 · C 角色属性 · H 队伍管理 · F1 新手教程 · P 暂停 · F11 全屏 · ALT+ESC 退出全屏');
 
     // 交互提示
     ctx.font = 'bold 16px "Microsoft YaHei", monospace';
@@ -4968,6 +5340,80 @@ function drawInterior(ctx, sv, W, H) {
         ctx.restore();
     }
 
+    // 2026-08-09 室内高楼层躲藏幸存者（静态像素小人 + 走近才显示名字，中性无阵营色）
+    if (it.npcs) {
+        for (const n of it.npcs) {
+            if (!n || n.hp <= 0) continue;
+            const sx = ox + n.x, sy = oy + n.y;
+            drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', 0, n.look || sv.character || null, {});
+            if (Math.hypot(n.x - sv.px, n.y - sv.py) < 2.2 * TS) {
+                drawNameplate(ctx, sx, sy + npcNameplateY(n), n.name || '幸存者', '#D6DDE6');
+            }
+        }
+    }
+    // 2026-08-09 室内外 NPC 统一：随玩家进室内的队员 / 室内招募的队员（sv.npcs 中 inInterior）也绘制
+    if (sv.npcs) {
+        for (const n of sv.npcs) {
+            if (!n.alive || !n.inInterior) continue;
+            if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控画成玩家
+            const sx = ox + n.x, sy = oy + n.y;
+            // 2026-08-10 室内倒地主角：与室外同款站姿定格（朝南待机帧）+ 红色濒死效果，
+            // 队友在室内也能看到倒地主角前来救助（此前室内无 downed 处理 → 主角站姿无标记）
+            if (n.downed) {
+                const shirt = (n.look && n.look.shirt) || '#8f9baa';
+                drawPixelPlayerBody(ctx, sx, sy, shirt, 0, n.look, { dir: 'down', moving: false, frame: 1 });
+                const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 1000 * 3);
+                ctx.strokeStyle = 'rgba(255,60,50,' + (0.5 + 0.4 * pulse) + ')';
+                ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.arc(sx, sy - 18, 14 + 2 * pulse, 0, 7); ctx.stroke();
+                ctx.fillStyle = '#FF5544';
+                ctx.font = 'bold 12px "Microsoft YaHei", monospace';
+                ctx.fillText('↓', sx, sy - TS / 2 - 16);
+                drawNameplate(ctx, sx, sy - TS / 2 - 26, `${n.name || '幸存者'}（濒临死亡）`, '#FF5544');
+                continue;
+            }
+            // 复用室外同款逐帧动画：按本帧位移判断走动/朝向
+            const dx2 = n.x - (n._lastAX != null ? n._lastAX : n.x);
+            const dy2 = n.y - (n._lastAY != null ? n._lastAY : n.y);
+            n._lastAX = n.x; n._lastAY = n.y;
+            let nDir = n._animDir || 'down';
+            let nMv = (dx2 * dx2 + dy2 * dy2) > 0.5 || !!n._moving;
+            // 朝向/步频基准统一取 AI 移动向量（与室外一致），避免用逐帧位移小量误判方向
+            const fX2 = n._faceX || 0, fY2 = n._faceY || 0;
+            // 2026-08-10 与室外一致：挥击期间（swingT>0）朝向锁定为攻击方向 swingDir
+            if (n.swingT > 0 && n.swingDir != null) {
+                const a3 = n.swingDir;
+                if (Math.abs(Math.cos(a3)) > Math.abs(Math.sin(a3))) nDir = Math.cos(a3) > 0 ? 'right' : 'left';
+                else nDir = Math.sin(a3) > 0 ? 'down' : 'up';
+                n._animDir = nDir;
+            } else if (nMv) {
+                if (Math.abs(fY2) > Math.abs(fX2)) nDir = fY2 < 0 ? 'up' : 'down';
+                else if (fX2 !== 0) nDir = fX2 > 0 ? 'right' : 'left';
+                n._animDir = nDir;
+                // 与室外 NPC / 玩家同款步频：朝南 0.432s、东西向 0.24s、朝北 0.36s，每帧换一帧、4 帧循环
+                const nowMs2 = performance.now();
+                const wdt2 = n._lastWT != null ? Math.min(0.1, (nowMs2 - n._lastWT) / 1000) : 0;
+                n._lastWT = nowMs2;
+                n._stepT = (n._stepT || 0) - wdt2;
+                if (n._stepT <= 0) {
+                    const stepInt = (fY2 > 0 && Math.abs(fY2) >= Math.abs(fX2)) ? 0.432 : (Math.abs(fX2) > 0.7 ? 0.24 : 0.36);
+                    n._stepT = stepInt;
+                    n._walkT = ((n._walkT || 0) + 1) % 4;
+                }
+            }
+            const nAnim2 = { dir: nDir, moving: nMv, frame: nMv ? (n._walkT || 0) : 0 };
+            drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', 0, n.look || sv.character || null, nAnim2);
+            // 2026-08-10 与室外一致：近战挥击特效（按武器样式差异化绘制；圆心取身体中部）
+            if (n.swingT > 0) drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, n.swingT, n.swingDir, n.swingWeapon);
+            if (Math.hypot(n.x - sv.px, n.y - sv.py) < 2.2 * TS) {
+                drawNameplate(ctx, sx, sy + npcNameplateY(n), n.name || '幸存者', '#D6DDE6');
+            }
+        }
+    }
+
+    // 室内交互目标黄色光圈（与室外一致：确定 F 会和哪个箱子/幸存者交互）
+    drawInteriorPromptGlow(ctx, sv, it, ox, oy);
+
     // 玩家（复用大世界渲染：挥砍弧 / 残影 / 格挡盾 / 跳跃影 / 蓄力换弹指示）
     drawPlayer(ctx, sv, -ox, -oy);
 
@@ -4987,6 +5433,9 @@ function drawInterior(ctx, sv, W, H) {
     const itDName = districtProfile(sv.world.seed,
         Math.floor((it.originX || 0) / CHUNK), Math.floor((it.originY || 0) / CHUNK)).name;
     drawStatusHUD(ctx, sv, W, itDName);
+    // 2026-08-10 修复"室内切队友视角后左侧队伍UI消失"：室内也绘制队伍面板
+    // （含倒地主角，标注濒死状态），与室外一致。
+    drawTeamPanel(ctx, sv, W, H);
     // 室内专属：室 内 · 楼层 · 僵尸数量
     const curFloor = it.floor || 1;
     const floorTag = curFloor > 1 ? `${curFloor}层` : (curFloor < 0 ? `地下${Math.abs(curFloor)}层` : '1层');
@@ -4996,15 +5445,50 @@ function drawInterior(ctx, sv, W, H) {
     ctx.fillStyle = '#D29A5B';
     ctx.fillText(`室 内 · ${floorTag} · ${left > 0 ? `僵尸 ×${left}` : '已清剿'}`, 400, 17);
 
-    // 底部提示
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(0, H - 26, W, 26);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#888888';
-    ctx.font = '12px "Microsoft YaHei", monospace';
-    ctx.fillText(curFloor === 1
-        ? 'WASD 移动 · 左键/J 攻击 · F 搜索箱子 · 走到绿色[出]字离开室内'
-        : 'WASD 移动 · 左键/J 攻击 · F 搜索箱子 · 上楼走↑楼梯，下楼走↓楼梯', W / 2, H - 13);
+    // 底部提示（2026-08-10 循环滚动横幅：从右飘到左，往复循环）
+    drawScrollBanner(ctx, sv, W, H, curFloor === 1
+        ? 'WASD 移动 · 左键/J 攻击 · F 交互/搜索/救治 · V 背起/放下 · H 队伍管理 · 走到绿色[出]字离开室内'
+        : 'WASD 移动 · 左键/J 攻击 · F 交互/搜索/救治 · V 背起/放下 · H 队伍管理 · 靠近楼梯按 F 上楼下楼');
 
     drawMsg(ctx, sv, W);
+}
+
+// 室内 F 交互目标黄色光圈（与室外交互目标金色描边同款）：
+// 箱子 → 金色呼吸描边矩形；躲藏幸存者 → 金色呼吸圆圈。确定 F 会作用于哪个对象。
+function drawInteriorPromptGlow(ctx, sv, it, ox, oy) {
+    const pt = it.promptTarget;
+    if (!pt) return;
+    const pulse = 0.5 + Math.sin(sv.now * 2.5) * 0.3;
+    ctx.save();
+    ctx.strokeStyle = '#FFD700';
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = clamp(pulse, 0, 1);
+    if (pt.npc) {
+        // 2026-08-09 用户要求：NPC 身上不再画金色圈（干扰视线）。
+        // NPC 交互通过名牌/走近可交互判定体现，移除头顶光圈；箱子光圈提示保留。
+    } else if (pt.downed) {
+        // 2026-08-10 室内濒死交互：红色描边 + 文字"救治/放下 [F]"（与室外救助提示同步）
+        const px0 = ox + pt.x * TS, py0 = oy + pt.y * TS;
+        ctx.strokeStyle = '#E8836A';
+        ctx.strokeRect(px0 + 2, py0 + 2, TS - 4, TS - 4);
+        ctx.font = 'bold 11px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#E8836A';
+        ctx.globalAlpha = 1;
+        ctx.fillText(sv._carryDowned ? '放下 [F]' : '救治 [F]', px0 + TS / 2, py0 - 6);
+    } else if (pt.stairs) {
+        // 2026-08-10 楼梯：金色描边 + 文字"上楼/下楼 [F]"（交互式上下楼提示）
+        const px0 = ox + pt.x * TS, py0 = oy + pt.y * TS;
+        ctx.strokeRect(px0 + 2, py0 + 2, TS - 4, TS - 4);
+        ctx.font = 'bold 11px "Microsoft YaHei", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#FFD700';
+        ctx.globalAlpha = 1;
+        ctx.fillText(pt.dir > 0 ? '上楼 [F]' : '下楼 [F]', px0 + TS / 2, py0 - 6);
+    } else {
+        // 箱子：金色描边矩形（内缩 2px，与室外交互框一致）
+        const px0 = ox + pt.x * TS, py0 = oy + pt.y * TS;
+        ctx.strokeRect(px0 + 2, py0 + 2, TS - 4, TS - 4);
+    }
+    ctx.restore();
 }

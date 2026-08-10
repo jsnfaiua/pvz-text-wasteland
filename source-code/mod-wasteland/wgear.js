@@ -185,6 +185,26 @@ export function meleeAttack(sv) {
     const style = w.attackStyle || 'slash';
     const reach = (w.reach || 40) + 8;
     const atkMul = sv._atkMul || 1;   // 力量/年龄阶段加成
+    // 2026-08-09 修复"僵尸贴太近打不到"：目标中心越过玩家中心时 atan2 方向反转（delta≈180°），
+    // 扇形判定永远不中。极近距离（目标与玩家中心重叠/紧贴，dist ≤ 15px）时忽略角度限制直接命中——
+    // 视觉上已贴在一起，挥拳/挥剑理应打到。
+    const CLOSE_HIT = 15;
+    // 2026-08-10 用户定稿：只有墙阻挡近战攻击（其余物体不阻挡）。
+    // 命中前做视线检查：玩家与目标连线经过墙格（室内 IT.WALL=1 / 室外 T.WALL）则打不到。
+    const wallBlocked = (x0, y0, x1, y1) => {
+        const steps = Math.max(2, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (TS * 0.5)));
+        for (let s = 1; s < steps; s++) {
+            const fx = x0 + (x1 - x0) * (s / steps), fy = y0 + (y1 - y0) * (s / steps);
+            const gx = Math.floor(fx / TS), gy = Math.floor(fy / TS);
+            if (sv.interior) {
+                const it = sv.interior;
+                if (gx >= 0 && gx < it.w && gy >= 0 && gy < it.h && it.tiles[gy * it.w + gx] === 1) return true;   // 室内墙
+            } else if (getTile(sv, gx, gy) === T.WALL) {
+                return true;   // 室外墙
+            }
+        }
+        return false;
+    };
     let hitAny = false;
     for (const z of sv.zombies) {
         if (z.hp <= 0) continue;
@@ -199,16 +219,23 @@ export function meleeAttack(sv) {
             // 挥砍/直刺/重劈：扇形判定（弧宽由武器 arc 决定）
             const dist = Math.hypot(dx, dy);
             if (dist > reach) continue;
-            let delta = Math.atan2(dy, dx) - angle;
-            while (delta > Math.PI) delta -= Math.PI * 2;
-            while (delta < -Math.PI) delta += Math.PI * 2;
-            if (Math.abs(delta) <= (w.arc || Math.PI) / 2) hit = true;
+            // 极近距离：中心重叠/紧贴 → 直接命中（不因角度反转而打空）
+            if (dist <= CLOSE_HIT) { hit = true; }
+            else {
+                let delta = Math.atan2(dy, dx) - angle;
+                while (delta > Math.PI) delta -= Math.PI * 2;
+                while (delta < -Math.PI) delta += Math.PI * 2;
+                if (Math.abs(delta) <= (w.arc || Math.PI) / 2) hit = true;
+            }
         }
         if (hit) {
+            // 只有墙阻挡近战：玩家与目标之间隔墙则打不到
+            if (wallBlocked(sv.px, sv.py, z.x, z.y)) continue;
             // 联机 guest 室外：不本地扣血（host 权威），命中上报 atk 由 host 判定；
             // 联机 guest 室内：室内各自独立（host 不在同一空间无法权威判定）→ 走本地扣血
             if (sv.mp && sv.mp.role === 'guest' && !sv.interior) {
-                (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'atk', x: sv.px, y: sv.py, melee: true, dmg: devDmg(sv, w.damage) * atkMul });
+                // 带上武器 key：host 按各武器真实判定范围（reach+8）裁决命中
+                (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'atk', x: sv.px, y: sv.py, melee: true, wkey: k, dmg: devDmg(sv, w.damage) * atkMul });
                 hitAny = true;
                 zombieHitSound(sv, z);
                 continue;
@@ -228,10 +255,15 @@ export function meleeAttack(sv) {
             const dx = n.x - sv.px, dy = n.y - sv.py;
             const dist = Math.hypot(dx, dy);
             if (dist > reach) continue;
-            let delta = Math.atan2(dy, dx) - angle;
-            while (delta > Math.PI) delta -= Math.PI * 2;
-            while (delta < -Math.PI) delta += Math.PI * 2;
-            if (Math.abs(delta) <= (w.arc || Math.PI) / 2) {
+            // 极近距离直接命中（同僵尸判定：目标中心重叠/紧贴时不因角度反转而打空）
+            const npcHit = dist <= CLOSE_HIT || (() => {
+                let delta = Math.atan2(dy, dx) - angle;
+                while (delta > Math.PI) delta -= Math.PI * 2;
+                while (delta < -Math.PI) delta += Math.PI * 2;
+                return Math.abs(delta) <= (w.arc || Math.PI) / 2;
+            })();
+            if (npcHit) {
+                if (wallBlocked(sv.px, sv.py, n.x, n.y)) continue;   // 只有墙阻挡近战
                 n.hp -= devDmg(sv, w.damage) * atkMul;
                 n.hurtT = 0.12;
                 hitAny = true;
@@ -242,7 +274,9 @@ export function meleeAttack(sv) {
     }
     if (hitAny) addAct(sv, controlledNpc(sv), 'melee');   // 后天培养：近战练力量
     if (hitAny) sv._combatT = 4;   // 玩家出手 → 队友支援
-    wearWeapon(sv, 'melee');   // 武器耐久：每次挥击 -1
+    // 2026-08-09 用户要求：近战对空气砍不消耗耐久（修复挥空也 -1 的 bug）
+    // 只在命中目标（僵尸/敌对 NPC/植物）时才扣武器耐久——挥空属无效操作不该损耗武器。
+    if (hitAny) wearWeapon(sv, 'melee');
     // 近战命中植物（中立/培养）
     const pgx = Math.floor((sv.px + Math.cos(angle) * reach * 0.7) / TS);
     const pgy = Math.floor((sv.py + Math.sin(angle) * reach * 0.7) / TS);
@@ -440,16 +474,27 @@ export function updateBullets(sv, dt) {
         if (b.life != null) { b.life -= dt; if (b.life <= 0) dead = true; }
         if (!dead && b.traveled >= (b.range || 9999) * 2) dead = true;
 
-        // 墙体/树木/水面阻挡；命中植物则造成伤害
+        // 墙体/树木/水面阻挡；命中植物则造成伤害。
+        // 2026-08-10 用户定稿：室内【只有墙阻挡子弹】——容器/碎石/绿植等不阻挡（可穿透），
+        // 子弹坐标为室内局部坐标，直接用 sv.interior.tiles 判定，不走世界 getTile。
         if (!dead && !b.srcPlant) {
-            const gx = Math.floor(b.x / TS), gy = Math.floor(b.y / TS);
-            const tile = getTile(sv, gx, gy);
-            if ((tile === T.SPROUT || tile === T.PLOT)) {
-                hurtPlant(sv, gx, gy, b.damage);
-                sv.effects.push({ kind: 'hit', x: b.x, y: b.y, life: 0.15, maxLife: 0.15 });
-                dead = true;
-            } else if (!isWalk(tile)) {
-                dead = true;
+            if (sv.interior) {
+                const it = sv.interior;
+                const gx = Math.floor(b.x / TS), gy = Math.floor(b.y / TS);
+                if (gx >= 0 && gx < it.w && gy >= 0 && gy < it.h) {
+                    const t = it.tiles[gy * it.w + gx];
+                    if (t === 1) dead = true;   // IT.WALL = 1：仅墙阻挡，其余穿透
+                }
+            } else {
+                const gx = Math.floor(b.x / TS), gy = Math.floor(b.y / TS);
+                const tile = getTile(sv, gx, gy);
+                if ((tile === T.SPROUT || tile === T.PLOT)) {
+                    hurtPlant(sv, gx, gy, b.damage);
+                    sv.effects.push({ kind: 'hit', x: b.x, y: b.y, life: 0.15, maxLife: 0.15 });
+                    dead = true;
+                } else if (!isWalk(tile)) {
+                    dead = true;
+                }
             }
         } else if (!dead && b.srcPlant) {
             const gx = Math.floor(b.x / TS), gy = Math.floor(b.y / TS);
@@ -557,12 +602,19 @@ function wearWeapon(sv, slot) {
     if (!s) return;
     const max = B.WEAPON_DUR[s.id.slice(4)] || 0;
     if (!max) return;   // 拳头/铲子等无耐久
+    if (sv._devInfDura) return;   // 2026-08-09 开发者：无限耐久（武器/工具永不损坏）
     s.dur = (s.dur == null ? max : s.dur) - 1;
     if (s.dur <= 0) {
         s.dur = 0;
         s.broken = true;
-        sv._brokenWpnPrompt = { id: s.id };   // 触发修复弹窗
-        MSG.pushMsg(sv, `${Panel.getItemInfo(s.id).name} 损坏了！（扳手+零件×${B.WEAPON_REPAIR_PARTS} 可修复）`, '#FF5544');
+        // 2026-08-09 用户要求：武器损坏【不弹修复 UI】，改为玩家头顶浮动提示
+        // "XX武器损坏，去背包查看修理"。打开背包（TAB/B）可看到 broken 武器并修理。
+        const name = Panel.getItemInfo(s.id).name;
+        (sv.effects = sv.effects || []).push({
+            kind: 'hit', x: sv.px, y: sv.py - 10,
+            life: 1.4, maxLife: 1.4, label: `${name} 损坏！`,
+        });
+        MSG.pushMsg(sv, `${name} 损坏了，请打开背包用扳手+零件×${B.WEAPON_REPAIR_PARTS} 修理`, '#FF5544');
         AudioSystem.playHit && AudioSystem.playHit();
     }
 }

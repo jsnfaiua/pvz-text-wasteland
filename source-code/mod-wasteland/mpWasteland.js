@@ -17,7 +17,7 @@
 //   wrejoin guest→host ×1  {}                                        客人断线重连后请求状态重同步
 // ============================================================
 
-import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, updateLootDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName } from './survival.js';
+import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, updateLootDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName, debugGetSv, downedMedSubmit } from './survival.js';
 import AudioSystem from '../systems/audio.js';
 import * as WDEV from './wdev.js';
 import { newSeed } from './world.js';
@@ -405,6 +405,7 @@ function playRemoteSfx(evt) {
             else if (evt.z === 'cone') AudioSystem.playArmoredHurt();
             else AudioSystem.playHit();
             break;
+        case 'zbite': AudioSystem.playZombieEating(); break;   // 持续啃咬音效（2026-08-09，双端一致）
     }
 }
 
@@ -441,6 +442,26 @@ function dispatchWevt(evt, meta) {
         return;
     }
     if (evt.type === 'plant') { applyPlantSync(evt.key, evt.p); return; }
+    // 联机倒地救治（2026-08-09）：真人倒地状态广播 + 药品提交累计（host 权威）
+    //   downed  { name, px, py, dayDead }        本端真人倒地 → 广播让对端可见/可救
+    //   downedMed { med, herb }                  提交药品（对端真人互助）→ host 累计，wsync 回传双端
+    if (evt.type === 'downed') {
+        const sv = debugGetSv();
+        if (role === 'host') {
+            if (sv) sv._downed = { name: evt.name || '幸存者', px: evt.px || 0, py: evt.py || 0, dayDead: evt.dayDead || 0, med: 0, herb: 0 };
+            // 转发其他客人（3+ 人；排除发送者）
+            forwardToOtherGuests(evt, meta);
+        } else {
+            // guest 收到：其他真人倒地 → 本地可见可救（倒地主角渲染依赖 _downed）
+            if (sv && evt.name) sv._downed = { name: evt.name, px: evt.px || 0, py: evt.py || 0, dayDead: evt.dayDead || 0, med: 0, herb: 0 };
+        }
+        return;
+    }
+    if (evt.type === 'downedMed') {
+        const sv = debugGetSv();
+        if (role === 'host' && sv) downedMedSubmit(sv, evt.med || 0, evt.herb || 0);   // host 权威累计，wsync 回传双端
+        return;
+    }
     if (evt.type === 'sfx') {
         playRemoteSfx(evt);   // 动作音效：双端互听
         // 3+ 人：guest 上报的音效 → host 转发给其他客人（排除发送者；host 自己的音效走 outbox 直达全员）

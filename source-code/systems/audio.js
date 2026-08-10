@@ -112,10 +112,25 @@ export async function loadAudioAssets() {
     setTimeout(() => retryBGM(), 500);
 }
 
+// 音效去重节流（2026-08-09 修复"死亡后移动方向键音频重叠/爆音"）：
+// playBuffer 每次创建新 AudioBufferSourceNode，若同音效被快速连续触发（如死亡后多份步频/受击逻辑
+// 同时跑），多个 source 叠加播放 → 音量成倍 → 爆音。按音效名 60ms 节流，重叠触发直接丢弃。
+const _lastSfx = new Map();
 function playBuffer(name, gainVal, loop) {
     ensureCtx();
     const buf = buffers[name];
     if (!buf) return false;
+    if (!loop) {
+        // 非循环音效：同音效 60ms 内不重复创建（节流防叠加）
+        const now = performance.now();
+        const last = _lastSfx.get(name) || 0;
+        if (now - last < 60) return false;
+        _lastSfx.set(name, now);
+        if (_lastSfx.size > 64) {   // 防 Map 无限增长（清最旧一批）
+            const keys = [..._lastSfx.keys()].slice(0, 32);
+            for (const k of keys) _lastSfx.delete(k);
+        }
+    }
     const source = ctx.createBufferSource();
     source.buffer = buf;
     source.loop = !!loop;
@@ -307,7 +322,7 @@ export function playZombieDie() { play('zombieDie', 0.25); }
 export function playZombieSpawn() {
     play(pickRandom(['zombieSpawn', 'zombieSpawn2', 'zombieSpawn3', 'zombieSpawn4']), 0.22);
 }
-export function playZombieEating() { play('zombieBite', 0.1); }
+export function playZombieEating() { play('zombieBite', 0.28); }   // 2026-08-09 音量 0.1→0.28：玩家可明确听到被啃咬
 export function playPlayerHurt() {
     if (!playSegment('playerHurt', 0.24, null, 0.4)) play('zombieBite', 0.15);
 }

@@ -66,6 +66,7 @@ export const LOOT_TIERS = {
     rare:   { name: '稀有战利品', color: '#4da3ff' },
     epic:   { name: '史诗战利品', color: '#ff9800' },
     legacy: { name: '遗物包裹', color: '#ffd700' },
+    npcbag: { name: '战利品包裹', color: '#ff6b6b' },   // 2026-08-10 恶意 NPC 击杀掉落（含其背包全部物品）
 };
 
 // 统一物品信息查询（材料 / 武器 / 弹药 / 种子）
@@ -250,7 +251,13 @@ function addToArrInf(arr, id, n) {
 }
 
 // 物品入背包，返回未能放入的数量
+// 2026-08-10 金币=货币：coin 不进背包格，直接累计到 sv.coins（拾取/搜索/交易/开袋自动生效）
 export function addItem(sv, id, n) {
+    if (id === 'coin') {
+        sv.coins = (sv.coins || 0) + n;
+        if (bagOpen || chestOpen) refresh(sv);
+        return 0;
+    }
     const left = (saveData.devMode && sv._devInfBag)
         ? addToArrInf(sv.inv, id, n)
         : addToArr(sv.inv, id, n);
@@ -413,6 +420,10 @@ export function hideBag() {
 
 export function renderBag(sv) {
     if (!bagEl) return;
+    // 背包格数补齐（2026-08-09 修复"死亡后背包只剩 4 格"）：sv.inv 可能因旧档/死亡流程
+    // 长度不足 BAG_SIZE，渲染前补 null 到 BAG_SIZE，保证显示满格、可正常拾取。
+    if (!sv.inv) sv.inv = [];
+    while (sv.inv.length < BAG_SIZE) sv.inv.push(null);
     const used = sv.inv.filter(Boolean).length;
     const cap = (saveData.devMode && sv._devInfBag) ? sv.inv.length : BAG_SIZE;
     const cells = sv.inv.map((s, i) => cellHtml(s, i, 'i')).join('');
@@ -516,12 +527,13 @@ function onBagClick(sv, i) {
 }
 
 // ---------- 储物柜 ----------
-export function showChest(sv, key, name) {
+export function showChest(sv, key, name, readonly) {
     if (!chestEl) return;
     hideBag();
     if (!sv.mods.chests[key]) sv.mods.chests[key] = Array(CHEST_SIZE).fill(null);
     sv.chestKey = key;
     sv.chestName = name || '储 物 柜';
+    sv.chestReadonly = !!readonly;   // 只读查看模式（NPC 查看物品：不允许拿取/放入）
     chestOpen = true;
     renderChest(sv);
     chestEl.classList.remove('hidden');
@@ -532,6 +544,10 @@ export function hideChest() {
     if (!chestOpen) return;
     chestOpen = false;
     selInfo = null;
+    // 2026-08-09 修复"NPC 只读物品栏关不掉"：此处不能访问 sv（hideChest 无 sv 参数，
+    // panel.js 也不持有 sv 单例）——原 `sv.chestReadonly = false` 抛 ReferenceError，
+    // 中断在 classList.add('hidden') 之前 → chestOpen 已 false 但 DOM 层储物柜没隐藏，
+    // 界面看起来关不掉。chestReadonly 由 showChest 每次打开时重新设置，关闭无需在此清除。
     if (chestEl) chestEl.classList.add('hidden');
     AudioSystem.playCloseBox();
 }
@@ -539,11 +555,12 @@ export function hideChest() {
 export function renderChest(sv) {
     if (!chestEl || !sv.chestKey) return;
     const chest = sv.mods.chests[sv.chestKey];
+    const ro = sv.chestReadonly;
     const bagCells = sv.inv.map((s, i) => cellHtml(s, i, 'b')).join('');
     const chestCells = chest.map((s, i) => cellHtml(s, i, 'c')).join('');
     chestEl.innerHTML =
-        `<div class="wsl-bag-head"><span>${sv.chestName || '储 物 柜'}</span>` +
-        `<span class="wsl-bag-tip">B/F/ESC 关闭 · 点击物品转移 · 右键查看详情/丢弃</span>` +
+        `<div class="wsl-bag-head"><span>${sv.chestName || '储 物 柜'}${ro ? ' · 只读查看' : ''}</span>` +
+        `<span class="wsl-bag-tip">${ro ? 'B/F/ESC 关闭 · 仅查看，不可拿取' : 'B/F/ESC 关闭 · 点击物品转移 · 右键查看详情/丢弃'}</span>` +
         `<button class="wsl-close-btn" id="wsl-chest-close" title="关闭 (B/ESC)">×</button></div>` +
         legendHtml() +
         `<div class="wsl-chest-cols">` +
@@ -552,12 +569,14 @@ export function renderChest(sv) {
         `</div>` + infoHtml();
     const chestClose = chestEl.querySelector('#wsl-chest-close');
     if (chestClose) chestClose.addEventListener('click', () => hideChest());
-    chestEl.querySelectorAll('.wsl-cell[data-b]').forEach(el => {
-        el.addEventListener('click', () => { transfer(sv, sv.inv, +el.dataset.b, sv.mods.chests[sv.chestKey]); });
-    });
-    chestEl.querySelectorAll('.wsl-cell[data-c]').forEach(el => {
-        el.addEventListener('click', () => { transfer(sv, sv.mods.chests[sv.chestKey], +el.dataset.c, sv.inv); });
-    });
+    if (!ro) {
+        chestEl.querySelectorAll('.wsl-cell[data-b]').forEach(el => {
+            el.addEventListener('click', () => { transfer(sv, sv.inv, +el.dataset.b, sv.mods.chests[sv.chestKey]); });
+        });
+        chestEl.querySelectorAll('.wsl-cell[data-c]').forEach(el => {
+            el.addEventListener('click', () => { transfer(sv, sv.mods.chests[sv.chestKey], +el.dataset.c, sv.inv); });
+        });
+    }
     chestEl.querySelectorAll('.wsl-cell[data-item]').forEach(el => {
         el.addEventListener('contextmenu', e => {
             e.preventDefault();
@@ -573,10 +592,24 @@ export function renderChest(sv) {
 }
 
 // 整堆转移（转入方放不下的部分留在原处；武器转出背包自动卸下）
+// 2026-08-10 金币=货币：从储物柜取出 coin 直接累计到 sv.coins，不进背包格
 function transfer(sv, fromArr, i, toArr) {
     const s = fromArr[i];
     if (!s) return;
     selInfo = s.id;
+    if (s.id === 'coin' && toArr === sv.inv) {
+        sv.coins = (sv.coins || 0) + s.n;
+        fromArr[i] = null;
+        renderChest(sv);
+        if (sv && sv.mp && sv.chestKey) {
+            (sv.mpOutbox = sv.mpOutbox || []).push({
+                type: 'chest',
+                key: sv.chestKey,
+                items: JSON.parse(JSON.stringify(sv.mods.chests[sv.chestKey] || [])),
+            });
+        }
+        return;
+    }
     const left = addToArr(toArr, s.id, s.n);
     if (left < s.n) delete s.eq;
     if (left <= 0) fromArr[i] = null;

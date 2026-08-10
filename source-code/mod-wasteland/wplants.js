@@ -173,6 +173,7 @@ export function updatePlants(sv, dt) {
         const [gx, gy] = key.split(',').map(Number);
         const px = (gx + 0.5) * TS, py = (gy + 0.5) * TS;
         const tile = getTile(sv, gx, gy);
+        if (p.hurtT > 0) p.hurtT -= dt;   // 受击闪白计时衰减
         if (tile !== T.SPROUT && tile !== T.PLOT) { delete plants[key]; continue; }
 
         grow(p, dt);
@@ -201,7 +202,8 @@ export function updatePlants(sv, dt) {
             if (d < hostileRange) {
                 p.atkT = 1.4;
                 if (sp.melee) {
-                    if (d < sp.range && !sv._devGod) {
+                    // 2026-08-09 开局昏迷苏醒：睁眼动画期间玩家无敌（食人花咬不伤）
+                    if (d < sp.range && !sv._devGod && !(sv._wake && sv._wake.t < sv._wake.dur)) {
                         sv.hp -= dmg * 0.6;
                         sv.hurtT = 0.3;
                         sv.effects.push({ kind: 'hit', x: sv.px, y: sv.py, life: 0.2, maxLife: 0.2, label: '咬' });
@@ -306,6 +308,7 @@ export function damagePlantFromZombie(sv, gx, gy, dmg) {
     }
     const p = ensurePlant(sv, gx, gy, t === T.SPROUT ? 'neutral' : 'player', sp, growth);
     p.hp -= dmg;
+    p.hurtT = 0.15;   // 受击闪白（渲染层 plantDisplay 据此把本体闪白，与玩家/NPC 受击反馈一致）
     reportPlantChange(sv, key);   // 联机 guest：伤害上报 host（hp 权威）
     if (p.hp <= 0) { killPlant(sv, gx, gy, p); return true; }
     return false;
@@ -401,5 +404,5 @@ export function plantDisplay(sv, gx, gy) {
     else return null;
     const sp = WILD_SPECIES[species] || WILD_SPECIES.peashooter;
     const st = stageOfG(growth);
-    return { char: sp.char, name: sp.name, color: sp.color, sizeMul: st.sizeMul, stageName: st.name, type };
+    return { char: sp.char, name: sp.name, color: sp.color, sizeMul: st.sizeMul, stageName: st.name, type, hurt: (p && p.hurtT > 0) ? p.hurtT : 0 };
 }

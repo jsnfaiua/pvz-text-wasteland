@@ -288,9 +288,12 @@ export function grassRenderGround(ctx, sv, tx, ty, x0, y0) {
     const vx = tx * 6 + sx, vy = ty * 6 + sy;
     const lo = grassNoise(seed ^ 0x1A5C, vx, vy, 3);
     const vary = Math.round((lo - 0.5) * 2);
-    // 低频色斑（cell=10，±7）+ 大尺度明暗（cell=32，±5）：函数化 → 无缝无周期
-    const patchV = Math.round((grassNoise(seed ^ 0x77E1, vx, vy, 10) - 0.5) * 14);
-    const toneV = Math.round((grassNoise(seed ^ 0x3F7A, vx, vy, 32) - 0.5) * 10);
+    // 低频色斑（cell=10）+ 大尺度明暗（cell=32）：函数化 → 无缝无周期。
+    // 2026-08-09 修复"草地深绿色块"：原 ±7/±5 叠加（同向最大 ±12 色差）在草地上形成
+    // 成片深绿/浅绿板块（cell=10 色斑约 1-2 格宽、延伸数格长，用户反馈"和周围草地不一样的色块"）。
+    // 幅度收敛到 ±3，保留自然明暗变化但色块不再突兀。
+    const patchV = Math.round((grassNoise(seed ^ 0x77E1, vx, vy, 10) - 0.5) * 6);
+    const toneV = Math.round((grassNoise(seed ^ 0x3F7A, vx, vy, 32) - 0.5) * 6);
     const fx = sx / 6, fy = sy / 6;
     const top = g00 * (1 - fx) + g10 * fx;
     const bot = g01 * (1 - fx) + g11 * fx;
@@ -347,6 +350,15 @@ export function grassRenderLayer(ctx, sv, camX, camY, W, H) {
       if (t !== T.GROUND && t !== T.WEED) continue;   // 只画草地
       const list = clusterList(seed, tx, ty, st.dens);
       for (const b of list) {
+        // 2026-08-09 用户要求"草只长在草坪上、不会长到人行道"：束体 24x16 跨多格，
+        // 检查束的占格 bbox 内所有格必须是 GROUND/WEED，否则不画（草束不会画到路面/人行道/建筑上）。
+        const cgx = b.cx2 / TS, cgy = b.cy2 / TS;
+        let allGrass = true;
+        for (let oy = -1; oy <= 1 && allGrass; oy++) for (let ox = -1; ox <= 1; ox++) {
+          const ttt = getTile(sv, Math.floor(cgx + ox), Math.floor(cgy + oy));
+          if (ttt !== T.GROUND && ttt !== T.WEED) allGrass = false;
+        }
+        if (!allGrass) continue;
         const sx = b.cx2 - camX, sy = b.cy2 - camY;
         if (sx < -32 || sx > W + 32 || sy < -32 || sy > H + 32) continue;
         // 风摆 + 踩动

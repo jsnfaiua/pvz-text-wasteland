@@ -5,7 +5,7 @@
 
 import { ZOMBIES, WEAPONS } from '../core/constants.js';
 import AudioSystem from '../systems/audio.js';
-import { T, getTile, isWalk, builtAt, CHUNK } from './world.js';
+import { T, getTile, isWalk, builtAt, CHUNK, SPAWN } from './world.js';
 import { TS } from './wconst.js';
 import { astarField } from './wpath.js';
 import { BUILD_ITEMS, BUILD_HP } from './render.js';
@@ -18,7 +18,7 @@ import * as B from './wbalance.js';
 import * as WW from './wwordcraft-rules.js';
 import { infectionLevelFromRoll } from './winfection.js';
 import { interiorZombieCount } from './windoor.js';
-import { killNpc, maybeWound, inAnyCamp } from './wnpc.js';
+import { killNpc, maybeWound, maybeInfectNpc, inAnyCamp } from './wnpc.js';
 
 const PATH_MAX_NODES = 12000;
 const Z_GUEST_CHASE_RANGE = 12;   // 联机：僵尸转向追逐远端队友的半径（格，≈半屏内）
@@ -141,6 +141,9 @@ export function spawnPlayerZombie(sv, opts) {
     const look = (sv.character && sv.character.look) || sv.character || {};
     const x = opts && opts.x != null ? opts.x : sv.px;
     const y = opts && opts.y != null ? opts.y : sv.py;
+    // 倒地主角尸变（2026-08-09）：名字取 opts.name（倒地主角名），
+    // 因视角可能已切到队友，sv.characterName 已是队友名——尸化僵尸必须是倒地主角的名字。
+    const pzName = (opts && opts.name) || sv.characterName || '幸存者';
     // 生成点安全化：落在不可走格（建筑/障碍内）时就近找可走格，防卡墙
     const gx0 = Math.floor(x / TS), gy0 = Math.floor(y / TS);
     let px = x, py = y;
@@ -160,7 +163,7 @@ export function spawnPlayerZombie(sv, opts) {
     const z = {
         id: 'z' + ((sv._zIdSeq = (sv._zIdSeq || 0) + 1)),
         type: 'playerzombie', char: look.skin ? '亡' : '尸', color: look.shirt || '#58656d',
-        x: px, y: py, name: sv.characterName || '幸存者',
+        x: px, y: py, name: pzName,
         hp: baseHp, maxHp: baseHp,
         speed: B.PZ_SPEED * B.Z_SPEED_MUL, damage: B.PZ_DAMAGE,
         wt: 0, tx: px, ty: py, wDir: null, biteT: 0, hurt: 0, stunT: 0,
@@ -171,7 +174,7 @@ export function spawnPlayerZombie(sv, opts) {
         atkState: null, atkT: 0, atkCd: 0, atkAngle: 0, atkWindup: 0, hasHit: false, auraT: 0, comboLeft: 0,
         // ---- 尸化玩家专属 ----
         isPlayerZombie: true,
-        playerName: sv.characterName || '幸存者',
+        playerName: pzName,
         skin: look.skin || '#78936b',          // 玩家肤色（渲染肤色用）
         inv: (sv.inv || []).map(s => s ? { ...s } : null),        // 继承全部背包
         hotbar: (sv.hotbar || []).slice(),                         // 继承快捷栏
@@ -326,6 +329,8 @@ export function updateSpawns(sv, dt, canStand) {
         const dist = (B.Z_SPAWN_DIST_MIN + Math.random() * B.Z_SPAWN_DIST_RAND) * TS;
         const x = sv.px + Math.cos(ang) * dist;
         const y = sv.py + Math.sin(ang) * dist;
+        // 2026-08-09 出生点屏幕内不刷敌对生物：开局安全区
+        if (B.nearSpawnScreen(SPAWN, x, y)) continue;
         // 领地旗帜范围内减少敌对生物生成
         if (inAnyCamp(sv, Math.floor(x / TS), Math.floor(y / TS))) { sv.spawnT = B.Z_SPAWN_INTERVAL_MIN + Math.random() * B.Z_SPAWN_INTERVAL_RAND; return; }
         if (canStand(x, y)) {
@@ -367,6 +372,8 @@ export function updatePackSpawns(sv, dt, canStand) {
         const ang = Math.random() * Math.PI * 2;
         const d = (B.Z_SPAWN_DIST_MIN + 4 + Math.random() * 6) * TS;
         const x = sv.px + Math.cos(ang) * d, y = sv.py + Math.sin(ang) * d;
+        // 2026-08-09 出生点屏幕内不刷僵尸群
+        if (B.nearSpawnScreen(SPAWN, x, y)) continue;
         if (canStand(x, y)) { kx = x; ky = y; break; }
     }
     if (kx == null) return;
@@ -507,45 +514,74 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         const dmgTo = contact.dmg * diffMul * nightMul;
         if (z.auraT > 0) z.auraT -= dt;
 
-        // 碰撞攻击：进入接触距离即咬击（有冷却）
-        if (pdist < B.Z_CONTACT_DIST && z.biteCd <= 0) {
-            z.biteCd = contact.biteCd;
+        // 碰撞攻击：贴近玩家后持续啃咬（2026-08-09 用户要求）——
+        // 血条如进度条缓慢减少：DPS = dmgTo/biteCd（单次伤害/原咬击间隔，平均 DPS 与原一致）；
+        // 啃咬音效/受击反馈按 Z_BITE_INTERVAL(0.3s) 节拍（resolvePlayerBiteTick 内处理）。
+        // 触发距离用 Z_BITE_RANGE(44) 而非 Z_CONTACT_DIST(30)：僵尸追到玩家相邻格(中心距 36px)
+        // 也能持续啃咬，否则站相邻格 pdist=36>30 完全不触发（用户实测"血条完全不动"）。
+        if (pdist < B.Z_BITE_RANGE) {
+            const dps = dmgTo / (contact.biteCd || 1);
             // 车内护甲（M7）：驾驶中车壳挡咬——驾驶员不受咬伤，车吃半伤 + "铛"特效；
             // 车报废由 driveCommon 每帧检测处理
             if (sv.driving) {
-                if (sv.driving.hp > 0) sv.driving.hp = Math.max(0, sv.driving.hp - dmgTo * 0.5);
-                sv.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.2, maxLife: 0.2, label: '铛' });
+                if (sv.driving.hp > 0) sv.driving.hp = Math.max(0, sv.driving.hp - dps * 0.5 * dt);
+                z._biteSfxT = (z._biteSfxT || 0) - dt;
+                if (z._biteSfxT <= 0) { z._biteSfxT = B.Z_BITE_INTERVAL; sv.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.2, maxLife: 0.2, label: '铛' }); }
             } else {
-                WA.resolvePlayerHit(sv, z, dmgTo, zCanStand);
+                WA.resolvePlayerBiteTick(sv, z, dps, dt, zCanStand);
             }
         }
         // 尸化玩家精英：用背包继承的武器远程射击玩家（hostile 子弹由 npcBullets 系统命中结算）
         if (z.isPlayerZombie && z.wpnKey) playerZombieShoot(sv, z, dt);
 
         // 僵尸啃咬附近的角色/NPC（含恶意 NPC：僵尸攻击除同类外的一切生物；受击原则与主角一致）
-        // 性能：NPC 咬扫每 0.2s 一跳（僵尸 × NPC 数量多时不卡）
+        // 2026-08-09 用户要求 NPC 与玩家一致：持续啃咬（血条平滑减少，DPS=dmgTo/biteCd）；
+        // 受击反馈按 0.3s 节拍。性能：NPC 咬扫每 0.2s 一跳（僵尸 × NPC 数量多时不卡）。
         z._npcScanT = (z._npcScanT || 0) - dt;
-        if (sv.npcs && z.biteCd <= 0 && z._npcScanT <= 0) {
+        if (sv.npcs && z._npcScanT <= 0) {
             z._npcScanT = 0.2;
             for (const n of sv.npcs) {
                 if (!n.alive) continue;
                 if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控走玩家受伤路径
-                if (Math.hypot(n.x - z.x, n.y - z.y) < B.Z_CONTACT_DIST + 6) {
-                    z.biteCd = contact.biteCd;
-                    n.hp -= dmgTo;
-                    n.hurtT = 0.3;
-                    maybeWound(sv, n);
+                // 触发距离与玩家一致（Z_BITE_RANGE=44，覆盖相邻格）——修复 NPC 卡血：
+                // 原 Z_CONTACT_DIST+6=36 在僵尸贴相邻格(36px)时刚好不满足 → NPC 不掉血（用户反馈）
+                if (Math.hypot(n.x - z.x, n.y - z.y) < B.Z_BITE_RANGE) {
+                    // 车内护甲（与玩家一致，M7）：乘车成员不受伤，车壳吃半伤 + "铛"特效；
+                    // 车报废由 driveCommon 每帧检测。riding 坐标已每帧钉在车中心（wvehicle driveCommon）。
+                    if (n.riding && sv.driving) {
+                        if (sv.driving.hp > 0) sv.driving.hp = Math.max(0, sv.driving.hp - (dmgTo / (contact.biteCd || 1)) * 0.5 * 0.2);
+                        z._biteSfxT = (z._biteSfxT || 0) - 0.2;
+                        if (z._biteSfxT <= 0) {
+                            z._biteSfxT = B.Z_BITE_INTERVAL;
+                            sv.effects.push({ kind: 'hit', x: n.x, y: n.y, life: 0.2, maxLife: 0.2, label: '铛' });
+                        }
+                        break;
+                    }
+                    // 僵尸攻击时面向目标（与攻击玩家/植物一致，避免"原地乱啃"）
+                    z.faceDir = Math.atan2(n.y - z.y, n.x - z.x);
+                    // 持续掉血：0.2s 扫描间隔近似累计（DPS 与原咬击节奏平均一致）
+                    const npcDps = dmgTo / (contact.biteCd || 1);
+                    n.hp -= npcDps * 0.2;
+                    z._biteSfxT = (z._biteSfxT || 0) - 0.2;
+                    if (z._biteSfxT <= 0) {
+                        z._biteSfxT = B.Z_BITE_INTERVAL; n.hurtT = 0.3; maybeWound(sv, n);
+                        maybeInfectNpc(sv, n);   // 2026-08-10 与玩家一致：被咬累积感染值（界面可查看/减除）
+                        // NPC 被咬专属反馈：'咬' 特效（与玩家被咬 '击'、植物被啃 '啃' 区分）
+                        sv.effects.push({ kind: 'hit', x: n.x, y: n.y, life: 0.2, maxLife: 0.2, label: '咬' });
+                    }
                     if (n.hp <= 0) killNpc(sv, n, '被僵尸咬死');
                     break;
                 }
             }
         }
 
-        // 攻击植物：进入植物范围即啃咬
+        // 攻击植物：进入植物范围即啃咬（面向植物 + '啃' 专属特效，与咬玩家/咬 NPC 区分）
         if (z.plantBiteCd > 0) z.plantBiteCd -= dt;
         if (plant && plant.dist < B.Z_PLANT_ATK_RANGE * TS && z.plantBiteCd <= 0) {
             z.plantBiteCd = contact.biteCd;
+            z.faceDir = Math.atan2(plant.y - z.y, plant.x - z.x);
             damagePlantFromZombie(sv, plant.gx, plant.gy, dmgTo);
+            sv.effects.push({ kind: 'hit', x: plant.x, y: plant.y, life: 0.25, maxLife: 0.25, label: '啃' });
             AudioSystem.playZombieEating();
         }
 
@@ -591,12 +627,35 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
             const gd = Math.hypot(gdx, gdy);
             if (gd < Z_GUEST_CHASE_RANGE * TS && gd < pdist * 0.9) gChase = { dx: gdx / gd, dy: gdy / gd };
         }
+        // NPC 成员追击（2026-08-09 用户要求：僵尸主动追踪/感应 NPC，与追踪玩家同逻辑）：
+        // 感应范围与玩家一致（Z_CHASE_RANGE 警戒区），目标为最近的存活 party NPC 成员，
+        // 比玩家更近时僵尸转向 NPC 直线追击（寻路/感应与追玩家同一套判定）。
+        let npcChase = null;
+        if (!z.horde && !seekingPlant && sv.npcs) {
+            const half = B.Z_CHASE_RANGE * TS / 2;
+            let bd = pdist * 0.9, bn = null;
+            for (const n of sv.npcs) {
+                if (!n.alive || !n.party) continue;
+                if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控（玩家）已在 pdist 覆盖
+                if (Math.abs(n.x - z.x) >= half || Math.abs(n.y - z.y) >= half) continue;   // 感应范围同玩家
+                const nd = Math.hypot(n.x - z.x, n.y - z.y);
+                if (nd < bd) { bd = nd; bn = n; }
+            }
+            if (bn) {
+                const ndx = bn.x - z.x, ndy = bn.y - z.y;
+                const nd = Math.hypot(ndx, ndy) || 1;
+                npcChase = { dx: ndx / nd, dy: ndy / nd };
+            }
+        }
         const pathStep = pathField.parent.get(gridKey(Math.floor(z.x / TS), Math.floor(z.y / TS)));
         const canFollowPath = (z.horde || playerAlerted) && !seekingPlant && pathStep;
         if (lungeDashing) {
             mvx = pdx / pdist; mvy = pdy / pdist; spd = z.speed * typeSpd * 3.5;
         } else if (gChase) {
             mvx = gChase.dx; mvy = gChase.dy;
+            spd = z.speed * typeSpd * B.Z_CHASE_SPEED_MUL * auraMul * nightMul;
+        } else if (npcChase) {
+            mvx = npcChase.dx; mvy = npcChase.dy;
             spd = z.speed * typeSpd * B.Z_CHASE_SPEED_MUL * auraMul * nightMul;
         } else if (canFollowPath) {
             const qx = (pathStep.gx + 0.5) * TS - z.x, qy = (pathStep.gy + 0.5) * TS - z.y;

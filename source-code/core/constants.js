@@ -153,17 +153,17 @@ export const WEAPONS = {
         ammoLabel: '12号霰弹', color: '#DAA520', bulletLabel: '․', rarity: 'rare',
     },
     dagger: {
-        name: '短剑', kind: 'melee', damage: 24, fireInterval: 0.38, reach: 65, stamina: 6,
+        name: '短剑', kind: 'melee', damage: 24, fireInterval: 0.38, reach: 37, stamina: 6,
         arc: Math.PI * 0.45, attackStyle: 'stab', penArmor: 0.9, ammoType: 'durability', ammoLabel: '耐久',
         maxDurability: 15, color: '#C0C0C0', rarity: 'common',
     },
     fist: {
-        name: '拳头', kind: 'melee', damage: 16, fireInterval: 0.35, reach: 50, stamina: 5,
+        name: '拳头', kind: 'melee', damage: 16, fireInterval: 0.35, reach: 32, stamina: 5,
         arc: Math.PI * 0.45, attackStyle: 'punch', penArmor: 0.6, ammoType: 'infinite', ammoLabel: '∞',
         color: '#FFCC99', rarity: 'common',
     },
     sword: {
-        name: '长剑', kind: 'melee', damage: 62, fireInterval: 0.6, reach: 95, stamina: 12,
+        name: '长剑', kind: 'melee', damage: 62, fireInterval: 0.6, reach: 46, stamina: 12,
         arc: Math.PI * 0.6, attackStyle: 'slash', penArmor: 1.3, ammoType: 'durability', ammoLabel: '耐久',
         maxDurability: 10, color: '#E5E5E5', rarity: 'rare',
     },
@@ -209,17 +209,17 @@ export const WEAPONS = {
         color: '#C0C0C0', bulletLabel: '刀', rarity: 'common',
     },
     spear: {
-        name: '长矛', kind: 'melee', damage: 50, fireInterval: 0.55, reach: 130, stamina: 10,
+        name: '长矛', kind: 'melee', damage: 50, fireInterval: 0.55, reach: 82, stamina: 10,
         arc: Math.PI * 0.25, attackStyle: 'thrust', penArmor: 1.4, ammoType: 'durability', ammoLabel: '耐久',
         maxDurability: 12, color: '#D2B48C', rarity: 'rare',
     },
     axe: {
-        name: '战斧', kind: 'melee', damage: 95, fireInterval: 0.9, reach: 80, stamina: 15,
+        name: '战斧', kind: 'melee', damage: 95, fireInterval: 0.9, reach: 38, stamina: 15,
         arc: Math.PI * 0.55, attackStyle: 'chop', penArmor: 1.8, ammoType: 'durability', ammoLabel: '耐久',
         maxDurability: 8, color: '#A0522D', rarity: 'epic',
     },
     shovel: {
-        name: '铲子', kind: 'melee', damage: 14, fireInterval: 0.35, reach: 48, stamina: 5,
+        name: '铲子', kind: 'melee', damage: 14, fireInterval: 0.35, reach: 38, stamina: 5,
         arc: Math.PI * 0.4, attackStyle: 'dig', penArmor: 0.5, ammoType: 'infinite', ammoLabel: '∞',
         color: '#B87333', canDigPlant: true, digRefundRate: 0.5,
         rarity: 'common',

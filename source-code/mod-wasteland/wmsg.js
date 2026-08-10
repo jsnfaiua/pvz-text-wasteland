@@ -8,6 +8,7 @@ const MSG_LIFE = 4.0;
 const MSG_FADE = 1.0;
 
 export function initMsg(sv) {
+    if (!sv) return;   // 游戏未开始（startNewChar/World 弹窗流程）允许无 sv 调用
     if (!sv.msgs) sv.msgs = [];
 }
 

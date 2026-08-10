@@ -93,8 +93,9 @@ let lookEl = null;
 let lookAnimRaf = 0;
 let lastPreviewLook = null; // sprite 异步加载完成后重绘静态预览用的最近外观
 
-// 预览画布：循环播放四方向行走动画（朝南→朝东→朝北→朝西，每方向 4 帧）
-// 2026-08-09 用户要求：捏脸界面放四方向行走动画，循环播放，看局内实际效果
+// 预览画布：循环播放**选中方向**的行走动画（默认朝南，可点方向按钮切换）
+// 2026-08-09 用户要求：可选择预览观看播放的动画，而不是自动四方向循环播放
+let previewDir = 'front';  // 当前预览方向：front(朝南) / sideEast(朝东) / back(朝北) / sideWest(朝西)
 function drawPreview(look) {
     lastPreviewLook = look || lastPreviewLook || {};
     const canvas = lookEl && lookEl.querySelector('.wsl-look-preview');
@@ -102,25 +103,22 @@ function drawPreview(look) {
     const ctx = canvas.getContext('2d');
     cancelAnimationFrame(lookAnimRaf);
     ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // 至少需要一帧可渲染才开始动画；全部加载后走 4 方向循环
+    // 至少需要一帧可渲染才开始动画
     const firstFrame = _thumbSprites.front[0] || _thumbSprites.side[0] || _thumbSprites.back[0];
     if (!firstFrame) return;
-    const DIRS = ['front', 'side', 'back'];  // 朝南(front) / 朝东(side) / 朝北(back)，朝西复用 side 镜像
-    let lastT = 0;
     const FRAME_MS = 160;  // ~6fps 走步节奏
-    let frame = 0;
-    let dirIdx = 0;
     const start = performance.now();
     const tick = (t) => {
         if (!lookEl) return;  // 界面已关闭
-        // 每 FRAME_MS 推进一帧；每方向 4 帧后切换下一方向
+        // 每 FRAME_MS 推进一帧；只循环选中方向的 4 帧
         const n = Math.floor((t - start) / FRAME_MS);
-        const totalFrames = DIRS.length * 4;
-        const g = n % totalFrames;
-        dirIdx = Math.floor(g / 4);
-        frame = g % 4;
-        const dir = DIRS[dirIdx];
+        const frame = n % 4;
+        // 解析当前方向 → (sprites数组, 是否镜像)
+        let dir, mirrored = false;
+        if (previewDir === 'front') dir = 'front';
+        else if (previewDir === 'back') dir = 'back';
+        else if (previewDir === 'sideEast') { dir = 'side'; mirrored = true; }  // 朝东 = side 镜像
+        else { dir = 'side'; mirrored = false; }  // 朝西 = side 原图
         const sprites = _thumbSprites[dir];
         const raw = sprites[frame] || sprites[0] || _thumbSprites.front[0];
         if (raw) {
@@ -130,9 +128,8 @@ function drawPreview(look) {
             const dw = sp.width * scale;
             const dx = (canvas.width - dw) / 2;
             ctx.save();
-            // 朝东（side 第3个方向）不镜像（side 帧本身朝西视角，朝东需镜像）——
-            // 与局内逻辑一致：dir==='right' 镜像。预览用朝东=dirIdx 1（side）镜像。
-            if (dirIdx === 1) {
+            // 朝东：side 帧本身是朝西视角，水平镜像显示朝东（与局内 dir==='right' 一致）
+            if (mirrored) {
                 ctx.translate(canvas.width / 2, 0);
                 ctx.scale(-1, 1);
                 ctx.translate(-canvas.width / 2, 0);
@@ -241,6 +238,12 @@ export function showLookCreator(onConfirm, initialLook) {
             <div class="wsl-look-body">
 <div class="wsl-look-stage">
                 <canvas class="wsl-look-preview" width="48" height="96"></canvas>
+                <div class="wsl-look-dirs">
+                    <button class="wsl-look-dir" data-dir="front" title="朝南行走">南</button>
+                    <button class="wsl-look-dir" data-dir="sideEast" title="朝东行走">东</button>
+                    <button class="wsl-look-dir" data-dir="back" title="朝北行走">北</button>
+                    <button class="wsl-look-dir" data-dir="sideWest" title="朝西行走">西</button>
+                </div>
                 <div class="wsl-look-info">
                         <div class="wsl-look-info-row"><i style="background:${look.skin};"></i><span>肤色</span></div>
                         <div class="wsl-look-info-row"><i style="background:${look.hair};"></i><span>发色</span></div>
@@ -252,7 +255,7 @@ export function showLookCreator(onConfirm, initialLook) {
             <div class="wsl-look-actions">
                 <button class="wsl-look-btn" id="wsl-look-random">🎲 随机</button>
                 <button class="wsl-look-btn" id="wsl-look-last" style="${hasLast ? '' : 'display:none;'}">↩ 上次</button>
-                <button class="wsl-look-btn wsl-look-ok" id="wsl-look-ok">确认，进入荒原 ▶</button>
+                <button class="wsl-look-btn wsl-look-ok" id="wsl-look-ok">确定捏脸形象 ▶</button>
             </div>
             <div class="wsl-look-keys">Enter 确认 · ESC 取消返回</div>
         </div>`;
@@ -272,6 +275,19 @@ export function showLookCreator(onConfirm, initialLook) {
         syncRows(look);
         drawPreview(look);
     };
+
+    // 方向选择按钮：切换预览方向并重绘动画
+    lookEl.querySelectorAll('.wsl-look-dir').forEach(btn => {
+        btn.addEventListener('click', () => {
+            previewDir = btn.dataset.dir;
+            lookEl.querySelectorAll('.wsl-look-dir').forEach(b => b.classList.toggle('on', b === btn));
+            drawPreview(look);
+            clickSound();
+        });
+    });
+    // 默认选中朝南
+    const defDir = lookEl.querySelector('.wsl-look-dir[data-dir="' + previewDir + '"]');
+    if (defDir) defDir.classList.add('on');
 
     const rows = lookEl.querySelector('.wsl-look-rows');
     rows.addEventListener('click', e => {

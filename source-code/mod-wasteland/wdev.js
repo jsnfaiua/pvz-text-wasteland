@@ -20,6 +20,7 @@ import * as B from './wbalance.js';
 import { startHordePrep } from './whorde.js';
 import * as WNPC from './wnpc.js';
 import * as HUD from './whud.js';
+import * as WD from './windoor.js';
 import { showLookCreator, normalizeLook } from './wlook.js';
 import AudioSystem from '../systems/audio.js';
 
@@ -45,6 +46,7 @@ const STATE_ACTIONS = [
     { s: 'hpfull', name: '回满血' },
     { s: 'inf50', name: '感染50' },
     { s: 'inf0', name: '清除感染' },
+    { s: 'full', name: '☆ 一键状态回满', all: true },   // 血量/饱食/水分/体力全满 + 清除全部负面状态
 ];
 
 // 搜索测试：附近刷出可搜刮容器（覆盖城市规划保护层：优先放在非路/非人行道空地）
@@ -193,6 +195,13 @@ export function toggle(sv) {
     devEl.classList.toggle('hidden', !devOpen);
     if (devOpen) { syncState(); AudioSystem.playClick(); }
 }
+// 2026-08-10 通用返回：ESC 关闭开发者面板（isOpen/close 供 survival 调用）
+export function close() {
+    if (devOpen) {
+        devOpen = false;
+        if (devEl) devEl.classList.add('hidden');
+    }
+}
 
 export function destroy() {
     devOpen = false;
@@ -209,10 +218,11 @@ function buildHtml() {
         </div>
         <div class="wsl-dev-body">
         <div class="wsl-dev-toggles">
-            <button data-t="god" id="wdev-god">无敌</button>
+            <button data-t="god" id="wdev-god" title="无敌：生命/体力/饱食/水分全满且不消耗，不受伤">属性全满</button>
             <button data-t="stamina" id="wdev-stamina">无限体力</button>
             <button data-t="inf" id="wdev-inf">资源无限</button>
-            <button data-t="ammo" id="wdev-ammo">无限弹药</button>
+            <button data-t="ammo" id="wdev-ammo" title="无限弹药 + 无限武器耐久（耐久不消耗）">无限弹药</button>
+            <button data-t="dura" id="wdev-dura">无限耐久</button>
             <button data-t="bag" id="wdev-bag">无限背包</button>
             <button data-t="oneshot" id="wdev-oneshot">一击必杀</button>
             <button data-t="hud" id="wdev-hud">调试HUD</button>
@@ -246,6 +256,10 @@ function buildHtml() {
             <button data-q="wxset" id="wdev-wxset">设置天气</button>
         </div>
         <div class="wsl-dev-quick">
+            <select id="wdev-wind-sel" class="wsl-dev-select" title="风向（仅视觉：雨/雪倾斜角、沙尘方向；auto=按当天种子确定性）"></select>
+            <button data-q="windset" id="wdev-windset">设置风向</button>
+        </div>
+        <div class="wsl-dev-quick">
             <button data-q="tp" class="wsl-dev-mp">传送队友(TP)</button>
             <button data-q="spawn">刷僵尸 ×6</button>
             <button data-q="horde">立即尸潮</button>
@@ -257,6 +271,11 @@ function buildHtml() {
         <div class="wsl-dev-sub">▸ 状态测试（饥饿 / 血量 / 感染）</div>
         <div class="wsl-dev-quick">
             ${STATE_ACTIONS.map(a => `<button data-s="${a.s}">${a.name}</button>`).join('')}
+        </div>
+        <div class="wsl-dev-quick wsl-dev-infbar" title="自定义感染值（0~100%，拖动滑块即时生效，方便感染阶段调试）">
+            <span class="wsl-dev-inf-label">感染值</span>
+            <input type="range" id="wdev-inf-range" min="0" max="100" step="1" value="0" style="flex:1;accent-color:#7a4a2a;">
+            <span id="wdev-inf-val" style="color:#FFB347;font-size:12px;min-width:34px;text-align:right;">0</span>
         </div>
         <div class="wsl-dev-sub">▸ 搜索测试（附近刷出容器，可 F 搜索）</div>
         <div class="wsl-dev-boxes">
@@ -323,6 +342,7 @@ function syncState() {
     devEl.querySelector('#wdev-stamina').classList.toggle('on', !!sv._devInfStamina);
     devEl.querySelector('#wdev-inf').classList.toggle('on', sv._devInf !== false);
     devEl.querySelector('#wdev-ammo').classList.toggle('on', !!sv._devInfAmmo);
+    devEl.querySelector('#wdev-dura').classList.toggle('on', !!sv._devInfDura);
     devEl.querySelector('#wdev-oneshot').classList.toggle('on', !!sv._devOneShot);
     devEl.querySelector('#wdev-bag').classList.toggle('on', !!sv._devInfBag);
     devEl.querySelector('#wdev-hud').classList.toggle('on', !!sv._devHud);
@@ -345,12 +365,14 @@ function persistDev() {
     p._devInfStamina = !!sv._devInfStamina;
     p._devInf = sv._devInf !== false;
     p._devInfAmmo = !!sv._devInfAmmo;
+    p._devInfDura = !!sv._devInfDura;
     p._devOneShot = !!sv._devOneShot;
     p._devInfBag = !!sv._devInfBag;
     p._devDmgMul = sv._devDmgMul || 1;
     p._devTimeScale = sv._devTimeScale || 1;
     p._devHud = !!sv._devHud;
     p._devGfx = sv._devGfx == null ? 2 : sv._devGfx;
+    p._devWind = sv._devWind != null ? sv._devWind : null;
     p.characterName = sv.characterName || p.characterName || '幸存者';
     p.worldSeed = sv.world ? sv.world.seed : (p.worldSeed != null ? p.worldSeed : null);
     if (p.worldSeed != null) setStorage(PROFILE_KEY, p);
@@ -445,12 +467,17 @@ function spawnNpcNear(sv, kind) {
         return;
     }
     if (!sv.npcs) sv.npcs = [];
-    for (let tries = 0; tries < 20; tries++) {
+    // 2026-08-09 防止"生成后被物体/容器卡住"：不仅要本格可走，还要 4 邻域至少有一个可走格
+    // （否则 NPC 落在角落/被碰撞体包围处，寻路拉不动）
+    const walk4 = (gx, gy) => isWalk(getTile(sv, gx, gy));
+    for (let tries = 0; tries < 30; tries++) {
         const ang = Math.random() * Math.PI * 2;
         const d = (2 + Math.random() * 3) * TS;
         const x = sv.px + Math.cos(ang) * d, y = sv.py + Math.sin(ang) * d;
         const gx = Math.floor(x / TS), gy = Math.floor(y / TS);
-        if (!isWalk(getTile(sv, gx, gy))) continue;
+        if (!walk4(gx, gy)) continue;
+        const hasOpen = walk4(gx - 1, gy) || walk4(gx + 1, gy) || walk4(gx, gy - 1) || walk4(gx, gy + 1);
+        if (!hasOpen) continue;
         const n = WNPC.makeNpc(sv, x, y, kind);
         sv.npcs.push(n);
         const label = kind === 'friendly' ? '友善' : kind === 'neutral' ? '中立' : '恶意';
@@ -473,8 +500,14 @@ function bindEvents() {
             if (!sv || !sv.active) return;
             const t = btn.dataset.t;
             if (t === 'god') {
+                // 2026-08-09 用户要求：无敌 = 所有属性全满（生命/体力/饱食/水分无限，不受伤）
+                // 开启时联动无限体力（一个键全满）；关闭时保留独立"无限体力"开关状态
                 sv._devGod = !sv._devGod;
-                MSG.pushMsg(sv, sv._devGod ? '[DEV] 无敌开启' : '[DEV] 无敌关闭', '#FFB347');
+                if (sv._devGod) {
+                    sv._devInfStamina = true;
+                    setAllStatsFull(sv);
+                }
+                MSG.pushMsg(sv, sv._devGod ? '[DEV] 属性全满开启（生命/体力/饱食/水分无限 + 不受伤）' : '[DEV] 属性全满关闭', '#FFB347');
             } else if (t === 'stamina') {
                 sv._devInfStamina = !sv._devInfStamina;
                 if (sv._devInfStamina) { sv.stamina = sv.maxStamina; sv.exhausted = false; }
@@ -484,7 +517,11 @@ function bindEvents() {
                 MSG.pushMsg(sv, sv._devInf ? '[DEV] 资源无限开启' : '[DEV] 资源无限关闭', '#FFB347');
             } else if (t === 'ammo') {
                 sv._devInfAmmo = !sv._devInfAmmo;
-                MSG.pushMsg(sv, sv._devInfAmmo ? '[DEV] 无限弹药开启' : '[DEV] 无限弹药关闭', '#FFB347');
+                MSG.pushMsg(sv, sv._devInfAmmo ? '[DEV] 无限弹药开启（弹匣不消耗 + 无需换弹）' : '[DEV] 无限弹药关闭', '#FFB347');
+            } else if (t === 'dura') {
+                // 2026-08-09 用户要求：无限弹药里加"耐久无限"——武器/工具耐久不消耗
+                sv._devInfDura = !sv._devInfDura;
+                MSG.pushMsg(sv, sv._devInfDura ? '[DEV] 无限耐久开启（武器/工具永不损坏）' : '[DEV] 无限耐久关闭', '#FFB347');
             } else if (t === 'oneshot') {
                 sv._devOneShot = !sv._devOneShot;
                 MSG.pushMsg(sv, sv._devOneShot ? '[DEV] 一击必杀开启' : '[DEV] 一击必杀关闭', '#FFB347');
@@ -560,6 +597,34 @@ function bindEvents() {
         wxSel.innerHTML = opts.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
     }
 
+    // 2026-08-09 风向下拉（开发者测试风向：只影响粒子视觉倾斜角/沙尘方向，不影响逻辑）
+    // auto = 按当天种子确定性风向（windDirAt）；其余 8 方向按角度
+    const windSel = devEl.querySelector('#wdev-wind-sel');
+    if (windSel) {
+        const windOpts = [
+            ['auto', '自动（当天种子）'],
+            ['0', '东风 →（右倾）'],
+            ['pi', '西风 ←（左倾）'],
+            ['half', '南风 ↓（无水平偏移）'],
+            ['nhalf', '北风 ↑（无水平偏移）'],
+            ['e45', '东北 ↘'],
+            ['e135', '东南 ↙'],
+            ['w45', '西北 ↗'],
+            ['w135', '西南 ↖'],
+        ];
+        windSel.innerHTML = windOpts.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+        // 同步当前 dev 覆盖值（若有）
+        if (curSv && curSv._devWind != null) {
+            const cur = curSv._devWind;
+            const deg = Math.round(cur * 180 / Math.PI) % 360;
+            const norm = ((deg % 360) + 360) % 360;
+            const near = (v) => Math.abs(Math.round(v) - norm) < 5;
+            const pick = near(0) ? '0' : near(180) ? 'pi' : near(90) ? 'half' : near(270) ? 'nhalf'
+                : near(45) ? 'e45' : near(135) ? 'e135' : near(315) ? 'w45' : near(225) ? 'w135' : 'auto';
+            windSel.value = pick;
+        }
+    }
+
     // 状态测试：饥饿 / 饱食 / 血量 / 感染
     devEl.querySelectorAll('.wsl-dev-quick [data-s]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -575,9 +640,38 @@ function bindEvents() {
             else if (s === 'hpfull') { sv.hp = sv.maxHp || B.MAX_HP; sv.food = 100; MSG.pushMsg(sv, '[DEV] 血量和饱食度回满', '#7DFF7D'); }
             else if (s === 'inf50') { sv.infection = 50; MSG.pushMsg(sv, '[DEV] 感染值设为 50', '#FFB347'); }
             else if (s === 'inf0') { sv.infection = 0; MSG.pushMsg(sv, '[DEV] 感染已清除', '#7DFF7D'); }
+            else if (s === 'full') {
+                // 2026-08-09 用户要求：一键状态回满——血量/饱食/水分/体力全满 + 清除全部负面状态
+                setAllStatsFull(sv);
+                MSG.pushMsg(sv, '[DEV] 状态已一键回满：生命/饱食/水分/体力全满，感染与疾病已清除', '#7DFF7D');
+            }
             AudioSystem.playClick();
         });
     });
+
+    // 2026-08-09 自定义感染值滑块（拖动即时生效，方便感染阶段开发调试）
+    const infRange = devEl.querySelector('#wdev-inf-range');
+    const infVal = devEl.querySelector('#wdev-inf-val');
+    if (infRange) {
+        const setInf = () => {
+            const sv = curSv;
+            if (!sv || !sv.active) return;
+            const v = Number(infRange.value);
+            sv.infection = v;
+            if (infVal) infVal.textContent = String(Math.round(v));
+            // 同步主控角色记录（NPC 列表里的主角），保证 HUD/身体剥落一致
+            const pc = (sv.npcs || []).find(n => n.isPlayer || n.id === 'player');
+            if (pc) pc.infection = v;
+            sv._infLogT = (sv._infLogT || 0) + 1;   // 触发感染提示刷新
+        };
+        infRange.addEventListener('input', setInf);
+        infRange.addEventListener('change', setInf);
+        // 面板打开时同步当前感染值
+        if (curSv && curSv.infection != null) {
+            infRange.value = Math.max(0, Math.min(100, curSv.infection));
+            if (infVal) infVal.textContent = String(Math.round(curSv.infection));
+        }
+    }
 
     // 搜索测试：附近刷容器
     devEl.querySelectorAll('.wsl-dev-boxes [data-c]').forEach(btn => {
@@ -637,8 +731,8 @@ function bindEvents() {
                 if (sv.mp) (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'camp', x: sv.px, y: sv.py });
                 MSG.pushMsg(sv, '[DEV] 营地已设为当前位置（命令队员返回营地测试）', '#7DFF7D');
             } else if (kind === 'coins') {
-                const left = Panel.addItem(sv, 'coin', 50);
-                MSG.pushMsg(sv, left > 0 ? '[DEV] 背包满，金币未全部放入' : '[DEV] 金币 +50', '#7DFF7D');
+                sv.coins = (sv.coins || 0) + 50;
+                MSG.pushMsg(sv, '[DEV] 金币 +50', '#7DFF7D');
             } else {
                 cur.sick = { type: kind, day: sv.day };
                 const s = B.SICKNESS[kind];
@@ -701,13 +795,28 @@ function bindEvents() {
                     applyWxSet(sv, val);
                     break;
                 }
+                case 'windset': {
+                    // 2026-08-09 风向选择（开发者测试：仅粒子视觉倾斜，不改逻辑）
+                    // host 权威：guest 上报 host 执行，host 的 _devWind 经 devflags 回传双端
+                    const sel2 = document.getElementById('wdev-wind-sel');
+                    const v = sel2 ? sel2.value : 'auto';
+                    if (sv.mp && sv.mp.role === 'guest') { reportDevCmd(sv, { cmd: 'windset', wind: v }); break; }
+                    applyWindSet(sv, v);
+                    break;
+                }
                 case 'randrespawn': {
                     if (sv.driving) { MSG.pushMsg(sv, '[DEV] 请先下车再随机重生', '#FF8866'); break; }
+                    // 2026-08-09 防止传送后卡在碰撞体里（"控制失灵"）：目标格可走 + 4 邻域有可走格
+                    const ok = (gx, gy) => isWalk(getTile(sv, gx, gy)) &&
+                        (isWalk(getTile(sv, gx - 1, gy)) || isWalk(getTile(sv, gx + 1, gy)) ||
+                         isWalk(getTile(sv, gx, gy - 1)) || isWalk(getTile(sv, gx, gy + 1)));
                     for (let tries = 0; tries < 80; tries++) {
                         const ang = Math.random() * Math.PI * 2;
                         const dist = (10 + Math.random() * 6) * CHUNK;
                         const gx = Math.round(Math.cos(ang) * dist), gy = Math.round(Math.sin(ang) * dist);
-                        if (!isWalk(getTile(sv, gx, gy))) continue;
+                        if (!ok(gx, gy)) continue;
+                        // 若在室内：随机重生应退出室内回到室外（否则 sv 坐标与室内模式错乱 → 卡死）
+                        if (sv.interior) WD.exitInterior(sv, true);
                         sv.px = (gx + 0.5) * TS; sv.py = (gy + 0.5) * TS;
                         sv.faceX = 1; sv.faceY = 0;
                         MSG.pushMsg(sv, `[DEV] 随机重生 → 区块(${Math.floor(gx / CHUNK)},${Math.floor(gy / CHUNK)})`, '#7DFF7D');
@@ -813,6 +922,8 @@ export function devFlagsOf(sv) {
         god: !!sv._devGod, stamina: !!sv._devInfStamina, inf: sv._devInf !== false,
         ammo: !!sv._devInfAmmo, oneshot: !!sv._devOneShot, bag: !!sv._devInfBag,
         dmgMul: sv._devDmgMul || 1, timeScale: sv._devTimeScale || 1,
+        dura: !!sv._devInfDura,   // 2026-08-09 无限耐久（联机同步）
+        wind: sv._devWind != null ? sv._devWind : null,   // 2026-08-09 风向覆盖（联机同步）
     };
 }
 
@@ -866,6 +977,12 @@ export function applyDevCmd(p) {
             MSG.pushMsg(sv, '[DEV] 对方设置了天气', '#FFB347');
             break;
         }
+        case 'windset': {
+            // 2026-08-09 风向（host 权威；_devWind 经 devflags 回传双端）
+            applyWindSet(sv, p.wind || 'auto');
+            MSG.pushMsg(sv, '[DEV] 对方设置了风向', '#FFB347');
+            break;
+        }
     }
 }
 
@@ -891,6 +1008,60 @@ function applyWxSet(sv, val) {
         sv._wxLevel = lv;
         sv._devWxLock = true;
         MSG.pushMsg(sv, `[DEV] 天气：${B.wxIntensity(type, lv).name}（${B.wxInfo(type).desc}）${B.wxIntensity(type, lv).flash ? ' ⚡' : ''}（锁定）`, '#FFB347');
+    }
+}
+
+// 2026-08-09 风向设置（开发者测试）：sv._devWind（弧度）覆盖确定性 windDirAt。
+// 只影响粒子视觉（雨/雪倾斜角、沙尘方向），不影响玩法逻辑/存档/结算。
+// auto=null → 恢复按当天种子确定性风向。
+const WIND_MAP = {
+    '0': 0,                 // 东风 → cos=1 右倾
+    'pi': Math.PI,          // 西风 ← cos=-1 左倾
+    'half': Math.PI / 2,    // 南风 ↓ cos≈0 无水平偏移
+    'nhalf': -Math.PI / 2,  // 北风 ↑ cos≈0 无水平偏移
+    'e45': Math.PI / 4,        // 东北 ↘
+    'e135': Math.PI * 3 / 4,   // 东南 ↙
+    'w45': -Math.PI / 4,       // 西北 ↗
+    'w135': -Math.PI * 3 / 4,  // 西南 ↖
+};
+function applyWindSet(sv, val) {
+    const rad = WIND_MAP[val];
+    if (val === 'auto' || rad == null) {
+        sv._devWind = null;
+        const auto = B.windDirAt(sv.world.seed, sv.day);
+        const deg = Math.round(auto * 180 / Math.PI) % 360;
+        MSG.pushMsg(sv, `[DEV] 风向恢复自动：角度 ${((deg % 360) + 360) % 360}°`, '#FFB347');
+    } else {
+        sv._devWind = rad;
+        const deg = Math.round(rad * 180 / Math.PI);
+        MSG.pushMsg(sv, `[DEV] 风向已设置：角度 ${deg}°（雨/雪倾斜、沙尘方向随之变化）`, '#7DFF7D');
+    }
+    persistDev();
+    reportDevFlags(sv);   // 联机：devflags 同步（host 权威回传双端）
+    AudioSystem.playClick();
+}
+
+// 2026-08-09 一键状态回满：生命/饱食/水分/体力全满 + 清除感染与全部疾病（主控 + 主控角色记录同步）
+function setAllStatsFull(sv) {
+    sv.hp = sv.maxHp || B.MAX_HP;
+    sv.food = B.HUNGER_MAX;
+    sv.water = B.WATER_MAX;
+    sv.stamina = sv.maxStamina;
+    sv.exhausted = false;
+    sv.infection = 0;
+    sv._sick = null;
+    // 主控角色记录（NPC 列表里的主角）同步重置，保证 HUD/小队面板一致
+    const pc = (sv.npcs || []).find(n => n.isPlayer || n.id === 'player');
+    if (pc) {
+        pc.hp = pc.maxHp || sv.maxHp || B.MAX_HP;
+        pc.food = B.HUNGER_MAX;
+        pc.water = B.WATER_MAX;
+        pc.stamina = pc.maxStamina || sv.maxStamina;
+        pc.exhausted = false;
+        pc.infection = 0;
+        pc.sick = null;
+        pc.downed = false;
+        pc.alive = true;
     }
 }
 
