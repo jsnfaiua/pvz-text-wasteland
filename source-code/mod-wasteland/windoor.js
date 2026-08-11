@@ -768,7 +768,7 @@ export function updateInterior(sv, dt) {
                         maybeInfectNpc(sv, n);
                         sv.effects.push({ kind: 'hit', x: n.x, y: n.y, life: 0.2, maxLife: 0.2, label: '咬' });
                     }
-                    if (n.hp <= 0) killNpc(sv, n, '被僵尸咬死');
+                    if (n.hp <= 0) killNpc(sv, n, '被僵尸啃咬致死');
                     break;
                 }
             }
@@ -854,6 +854,24 @@ export function updateInterior(sv, dt) {
             const quality = rollQualityLoot(z.type);
             const contents = rollLootContents(quality, z.type);
             if (contents.length) it.drops.push({ x: z.x, y: z.y, id: 'loot:' + quality, n: 1, contents });
+        }
+        // 2026-08-11 v2.98 尸变丧尸被击败（室内）→ 掉「XX（尸变）」尸体（物品守恒，搜索完彻底消失）
+        if (z._reviveFromCorpse) {
+            const _rc = (z.inv || []).filter(s => s && s.n > 0).map(s => ({ ...s }));
+            const _rn = z._reviveCorpseName || (z.playerName || '幸存者') + B.CORPSE_REVIVE_TAG;
+            if (!Array.isArray(sv.npcs)) sv.npcs = [];
+            sv.npcs.push({
+                id: 'rev' + ((sv._revSeq = (sv._revSeq || 0) + 1)),
+                isPlayer: false, name: _rn, role: 'friendly', look: null,
+                x: z.x, y: z.y, hp: 0, maxHp: 100, alive: false,
+                _corpse: true, _corpseDay: sv.day,
+                _corpseAtReal: sv.now != null ? sv.now : 0,
+                _corpseContents: _rc, _corpseSearched: false,
+                _revivedCorpse: true,
+                inInterior: true, interiorKey: it.key, interiorFloor: it.floor || 1,
+                atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
+            });
+            MSG.pushMsg(sv, `${_rn} 被击败，留下尸变的尸体（可搜索）……`, '#9fd6ff');
         }
         sv.effects.push({ kind: 'dead', x: z.x, y: z.y, life: 0.6, maxLife: 0.6, label: z.name });
         AudioSystem.playZombieDie();

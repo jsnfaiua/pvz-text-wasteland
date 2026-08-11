@@ -234,6 +234,7 @@ export function showLookCreator(onConfirm, initialLook) {
     lookEl.innerHTML = `
         <div class="wsl-look-panel">
             <div class="wsl-look-title">◈ 角色定制 ◈</div>
+            <button class="wsl-look-btn wsl-look-close" id="wsl-look-close" style="position:absolute;top:10px;right:12px;background:none;border:none;color:#8a9aa2;font-size:20px;cursor:pointer;line-height:1;padding:2px;min-width:0;width:auto;" title="取消 (ESC)">✕</button>
             <div class="wsl-look-sub">像素幸存者 · 外观只影响形象，不影响属性 · 彩虹块可自定义任意颜色</div>
             <div class="wsl-look-body">
 <div class="wsl-look-stage">
@@ -328,6 +329,9 @@ export function showLookCreator(onConfirm, initialLook) {
         });
     }
     lookEl.querySelector('#wsl-look-ok').addEventListener('click', confirm);
+    // 2026-08-11 v2.99 用户要求：所有弹窗都有叉号关闭按钮（右上角取消）
+    const lcBtn = lookEl.querySelector('#wsl-look-close');
+    if (lcBtn) lcBtn.addEventListener('click', () => { clickSound(); closeLookCreator(); });
     const onKey = e => {
         if (e.target && e.target.tagName === 'INPUT') return;   // 取色器自己处理回车
         if (e.key === 'Escape') closeLookCreator();

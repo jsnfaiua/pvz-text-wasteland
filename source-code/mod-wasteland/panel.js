@@ -10,6 +10,8 @@ import AudioSystem from '../systems/audio.js';
 import { saveData } from '../core/state.js';
 import * as MSG from './wmsg.js';
 import { WEDGE_INFO, parseFragmentId } from './wwordcraft-rules.js';
+import { isGradeable, itemGrade, gradeColor, gradeMul } from './wgrade.js';   // 2026-08-11 v2.98 品级系统：背包/详情显示品级
+import * as WG from './wgrade.js';   // 2026-08-11 v2.98 品级系统：强化（灵石消耗/成功率）
 
 export const ITEMS = {
     herb:  { name: '草药',     char: '草', color: '#46C846', heal: 15, satiate: 12, desc: '使用恢复 15 生命 / 12 饱食' },
@@ -19,6 +21,8 @@ export const ITEMS = {
     stone: { name: '石块',     char: '石', color: '#999999', heal: 0,  desc: '基础建材（后续阶段用途）' },
     gem:   { name: '宝石',     char: '钻', color: '#7DF9FF', heal: 0,  desc: '尸潮战利品：稀有的高价值物（后续阶段用途）' },
     tpgem: { name: '传送宝石', char: '◇', color: '#C88AFF', heal: 0,  desc: '暂停面板「传送回营地」消耗 1 颗（有冷却）；尸潮首领与稀有容器掉落' },
+    // 2026-08-11 v2.98 品级系统：灵石（僵尸死亡掉落，品级强化材料）
+    'gem:ling': { name: '灵石', char: '灵', color: '#7DF9FF', heal: 0, desc: '僵尸死亡掉落（稀有僵尸掉率更高/更多）；消耗可强化武器品级' },
 
     water: { name: '水',       char: '水', color: '#5599FF', heal: 0, drink: 35, desc: '使用恢复 35 水分（解渴）；培养植物必需品；在积水旁按 F 采集' },
     coin:  { name: '金币',     char: '金', color: '#FFD700', heal: 0, desc: '通用货币：与 NPC 交易按物品价值买卖' },
@@ -400,9 +404,17 @@ function cellHtml(s, i, tag) {
     const len = name.length;
     const fs = len <= 2 ? 24 : (len === 3 ? 16 : (len === 4 ? 12 : 10));
     const tip = broken ? `${name} · 已损坏（扳手+零件×2 修复）` : `${name} · ${itemDesc(s.id)}`;
-    return `<div class="wsl-cell" data-${tag}="${i}" data-item="${s.id}"${dragAttr} style="border-color:${catColor}" title="${tip}">` +
+    // 2026-08-11 v2.98 品级系统：武器格子显示品级字母徽标（颜色按品级强弱）
+    let gradeBadge = '';
+    let gradeAttr = '';
+    if (isGradeable(s.id)) {
+        const g = itemGrade(s);
+        gradeBadge = `<span class="wsl-cell-grade" style="color:${gradeColor(g)};position:absolute;top:1px;right:2px;font-size:9px;font-weight:bold;">${g}</span>`;
+        gradeAttr = ` data-grade="${g}"`;
+    }
+    return `<div class="wsl-cell" data-${tag}="${i}" data-item="${s.id}"${gradeAttr}${dragAttr} style="border-color:${catColor}" title="${tip}">` +
         `<span class="wsl-cell-char" style="color:${broken ? '#666666' : it.color};font-size:${fs}px">${name}</span>` +
-        `<span class="wsl-cell-n">${s.n}</span>${eq}${broken ? '<span class="wsl-cell-broken">损</span>' : ''}</div>`;
+        `<span class="wsl-cell-n">${s.n}</span>${eq}${broken ? '<span class="wsl-cell-broken">损</span>' : ''}${gradeBadge}</div>`;
 }
 
 function infoHtml() {
@@ -467,7 +479,7 @@ export function renderBag(sv) {
         `<div class="wsl-bag-head"><span>背 包 ${used}/${cap}${cap > BAG_SIZE ? ' · 无限' : ''}</span>` +
         `<span class="wsl-bag-tip">左键使用/装备 · 右键查看详情/丢弃 · 拖到下方丢弃区 · 选中后按 1-6 绑定快捷栏</span>` +
         `<button class="wsl-sort-btn" id="wsl-bag-sort" title="同类合并 + 排序（战利品袋独立保留）">整 理</button>` +
-        `<button class="wsl-close-btn" id="wsl-bag-close" title="关闭 (B/ESC)">×</button></div>` +
+        `<button class="wsl-close-btn" id="wsl-bag-close" title="关闭 (B)">×</button></div>` +
         legendHtml() +
         `<div class="wsl-bag-grid">${cells}</div>` +
         `<div class="wsl-discard" id="wsl-bag-discard">拖到此处丢弃</div>` +
@@ -493,7 +505,12 @@ export function renderBag(sv) {
                 const s = sv.inv[slot];
                 if (s && s.n > 1 && host && host.onBatchOpen) batchFn = () => host.onBatchOpen(slot);
             }
-            showItemDetail(id, (slot != null && host && host.onDrop) ? () => host.onDrop(slot) : null, batchFn);
+            // 2026-08-11 v2.98 品级系统：背包武器强化（消耗灵石升品级，失败补偿概率×1.5封顶100%）
+            const it2 = slot != null ? sv.inv[slot] : null;
+            const onUpgrade = (it2 && isGradeable(it2.id))
+                ? () => upgradeItemFromBag(sv, it2)
+                : null;
+            showItemDetail(id, (slot != null && host && host.onDrop) ? () => host.onDrop(slot) : null, batchFn, el.dataset.grade || null, onUpgrade);
         });
     });
     bindBagDrag(sv);
@@ -599,8 +616,8 @@ export function renderChest(sv) {
     const chestCells = chest.map((s, i) => cellHtml(s, i, 'c')).join('');
     chestEl.innerHTML =
         `<div class="wsl-bag-head"><span>${sv.chestName || '储 物 柜'}${ro ? ' · 只读查看' : ''}</span>` +
-        `<span class="wsl-bag-tip">${ro ? 'B/F/ESC 关闭 · 仅查看，不可拿取' : 'B/F/ESC 关闭 · 点击物品转移 · 右键查看详情/丢弃'}</span>` +
-        `<button class="wsl-close-btn" id="wsl-chest-close" title="关闭 (B/ESC)">×</button></div>` +
+        `<span class="wsl-bag-tip">${ro ? 'B/F 关闭 · 仅查看，不可拿取' : 'B/F 关闭 · 点击物品转移 · 右键查看详情/丢弃'}</span>` +
+        `<button class="wsl-close-btn" id="wsl-chest-close" title="关闭 (B/F)">×</button></div>` +
         legendHtml() +
         `<div class="wsl-chest-cols">` +
         `<div><div class="wsl-chest-title">${sv.chestName || '容器'} ${chest.filter(Boolean).length}/${chest.length}</div><div class="wsl-bag-grid wsl-chest-grid">${chestCells}</div></div>` +
@@ -620,11 +637,11 @@ export function renderChest(sv) {
         el.addEventListener('contextmenu', e => {
             e.preventDefault();
             if (el.dataset.b != null) {
-                showItemDetail(el.dataset.item, host && host.onDrop ? () => host.onDrop(+el.dataset.b) : null);
+                showItemDetail(el.dataset.item, host && host.onDrop ? () => host.onDrop(+el.dataset.b) : null, null, el.dataset.grade || null);
             } else if (el.dataset.c != null) {
-                showItemDetail(el.dataset.item, host && host.onChestDrop ? () => host.onChestDrop(+el.dataset.c) : null);
+                showItemDetail(el.dataset.item, host && host.onChestDrop ? () => host.onChestDrop(+el.dataset.c) : null, null, el.dataset.grade || null);
             } else {
-                showItemDetail(el.dataset.item);
+                showItemDetail(el.dataset.item, null, null, el.dataset.grade || null);
             }
         });
     });
@@ -694,17 +711,22 @@ export function showDeathChoices(html, actions) {
         `<button class="menu-btn${a.cls ? ' ' + a.cls : ''}" id="wsl-death-opt">${a.label}</button>`).join('');
     deathEl.innerHTML = '<div class="wsl-scaler">' + html + btns + '</div>';
     deathEl.classList.remove('hidden');
+    // 2026-08-11 v2.98 用户需求：游戏结束/全员阵亡时画面渐渐变黑再弹出 UI——
+    // 通过 .show class 触发 opacity 过渡（style.css：wsl-death 渐变至黑屏，内容延迟 1.6s 渐入）。
+    // 用 requestAnimationFrame 让 opacity 过渡生效（同帧设 hidden→show 会直接终值，需下一帧触发）。
+    deathEl.classList.remove('show');
+    requestAnimationFrame(() => { deathEl.classList.add('show'); });
     const els = deathEl.querySelectorAll('#wsl-death-opt');
     els.forEach((el, i) => {
         const a = (actions || [])[i];
         if (a) el.addEventListener('click', a.onClick);
     });
 }
-export function hideDeath() { if (deathEl) deathEl.classList.add('hidden'); }
+export function hideDeath() { if (deathEl) { deathEl.classList.add('hidden'); deathEl.classList.remove('show'); } }
 
 // ---------- 物品详情弹窗（右键查看：名称/类别/稀有度/介绍/属性；背包/储物柜/搜索界面可丢弃） ----------
 let detailEl = null;
-export function showItemDetail(id, discardFn, batchFn) {
+export function showItemDetail(id, discardFn, batchFn, grade, onUpgrade) {
     const it = getItemInfo(id);
     const cat = CAT_INFO[itemCategory(id)];
     if (!detailEl) {
@@ -717,15 +739,20 @@ export function showItemDetail(id, discardFn, batchFn) {
     if (id.startsWith('wpn:')) {
         const w = WEAPONS[id.slice(4)];
         if (w) {
-            const rows = [`伤害 <b>${w.damage}</b>`];
+            // 2026-08-11 v2.98 品级系统：武器详情显示品级及加成（grade 从格子 dataset 传入）
+            const _g = grade || null;
+            const gradeLine = _g ? `<div style="font-size:13px;color:${gradeColor(_g)};margin-bottom:4px;">品级 <b>${_g}</b> · 伤害×${gradeMul(_g).damageMul.toFixed(2)} · 射程/匣×${gradeMul(_g).secondaryMul.toFixed(2)}</div>` : '';
+            const rows = [`伤害 <b>${Math.round(w.damage * (_g ? gradeMul(_g).damageMul : 1))}</b>`];
             if (w.kind === 'melee') rows.push(`范围 <b>${w.reach || 40}</b>`);
-            else rows.push(`射程 <b>${w.range || 300}</b>`, `弹匣 <b>${w.magSize || 1}</b>`);
+            else rows.push(`射程 <b>${Math.round((w.range || 300) * (_g ? gradeMul(_g).secondaryMul : 1))}</b>`, `弹匣 <b>${w.magSize || 1}</b>`);
             rows.push(`攻速 <b>${(1 / (w.fireInterval || 0.5)).toFixed(1)}/s</b>`, `体力 <b>${w.stamina || 0}</b>`);
-            stats = `<div class="wsl-detail-stats">${rows.map(r => `<span>${r}</span>`).join('')}</div>`;
+            stats = gradeLine + `<div class="wsl-detail-stats">${rows.map(r => `<span>${r}</span>`).join('')}</div>`;
         }
     }
     detailEl.innerHTML =
-        `<div class="wsl-detail-box">` +
+        `<div class="wsl-detail-box" style="position:relative;">` +
+        // 2026-08-11 v2.99 用户要求：所有弹窗都有叉号关闭按钮（右上角）
+        `<button class="wsl-detail-close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;padding:2px;" title="关闭">✕</button>` +
         `<div class="wsl-detail-head"><span class="wsl-detail-char" style="color:${it.color}">${it.char}</span>` +
         `<b>${it.name}</b>` +
         `<span class="wsl-detail-cat" style="border-color:${cat.color};color:${cat.color}">${cat.name}</span></div>` +
@@ -733,15 +760,57 @@ export function showItemDetail(id, discardFn, batchFn) {
         stats +
         (batchFn ? `<button class="menu-btn wsl-detail-batch">全部打开</button>` : '') +
         (discardFn ? `<button class="menu-btn wsl-detail-drop">丢 弃</button>` : '') +
-        `<button class="menu-btn wsl-detail-close">关 闭</button>` +
+        // 2026-08-11 v2.98 品级系统：武器强化按钮（消耗灵石升品级，B→A 0.02% 极难）
+        (onUpgrade ? `<button class="menu-btn wsl-detail-upgrade" style="color:#7DF9FF;">强化品级</button>` : '') +
         `</div>`;
     detailEl.classList.remove('hidden');
     detailEl.querySelector('.wsl-detail-close').addEventListener('click', hideItemDetail);
     if (batchFn) detailEl.querySelector('.wsl-detail-batch').addEventListener('click', () => { hideItemDetail(); batchFn(); });
     if (discardFn) detailEl.querySelector('.wsl-detail-drop').addEventListener('click', () => { discardFn(); hideItemDetail(); });
+    if (onUpgrade) detailEl.querySelector('.wsl-detail-upgrade').addEventListener('click', () => { onUpgrade(); hideItemDetail(); });
     AudioSystem.playClick();
 }
 export function hideItemDetail() { if (detailEl) detailEl.classList.add('hidden'); }
+
+// 2026-08-11 v2.98 品级系统：背包武器强化（消耗灵石升品级）
+// 规则：消耗灵石 = 2^upgradeCount 颗（第1次1颗，失败也升过一级消耗继续翻倍）；
+//      成功率按品阶固定（B→A 0.02%，往 Z 翻倍，封顶100%）；失败品级不变但 failCount+1（下次×1.5封顶100%）。
+function upgradeItemFromBag(sv, item) {
+    try {
+        const r = WG.upgradeOnce(item);
+        if (!r.ok) { MSG.pushMsg(sv, '已是最高品级（A），无法继续强化', '#FFB347'); return; }
+        // 消耗灵石（背包里扣除；不足则提示）
+        const have = countItem(sv.inv, WG.LING_STONE_ID);
+        if (have < r.cost) {
+            MSG.pushMsg(sv, `灵石不足：强化需 ${r.cost} 颗，当前 ${have} 颗（击杀僵尸掉落）`, '#FFB347');
+            return;
+        }
+        for (let k = 0; k < sv.inv.length && r.cost > 0; k++) {
+            if (sv.inv[k] && sv.inv[k].id === WG.LING_STONE_ID) {
+                const take = Math.min(sv.inv[k].n, r.cost);
+                sv.inv[k].n -= take; r.cost -= take;
+                if (sv.inv[k].n <= 0) sv.inv[k] = null;
+            }
+        }
+        // 应用结果：品级变化 + 强化次数/失败次数
+        item.grade = r.nextGrade;
+        item.upgradeCount = r.newCount;
+        if (r.success) item.failCount = 0;
+        else item.failCount = r.newFailCount;
+        if (r.success) {
+            MSG.pushMsg(sv, `强化成功！${item.id} 品级升至 ${r.nextGrade}（成功率 ${(r.rate * 100).toFixed(2)}%）`, '#7DFF7D');
+        } else {
+            MSG.pushMsg(sv, `强化失败（成功率 ${(r.rate * 100).toFixed(2)}%），品级不变；下次成功率 ${(r.nextRate * 100).toFixed(2)}%`, '#FFB347');
+        }
+        if (bagOpen) refresh(sv);
+    } catch (e) { MSG.pushMsg(sv, '强化出错：' + (e && e.message), '#FF5544'); }
+}
+// 统计背包某物品数量
+function countItem(arr, id) {
+    let n = 0;
+    for (const s of arr || []) if (s && s.id === id) n += s.n || 1;
+    return n;
+}
 
 export function destroyPanel() {
     bagOpen = false;

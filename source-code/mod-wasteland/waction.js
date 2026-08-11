@@ -396,6 +396,8 @@ export function resolvePlayerBiteTick(sv, z, dps, dt, canStand) {
     // 平均 DPS 不变（8/s），只是从"每帧微小掉"变为"每 0.3s 掉 2.4"，血条仍平滑可见下降。
     if (tick && dps > 0 && isFinite(dps) && !godNoDmg) {
         sv.hp = Math.max(0, sv.hp - dps * B.Z_BITE_INTERVAL);
+        // 2026-08-11 v2.98 击杀明细：记录最后攻击者（僵尸名），死亡弹窗显示"被僵尸啃咬致死"
+        sv._lastHitBy = { name: z.name || '僵尸', weapon: '啃咬', via: '僵尸' };
     }
     // 2026-08-09 修复"血量卡在 1 血站着不死"：
     // ① _combatT 每帧刷新（战斗暂停回血），② _biting 每帧标记（回血块硬性跳过）。

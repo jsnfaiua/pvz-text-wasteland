@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>角色走路动画预览（临时）</title>
+<style>
+  body { background:#1a1d26; color:#eee; font-family:"Microsoft YaHei",monospace; margin:0; padding:20px 28px; }
+  h1 { font-size:20px; margin:0 0 6px; }
+  .sub { color:#999; font-size:13px; margin-bottom:18px; }
+  .section { margin-bottom:26px; }
+  .section-title { font-size:16px; color:#8fd4ff; border-bottom:1px solid #334; padding-bottom:6px; margin-bottom:12px; }
+  /* 动画区 */
+  .anim-box { display:flex; gap:24px; align-items:center; background:#10131a; padding:18px 22px; border-radius:10px; }
+  canvas { image-rendering: pixelated; border:1px solid #334; background:#0c0e14; }
+  .anim-side { display:flex; flex-direction:column; gap:10px; }
+  .dir-btns { display:flex; gap:8px; flex-wrap:wrap; }
+  .dir-btns button { padding:8px 16px; font-size:14px; cursor:pointer; border:1px solid #456; background:#1e2433; color:#ccc; border-radius:6px; }
+  .dir-btns button.active { background:#2a6fb0; color:#fff; border-color:#3a86c9; }
+  .speed { display:flex; gap:8px; align-items:center; font-size:13px; }
+  .speed input { width:160px; }
+  /* 待机区 */
+  .idle-grid { display:flex; gap:16px; flex-wrap:wrap; }
+  .idle-grid figure { margin:0; text-align:center; }
+  .idle-grid img { width:300px; border:1px solid #334; border-radius:8px; }
+  .idle-grid figcaption { font-size:12px; color:#999; margin-top:4px; }
+  /* 帧网格 */
+  .dir-block { margin-bottom:18px; }
+  .dir-name { font-size:14px; color:#ffd27f; margin-bottom:8px; }
+  .frame-grid { display:flex; gap:10px; flex-wrap:wrap; }
+  .frame-grid figure { margin:0; text-align:center; }
+  .frame-grid img { width:200px; border:1px solid #334; border-radius:6px; }
+  .frame-grid figcaption { font-size:11px; color:#aaa; margin-top:3px; }
+  .tag { display:inline-block; background:#2a3a; color:#8f8; font-size:11px; padding:1px 6px; border-radius:4px; margin-left:6px; }
+  .note { color:#ff9a9a; font-size:13px; margin-top:8px; }
+</style>
+</head>
+<body>
+<h1>角色走路动画预览（临时浏览器页）</h1>
+<div class="sub">开发者预览 · 确认后删除本页 · 帧循环 = 1.44s 周期 · 截图来自真实游戏渲染</div>
+
+<div class="section">
+  <div class="section-title">▶ 连续动画（自动循环，可切方向/调速）</div>
+  <div class="anim-box">
+    <canvas id="anim" width="180" height="160"></canvas>
+    <div class="anim-side">
+      <div class="dir-btns" id="dirBtns">
+        <button data-d="east" class="active">朝东</button>
+        <button data-d="west">朝西</button>
+        <button data-d="south">朝南</button>
+        <button data-d="north">朝北</button>
+        <button data-d="idle">待机</button>
+      </div>
+      <div class="speed">速度 <input type="range" id="spd" min="100" max="900" value="360"> <span id="spdVal">0.36s/帧</span></div>
+      <div class="sub" style="margin:0">每帧右侧箭头 <span id="frameIdx">帧 1/4</span></div>
+    </div>
+  </div>
+  <div class="note">※ 动画裁剪自游戏画面中央角色区域，放大 3 倍显示，方便看细节</div>
+</div>
+
+<div class="section">
+  <div class="section-title">待机动画（4 帧无缝循环 · 10fps · 上半身像素浮动、腿不动）</div>
+  <div class="idle-grid">
+    <figure><canvas id="idleSide" width="130" height="170"></canvas><figcaption><b>朝东/西待机</b><br>（你的 sprite-side）</figcaption></figure>
+    <figure><canvas id="idleFront" width="130" height="170"></canvas><figcaption><b>朝南待机</b><br>（sprite-front）</figcaption></figure>
+    <figure><canvas id="idleBack" width="130" height="170"></canvas><figcaption><b>朝北待机</b><br>（sprite-back）</figcaption></figure>
+  </div>
+  <div class="sub">身体像素上浮/下沉 ±1px，腿部固定站立 · 无阴影 · 深灰背景 · 画框不动</div>
+</div>
+
+<div class="section">
+  <div class="section-title">行走帧 · 逐帧展示（点击看大图）</div>
+
+  <div class="dir-block">
+    <div class="dir-name">朝东（4 帧 → 1.44s 循环）</div>
+    <div class="frame-grid">
+      <figure><img src="_qa_tmp/v2-east-f0.png"><figcaption>帧 1</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-east-f1.png"><figcaption>帧 2</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-east-f2.png"><figcaption>帧 3</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-east-f3.png"><figcaption>帧 4</figcaption></figure>
+    </div>
+  </div>
+
+  <div class="dir-block">
+    <div class="dir-name">朝西（4 帧镜像 → 1.44s 循环）</div>
+    <div class="frame-grid">
+      <figure><img src="_qa_tmp/v2-west-f0.png"><figcaption>帧 1</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-west-f1.png"><figcaption>帧 2</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-west-f2.png"><figcaption>帧 3</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-west-f3.png"><figcaption>帧 4</figcaption></figure>
+    </div>
+  </div>
+
+  <div class="dir-block">
+    <div class="dir-name">朝南（2 帧×2 槽 → 1.44s 循环）</div>
+    <div class="frame-grid">
+      <figure><img src="_qa_tmp/v2-south-f0.png"><figcaption>槽 1（帧A）</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-south-f1.png"><figcaption>槽 2（帧B）</figcaption></figure>
+    </div>
+  </div>
+
+  <div class="dir-block">
+    <div class="dir-name">朝北（4 帧 → 1.44s 循环）</div>
+    <div class="frame-grid">
+      <figure><img src="_qa_tmp/v2-north-f0.png"><figcaption>帧 1</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-north-f1.png"><figcaption>帧 2</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-north-f2.png"><figcaption>帧 3</figcaption></figure>
+      <figure><img src="_qa_tmp/v2-north-f3.png"><figcaption>帧 4</figcaption></figure>
+    </div>
+  </div>
+</div>
+
+<script>
+// 各方向帧文件 + 裁剪区域（画面中心角色区）
+const DIRS = {
+  east:  { frames: ['v2-east-f0','v2-east-f1','v2-east-f2','v2-east-f3'], cx: 0.5, cy: 0.5 },
+  west:  { frames: ['v2-west-f0','v2-west-f1','v2-west-f2','v2-west-f3'], cx: 0.5, cy: 0.5 },
+  south: { frames: ['v2-south-f0','v2-south-f1','v2-south-f0','v2-south-f1'], cx: 0.5, cy: 0.5 },
+  north: { frames: ['v2-north-f0','v2-north-f1','v2-north-f2','v2-north-f3'], cx: 0.5, cy: 0.5 },
+};
+const cv = document.getElementById('anim');
+const ctx = cv.getContext('2d');
+let curDir = 'east', curFrame = 0, interval = null, spdMs = 360;
+const imgs = {};   // key: dir:idx -> {img, loaded}
+const allImgs = {};
+for (const d in DIRS) DIRS[d].frames.forEach((f, i) => {
+  const img = new Image();
+  const key = d + ':' + i;
+  img.onload = () => { imgs[key] = img; };
+  img.src = '_qa_tmp/' + f + '.png';
+});
+function drawFrame() {
+  ctx.fillStyle = '#0c0e14';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (curDir === 'idle') {
+    // 待机动画：上半身像素浮动 4 帧循环（与待机区同步）
+    if (typeof idleAnims === 'undefined' || !idleAnims.side) { ctx.fillStyle = '#888'; ctx.font = '14px monospace'; ctx.fillText('加载中...', 40, 80); return; }
+    ctx.fillStyle = '#20242c';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    const im = idleAnims.side[idleIdx] || idleAnims.side[0];
+    if (!im.complete || !im.naturalWidth) { ctx.fillStyle = '#888'; ctx.font = '14px monospace'; ctx.fillText('加载中...', 40, 80); return; }
+    ctx.imageSmoothingEnabled = false;
+    const sc = Math.min(cv.width / im.width, cv.height / im.height);
+    const dw = im.width * sc, dh = im.height * sc;
+    ctx.drawImage(im, (cv.width - dw) / 2, (cv.height - dh) / 2, dw, dh);
+    document.getElementById('frameIdx').textContent = '待机 · 4帧循环';
+    return;
+  }
+  const key = curDir + ':' + curFrame;
+  const img = imgs[key];
+  ctx.fillStyle = '#0c0e14';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!img) { ctx.fillStyle = '#888'; ctx.font = '14px monospace'; ctx.fillText('加载中...', 40, 80); return; }
+  // 裁剪角色区（画面中心 100×90 → 放大到 canvas 180×160）
+  const sx = img.width * 0.5 - 50, sy = img.height * 0.5 - 75, sw = 100, sh = 90;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  document.getElementById('frameIdx').textContent = '帧 ' + (curFrame + 1) + '/' + DIRS[curDir].frames.length;
+}
+function startAnim() {
+  if (interval) clearInterval(interval);
+  interval = setInterval(() => {
+    if (curDir !== 'idle') curFrame = (curFrame + 1) % DIRS[curDir].frames.length;
+    drawFrame();
+  }, spdMs);
+  drawFrame();
+}
+document.getElementById('dirBtns').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#dirBtns button').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  curDir = b.dataset.d; curFrame = 0;
+  startAnim();
+});
+const spd = document.getElementById('spd');
+spd.addEventListener('input', () => {
+  spdMs = parseInt(spd.value);
+  document.getElementById('spdVal').textContent = (spdMs/1000).toFixed(2) + 's/帧';
+  startAnim();
+});
+startAnim();
+// 待机动画（4 帧无缝循环 · 上半身像素浮动、腿固定 · 10fps）
+const idleDirs = ['side', 'front', 'back'];
+const idleCvsMap = { side: 'idleSide', front: 'idleFront', back: 'idleBack' };
+const idleAnims = {};
+for (const d of idleDirs) {
+  idleAnims[d] = [];
+  for (let i = 0; i < 4; i++) {
+    const im = new Image();
+    im.src = '_qa_tmp/idle-anim-' + d + '-' + i + '.png';
+    idleAnims[d].push(im);
+  }
+}
+let idleIdx = 0;
+setInterval(() => {
+  idleIdx = (idleIdx + 1) % 4;
+  for (const d of idleDirs) {
+    const cv = document.getElementById(idleCvsMap[d]);
+    if (!cv) continue;
+    const c2 = cv.getContext('2d');
+    c2.fillStyle = '#20242c';
+    c2.fillRect(0, 0, cv.width, cv.height);
+    const im = idleAnims[d][idleIdx];
+    if (!im.complete || !im.naturalWidth) continue;
+    c2.imageSmoothingEnabled = false;
+    const sc = Math.min(cv.width / im.width, cv.height / im.height);
+    const dw = im.width * sc, dh = im.height * sc;
+    c2.drawImage(im, (cv.width - dw) / 2, (cv.height - dh) / 2, dw, dh);
+  }
+}, 100);   // 10fps
+</script>
+</body>
+</html>

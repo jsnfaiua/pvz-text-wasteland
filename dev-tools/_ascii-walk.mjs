@@ -1,0 +1,60 @@
+// ASCII 渲染 walk-side-f1/f3（=用户 2.png/4.png）全身轮廓，对比 f0/f2
+const CDP = 'http://127.0.0.1:9222';
+const tab = (await (await fetch(CDP + '/json')).json()).find(t => t.type === 'page');
+const ws = new WebSocket(tab.webSocketDebuggerUrl);
+await new Promise(r => ws.onopen = r);
+let id = 0; const pend = new Map();
+ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id) { const p = pend.get(m.id); if (p) { pend.delete(m.id); m.error ? p.reject(new Error(m.error.message)) : p.resolve(m.result); } } };
+const sendMethod = (m, p={}) => { const i = ++id; return new Promise((res, rej) => { pend.set(i, {resolve: res, reject: rej}); ws.send(JSON.stringify({id: i, method: m, params: p})); }); };
+const fs = await import('fs');
+const files = ['f0','f1','f2','f3'];
+const b64s = {};
+for (const f of files) b64s[f] = fs.readFileSync('source-code/mod-wasteland/sprites/walk-side-' + f + '.png').toString('base64');
+const r = await sendMethod('Runtime.evaluate', { expression: `(async () => {
+    const B64 = ${JSON.stringify(b64s)};
+    const out = {};
+    for (const k in B64) {
+        const img = new Image();
+        await new Promise(res => { img.onload = res; img.src = 'data:image/png;base64,' + B64[k]; });
+        const c = document.createElement('canvas');
+        c.width = img.width; c.height = img.height;
+        c.getContext('2d').drawImage(img, 0, 0);
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        const W = c.width, H = c.height;
+        let mnx=1e9,mny=1e9,mxx=-1,mxy=-1;
+        for (let y=0;y<H;y++) for (let x=0;x<W;x++) {
+            if (d[(y*W+x)*4+3]>40) { if(x<mnx)mnx=x; if(x>mxx)mxx=x; if(y<mny)mny=y; if(y>mxy)mxy=y; }
+        }
+        // ASCII：角色 bbox 缩到 40 宽 × 60 高（保持比例）
+        const bw = mxx-mnx+1, bh = mxy-mny+1;
+        const rows = 60, cols = Math.round(40 * (bw/bh) / (bw/bh));   // 自适应列
+        const colsReal = Math.max(20, Math.round(rows * bw / bh));
+        let art = '';
+        for (let gy = 0; gy < rows; gy++) {
+            let line = '';
+            for (let gx = 0; gx < colsReal; gx++) {
+                const x = mnx + Math.floor(gx * bw / colsReal);
+                const y = mny + Math.floor(gy * bh / rows);
+                const i = (y*W+x)*4;
+                if (d[i+3] < 60) { line += ' '; continue; }
+                const rr=d[i],gg=d[i+1],bb=d[i+2];
+                let ch = '#';
+                if (rr > 150 && gg > 100 && bb > 60 && rr > bb) ch = 'S';  // 肤色
+                else if (gg >= rr+20 && gg >= 45) ch = 'G';                  // 绿衣
+                else if (bb > gg+10 && bb >= 45) ch = 'B';                   // 蓝裤
+                else if (rr<90 && gg<90 && bb<90) ch = 'd';                  // 深色
+                else if (rr>90 && gg>90 && bb<90) ch = 'y';                  // 棕/黄
+                line += ch;
+            }
+            art += line + '\n';
+        }
+        out[k] = { size: W+'x'+H, bbox: bw+'x'+bh+' ratio '+(bw/bh).toFixed(2), art };
+    }
+    return JSON.stringify(out);
+})()`, awaitPromise: true, returnByValue: true });
+const res = JSON.parse(r.result.value);
+for (const k in res) {
+    console.log('===== ' + k + '  ' + res[k].size + '  角色 ' + res[k].bbox + ' =====');
+    console.log(res[k].art);
+}
+process.exit(0);

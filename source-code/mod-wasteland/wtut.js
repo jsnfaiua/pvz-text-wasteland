@@ -17,12 +17,13 @@ let el = null;
 // 2026-08-10 教程内容全面完善：覆盖全部已开发功能
 function buildHtml() {
     return `
-    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:950;
+    <div style="position:relative;top:50%;left:50%;transform:translate(-50%,-50%);z-index:950;
                 width:620px;max-width:94vw;max-height:86vh;overflow-y:auto;background:rgba(12,22,16,0.97);
                 border:1px solid #3a8a4a;border-radius:10px;padding:20px 24px;color:#dce6e2;
                 font:14px/1.6 'Microsoft YaHei',sans-serif;box-shadow:0 0 40px rgba(57,217,138,0.25);">
+        <button id="wsl-tut-close-x" style="position:absolute;top:10px;right:14px;background:none;border:none;color:#8a9aa2;font-size:20px;cursor:pointer;line-height:1;padding:2px;" title="关闭 (F1)">✕</button>
         <div style="font-size:19px;color:#7ee08a;text-align:center;margin-bottom:4px;">◈ 无尽植僵荒原 · 生存指南</div>
-        <div style="font-size:12px;color:#7a8a92;text-align:center;margin-bottom:14px;">文字生存探索 · 城市越深处越危险，稀有物资越多 · 按 F1 可随时打开本指南</div>
+        <div style="font-size:12px;color:#7a8a92;text-align:center;margin-bottom:14px;">文字生存探索 · 城市越深处越危险，稀有物资越多 · 按 F1 可随时打开本指南 · 再按 F1 关闭</div>
 
         <div style="color:#9fb3ab;font-size:13px;margin-bottom:6px;">▸ 操作键位</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 14px;font-size:13px;margin-bottom:12px;">
@@ -75,7 +76,7 @@ function buildHtml() {
             <button id="wsl-tut-ok" style="flex:1;background:#123d2c;border:1px solid #39d98a;color:#39d98a;
                     border-radius:6px;padding:9px;font-size:15px;cursor:pointer;">开始生存！</button>
             <button id="wsl-tut-close" style="flex:1;background:#232c34;border:1px solid #4a5a66;color:#ccd;
-                    border-radius:6px;padding:9px;font-size:15px;cursor:pointer;">关闭 (ESC)</button>
+                    border-radius:6px;padding:9px;font-size:15px;cursor:pointer;">关闭 (F1)</button>
         </div>
     </div>`;
 }
@@ -99,6 +100,9 @@ function attach(host) {
     // 2026-08-10 通用返回：关闭按钮（ESC）直接关闭，不标记已读（F1 随时可再开）
     const closeBtn = el.querySelector('#wsl-tut-close');
     if (closeBtn) closeBtn.addEventListener('click', close);
+    // 2026-08-11 v2.99 右上角叉号：同关闭
+    const closeX = el.querySelector('#wsl-tut-close-x');
+    if (closeX) closeX.addEventListener('click', close);
 }
 
 // 首次进入时调用（startRun 里）。已看过则零开销返回。
@@ -110,6 +114,23 @@ export function showIfFirst(sv) {
     const host = (typeof document !== 'undefined') ? (document.getElementById('game-container') || document.body) : null;
     if (!host) return;
     attach(host);
+}
+
+// 2026-08-11 v2.99 新存档开场流程：等"荒野醒来"睁眼动画（_wake）结束后再弹新手教程。
+// 文字在 _wake 的 prog>=0.82 时开始淡出、prog=1 完全消失 → delayMs 取唤醒总时长即可。
+// 老存档（已看过教程）或调用时已打开 → 零开销返回。
+export function showIfFirstAfterWake(sv, delayMs) {
+    if (el && el.isConnected) return;
+    let seen = false;
+    try { seen = !!localStorage.getItem(KEY); } catch {}
+    if (seen) return;
+    setTimeout(() => {
+        // 延迟期间用户可能已手动关掉/打开过：避免重复
+        if (el && el.isConnected) return;
+        const host = (typeof document !== 'undefined') ? (document.getElementById('game-container') || document.body) : null;
+        if (!host) return;
+        attach(host);
+    }, delayMs || 2500);
 }
 
 // 2026-08-10 随时打开教程（F1 键）：无论是否已看过都弹出

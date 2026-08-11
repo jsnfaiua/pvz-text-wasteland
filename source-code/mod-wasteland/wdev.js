@@ -23,6 +23,7 @@ import * as HUD from './whud.js';
 import * as WD from './windoor.js';
 import { showLookCreator, normalizeLook } from './wlook.js';
 import * as WMAP from './wmap.js';
+import * as WGRADE from './wgrade.js';   // 2026-08-11 v2.98 品级系统：开发者测试入口
 import AudioSystem from '../systems/audio.js';
 
 const SAVE_KEY = 'wasteland_save';
@@ -37,6 +38,9 @@ let curSv = null;
 const DMG_PRESETS = [1, 2, 5, 10, 50, 100];
 
 // 状态测试：饥饿/饱食/血量/水分/感染快捷设置
+// 2026-08-11 v2.98 用户反馈：「濒死倒地」「补刀致死」开发者按钮有 bug，全部删除——
+// 局内玩法的倒地/尸体/尸变/搜索/救助等逻辑**完整保留**（onDeath / updateDowned / deathDropLegacy /
+// updateCorpseRevive / reviveZombieToCorpse / doInteract 等均不动），只移除这两个开发者入口。
 const STATE_ACTIONS = [
     { s: 'starve', name: '饥饿(food0)' },
     { s: 'lowfood', name: '低饱食30' },
@@ -48,6 +52,11 @@ const STATE_ACTIONS = [
     { s: 'inf50', name: '感染50' },
     { s: 'inf0', name: '清除感染' },
     { s: 'full', name: '☆ 一键状态回满', all: true },   // 血量/饱食/水分/体力全满 + 清除全部负面状态
+];
+// 2026-08-11 v2.98 品级系统测试入口：给当前装备武器随机赋品级 + 灵石测试（独立子块「武器与品级」）
+const GRADE_ACTIONS = [
+    { s: 'grade', name: '装备随机品级' },
+    { s: 'ling', name: '灵石×20' },
 ];
 
 // 搜索测试：附近刷出可搜刮容器（覆盖城市规划保护层：优先放在非路/非人行道空地）
@@ -210,14 +219,11 @@ export function destroy() {
     if (devEl) { devEl.remove(); devEl = null; }
 }
 
+// 2026-08-11 v2.99 开发者面板分区：主控角色（局部，只作用于当前控制角色） / 全局世界（时间/环境/实体/危险操作）
 function buildHtml() {
-    let html = `
-        <div class="wsl-dev-head">
-            <span class="wsl-dev-title">◈ 荒原调试台</span>
-            <span class="wsl-dev-tag">DEV</span>
-            <button class="wsl-dev-close" id="wdev-close">✕</button>
-        </div>
-        <div class="wsl-dev-body">
+    // ============ 主控角色面板（局部） ============
+    let localHtml = `
+        <div class="wsl-dev-sub">▸ 能力开关（只作用于主控角色）</div>
         <div class="wsl-dev-toggles">
             <button data-t="god" id="wdev-god" title="无敌：生命/体力/饱食/水分全满且不消耗，不受伤">属性全满</button>
             <button data-t="stamina" id="wdev-stamina">无限体力</button>
@@ -229,10 +235,71 @@ function buildHtml() {
             <button data-t="hud" id="wdev-hud">调试HUD</button>
         </div>
         <div class="wsl-dev-dmg">
-            <span class="wsl-dev-dmg-label">武器伤害倍率</span>
+            <span class="wsl-dev-dmg-label">武器伤害倍率（主控攻击）</span>
             <div class="wsl-dev-dmg-presets">
                 ${DMG_PRESETS.map(v => `<button data-mul="${v}">×${v}</button>`).join('')}
             </div>
+        </div>
+        <div class="wsl-dev-sub">▸ 武器与品级（主控装备）</div>
+        <div class="wsl-dev-quick">
+            ${GRADE_ACTIONS.map(a => `<button data-s="${a.s}">${a.name}</button>`).join('')}
+        </div>
+        <div class="wsl-dev-sub">▸ 身体状态（主控生命体征）</div>
+        <div class="wsl-dev-quick">
+            ${STATE_ACTIONS.map(a => `<button data-s="${a.s}">${a.name}</button>`).join('')}
+        </div>
+        <div class="wsl-dev-quick wsl-dev-infbar" title="自定义感染值（0~100%，拖动滑块即时生效，方便感染阶段调试）">
+            <span class="wsl-dev-inf-label">感染值</span>
+            <input type="range" id="wdev-inf-range" min="0" max="100" step="1" value="0" style="flex:1;accent-color:#7a4a2a;">
+            <span id="wdev-inf-val" style="color:#FFB347;font-size:12px;min-width:34px;text-align:right;">0</span>
+        </div>
+        <div class="wsl-dev-sub">▸ 疾病测试（染病 → 看 HUD/小人特效 → 吃药或草药治疗）</div>
+        <div class="wsl-dev-boxes">
+            <button class="wsl-dev-item" data-sick="cold"><span class="wsl-dev-item-name">感冒</span></button>
+            <button class="wsl-dev-item" data-sick="wound"><span class="wsl-dev-item-name">伤口感染</span></button>
+            <button class="wsl-dev-item" data-sick="poison"><span class="wsl-dev-item-name">食物中毒</span></button>
+            <button class="wsl-dev-item" data-sick="dysentery"><span class="wsl-dev-item-name">痢疾</span></button>
+            <button class="wsl-dev-item" data-sick="heatstroke"><span class="wsl-dev-item-name">中暑</span></button>
+            <button class="wsl-dev-item" data-sick="cure"><span class="wsl-dev-item-name">痊愈</span></button>
+            <button class="wsl-dev-item" data-sick="aging"><span class="wsl-dev-item-name">老化+10岁</span></button>
+        </div>
+        <div class="wsl-dev-sub">▸ 定位（主控移动）</div>
+        <div class="wsl-dev-quick">
+            <button data-q="randrespawn">随机重生</button>
+            <button data-q="tpdeath" title="传送到上次死亡位置（有死亡记录即可用，不依赖指引）">传送死亡点</button>
+            <button data-q="tp" class="wsl-dev-mp">传送队友(TP)</button>
+            <button data-q="look">外观定制(捏脸)</button>
+        </div>
+        <div class="wsl-dev-sub">▸ 物资（掉入主控背包）</div>`;
+    for (const cat of CATEGORIES) {
+        if (cat.name.startsWith('僵尸')) continue;   // 僵尸刷出归全局区「实体刷出」
+        localHtml += `<div class="wsl-dev-cat">
+            <div class="wsl-dev-cat-name" style="color:${cat.color}">▸ ${cat.name}</div>
+            <div class="wsl-dev-items">`;
+        for (const it of cat.items) {
+            localHtml += `<button class="wsl-dev-item" data-id="${it.id}" data-n="${it.n}" title="掉落 ${it.name}×${it.n}">
+                <span class="wsl-dev-char" style="color:${cat.color}">${it.char}</span>
+                <span class="wsl-dev-item-name">${it.name}</span>
+            </button>`;
+        }
+        localHtml += `</div></div>`;
+    }
+    localHtml += `<div class="wsl-dev-quick">
+            <button data-q="allitems">全部物资×1</button>
+            <button data-q="clearbag">清空背包</button>
+            <button data-sick="coins" title="给主控加 50 金币">金币×50</button>
+        </div>`;
+
+    // ============ 全局 / 世界面板 ============
+    let globalHtml = `
+        <div class="wsl-dev-sub">▸ 时间（世界时间轴）</div>
+        <div class="wsl-dev-quick">
+            <button data-q="day">跳一天</button>
+            <button data-q="spd10" id="wdev-spd10">时间×10</button>
+            <button data-q="spd60" id="wdev-spd60">时间×60</button>
+            <button data-q="t1h">快进1小时</button>
+            <button data-q="tnight">到夜晚20点</button>
+            <button data-q="tday">到白天6点</button>
         </div>
         <div class="wsl-dev-dmg">
             <span class="wsl-dev-dmg-label">画质（纯本地显示，不参与联机同步）</span>
@@ -243,20 +310,6 @@ function buildHtml() {
             </div>
         </div>
         <div class="wsl-dev-quick">
-            <button data-q="day">跳一天</button>
-            <button data-q="spd10" id="wdev-spd10">时间×10</button>
-            <button data-q="spd60" id="wdev-spd60">时间×60</button>
-            <button data-q="t1h">快进1小时</button>
-            <button data-q="tnight">到夜晚20点</button>
-            <button data-q="tday">到白天6点</button>
-            <button data-q="randrespawn">随机重生</button>
-            <button data-q="look">外观定制(捏脸)</button>
-        </div>
-        <div class="wsl-dev-quick">
-            <button data-q="map">开地图</button>
-            <button data-q="reveal">揭示全图</button>
-        </div>
-        <div class="wsl-dev-quick">
             <select id="wdev-wx-sel" class="wsl-dev-select" title="天气与强度（含雷阵雨闪电）"></select>
             <button data-q="wxset" id="wdev-wxset">设置天气</button>
         </div>
@@ -264,10 +317,13 @@ function buildHtml() {
             <select id="wdev-wind-sel" class="wsl-dev-select" title="风向（仅视觉：雨/雪倾斜角、沙尘方向；auto=按当天种子确定性）"></select>
             <button data-q="windset" id="wdev-windset">设置风向</button>
         </div>
+        <div class="wsl-dev-sub">▸ 地图（世界探索）</div>
         <div class="wsl-dev-quick">
-            <button data-q="tp" class="wsl-dev-mp">传送队友(TP)</button>
-            <button data-q="summonmate" title="召唤 NPC 队友瞬移到身边（调试用）">召唤队友</button>
-            <button data-q="tpdeath" title="传送到上次死亡位置（有死亡记录即可用，不依赖指引）">传送死亡点</button>
+            <button data-q="map">开地图</button>
+            <button data-q="reveal">揭示全图</button>
+        </div>
+        <div class="wsl-dev-sub">▸ 实体刷出（影响世界）</div>
+        <div class="wsl-dev-quick">
             <button data-q="spawn">刷僵尸</button>
             <label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#ccc;">
                 数量 <input data-q="zn" type="range" min="1" max="30" value="6" style="width:70px;vertical-align:middle;">
@@ -275,19 +331,21 @@ function buildHtml() {
             </label>
             <button data-q="horde">立即尸潮</button>
             <button data-q="killall">清屏僵尸</button>
-            <button data-q="allitems">全部物资×1</button>
-            <button data-q="clearbag">清空背包</button>
-            <button data-q="wipe" class="wsl-dev-danger">清空存档</button>
-        </div>
-        <div class="wsl-dev-sub">▸ 状态测试（饥饿 / 血量 / 感染）</div>
-        <div class="wsl-dev-quick">
-            ${STATE_ACTIONS.map(a => `<button data-s="${a.s}">${a.name}</button>`).join('')}
-        </div>
-        <div class="wsl-dev-quick wsl-dev-infbar" title="自定义感染值（0~100%，拖动滑块即时生效，方便感染阶段调试）">
-            <span class="wsl-dev-inf-label">感染值</span>
-            <input type="range" id="wdev-inf-range" min="0" max="100" step="1" value="0" style="flex:1;accent-color:#7a4a2a;">
-            <span id="wdev-inf-val" style="color:#FFB347;font-size:12px;min-width:34px;text-align:right;">0</span>
-        </div>
+        </div>`;
+    const zCat = CATEGORIES.find(c => c.name.startsWith('僵尸'));
+    if (zCat) {
+        globalHtml += `<div class="wsl-dev-cat">
+            <div class="wsl-dev-cat-name" style="color:${zCat.color}">▸ ${zCat.name}</div>
+            <div class="wsl-dev-items">`;
+        for (const it of zCat.items) {
+            globalHtml += `<button class="wsl-dev-item" data-id="${it.id}" data-n="${it.n}" title="附近刷出 ${it.name}">
+                <span class="wsl-dev-char" style="color:${zCat.color}">${it.char}</span>
+                <span class="wsl-dev-item-name">${it.name}</span>
+            </button>`;
+        }
+        globalHtml += `</div></div>`;
+    }
+    globalHtml += `
         <div class="wsl-dev-sub">▸ 搜索测试（附近刷出容器，可 F 搜索）</div>
         <div class="wsl-dev-boxes">
             ${DEV_BOXES.map(b => `<button class="wsl-dev-item" data-c="${b.t}"><span class="wsl-dev-item-name">${b.name}</span></button>`).join('')}
@@ -305,32 +363,31 @@ function buildHtml() {
             <button class="wsl-dev-item" data-n="hostile"><span class="wsl-dev-item-name">恶意NPC</span></button>
             <button class="wsl-dev-item" data-n="clear"><span class="wsl-dev-item-name">清除NPC</span></button>
         </div>
-        <div class="wsl-dev-sub">▸ 疾病测试（染病 → 看 HUD/小人特效 → 吃药或草药治疗）</div>
-        <div class="wsl-dev-boxes">
-            <button class="wsl-dev-item" data-sick="cold"><span class="wsl-dev-item-name">感冒</span></button>
-            <button class="wsl-dev-item" data-sick="wound"><span class="wsl-dev-item-name">伤口感染</span></button>
-            <button class="wsl-dev-item" data-sick="poison"><span class="wsl-dev-item-name">食物中毒</span></button>
-            <button class="wsl-dev-item" data-sick="dysentery"><span class="wsl-dev-item-name">痢疾</span></button>
-            <button class="wsl-dev-item" data-sick="heatstroke"><span class="wsl-dev-item-name">中暑</span></button>
-            <button class="wsl-dev-item" data-sick="cure"><span class="wsl-dev-item-name">痊愈</span></button>
-            <button class="wsl-dev-item" data-sick="aging"><span class="wsl-dev-item-name">老化+10岁</span></button>
-            <button class="wsl-dev-item" data-sick="setcamp"><span class="wsl-dev-item-name">设营地(脚下)</span></button>
-            <button class="wsl-dev-item" data-sick="coins"><span class="wsl-dev-item-name">金币×50</span></button>
+        <div class="wsl-dev-sub">▸ 队伍与营地</div>
+        <div class="wsl-dev-quick">
+            <button data-q="summonmate" title="召唤 NPC 队友瞬移到身边（调试用）">召唤队友</button>
+            <button data-sick="setcamp" title="营地设为当前位置（命令队员返回营地测试）">设营地(脚下)</button>
+        </div>
+        <div class="wsl-dev-sub">▸ 危险操作</div>
+        <div class="wsl-dev-quick">
+            <button data-q="wipe" class="wsl-dev-danger">清空存档</button>
         </div>`;
-    for (const cat of CATEGORIES) {
-        html += `<div class="wsl-dev-cat">
-            <div class="wsl-dev-cat-name" style="color:${cat.color}">▸ ${cat.name}</div>
-            <div class="wsl-dev-items">`;
-        for (const it of cat.items) {
-            html += `<button class="wsl-dev-item" data-id="${it.id}" data-n="${it.n}" title="掉落 ${it.name}×${it.n}">
-                <span class="wsl-dev-char" style="color:${cat.color}">${it.char}</span>
-                <span class="wsl-dev-item-name">${it.name}</span>
-            </button>`;
-        }
-        html += `</div></div>`;
-    }
-    html += `</div><div class="wsl-dev-foot">F9 开关 · 点击物品掉落到脚下 · 状态随存档保存</div>`;
-    return html;
+
+    return `
+        <div class="wsl-dev-head">
+            <span class="wsl-dev-title">◈ 荒原调试台</span>
+            <span class="wsl-dev-tag">DEV</span>
+            <button class="wsl-dev-close" id="wdev-close">✕</button>
+        </div>
+        <div class="wsl-dev-tabs">
+            <button class="wsl-dev-tab on" data-tab="local">◉ 主控角色</button>
+            <button class="wsl-dev-tab" data-tab="global">◉ 全局 / 世界</button>
+        </div>
+        <div class="wsl-dev-body">
+            <div class="wsl-dev-pane" data-pane="local">${localHtml}</div>
+            <div class="wsl-dev-pane hidden" data-pane="global">${globalHtml}</div>
+        </div>
+        <div class="wsl-dev-foot">F9 开关 · 主控区只作用于当前控制角色 · 全局区影响整个世界</div>`;
 }
 
 // 时间快进后的跨天滚转（与 survival.update 规则一致：整天数进位，重置尸潮标记）
@@ -359,7 +416,7 @@ function syncState() {
     devEl.querySelector('#wdev-hud').classList.toggle('on', !!sv._devHud);
     devEl.querySelector('#wdev-spd10').classList.toggle('on', sv._devTimeScale === 10);
     devEl.querySelector('#wdev-spd60').classList.toggle('on', sv._devTimeScale === 60);
-    devEl.querySelectorAll('.wsl-dev-dmg-presets button').forEach(b => {
+    devEl.querySelectorAll('.wsl-dev-dmg-presets [data-mul]').forEach(b => {
         b.classList.toggle('on', Number(b.dataset.mul) === (sv._devDmgMul || 1));
     });
     devEl.querySelectorAll('#wdev-gfx button').forEach(b => {
@@ -504,6 +561,16 @@ function bindEvents() {
         devEl.classList.add('hidden');
     });
 
+    // 2026-08-11 v2.99 分区 Tab 切换：主控角色 / 全局世界
+    devEl.querySelectorAll('.wsl-dev-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const target = tab.dataset.tab;
+            devEl.querySelectorAll('.wsl-dev-tab').forEach(t => t.classList.toggle('on', t === tab));
+            devEl.querySelectorAll('.wsl-dev-pane').forEach(p => p.classList.toggle('hidden', p.dataset.pane !== target));
+            AudioSystem.playClick();
+        });
+    });
+
     // 开关：无敌 / 资源无限 / 无限弹药 / 一击必杀
     devEl.querySelectorAll('.wsl-dev-toggles button').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -524,6 +591,9 @@ function bindEvents() {
                 if (sv._devInfStamina) { sv.stamina = sv.maxStamina; sv.exhausted = false; }
                 MSG.pushMsg(sv, sv._devInfStamina ? '[DEV] 无限体力开启' : '[DEV] 无限体力关闭', '#FFB347');
             } else if (t === 'inf') {
+                // 2026-08-11 v2.98 测试玩家核对：`_devInf` 在 dev 模式下 init() 默认 true（169行），
+                // 原 `!(sv._devInf !== false)` = !(true) = false —— 第一次点击即正确"关闭"（无 bug）。
+                // 保留原语义（默认开，点一下关），避免行为变化。
                 sv._devInf = !(sv._devInf !== false);
                 MSG.pushMsg(sv, sv._devInf ? '[DEV] 资源无限开启' : '[DEV] 资源无限关闭', '#FFB347');
             } else if (t === 'ammo') {
@@ -553,8 +623,8 @@ function bindEvents() {
         });
     });
 
-    // 伤害倍率
-    devEl.querySelectorAll('.wsl-dev-dmg-presets button').forEach(btn => {
+    // 伤害倍率（用 [data-mul] 限定，避免误绑画质按钮——两者现在共用 .wsl-dev-dmg-presets 样式）
+    devEl.querySelectorAll('.wsl-dev-dmg-presets [data-mul]').forEach(btn => {
         btn.addEventListener('click', () => {
             const sv = curSv;
             if (!sv) return;
@@ -656,6 +726,25 @@ function bindEvents() {
                 setAllStatsFull(sv);
                 MSG.pushMsg(sv, '[DEV] 状态已一键回满：生命/饱食/水分/体力全满，感染与疾病已清除', '#7DFF7D');
             }
+            else if (s === 'grade') {
+                // 2026-08-11 v2.98 品级系统测试：给当前装备武器随机赋品级（A 极稀有 → Z 最常见）
+                const g = WGRADE.randomGrade();
+                let applied = false;
+                for (const it of sv.inv || []) {
+                    if (it && it.eq && String(it.id).startsWith('wpn:')) { it.grade = g; applied = true; }
+                }
+                MSG.pushMsg(sv, applied
+                    ? `[DEV] 装备武器已随机赋品级：${g}（伤害×${WGRADE.gradeMul(g).damageMul.toFixed(2)}）`
+                    : '[DEV] 未找到装备的武器（背包里点武器"装"后再试）', applied ? '#7DFF7D' : '#FFB347');
+            }
+            else if (s === 'ling') {
+                // 2026-08-11 v2.98 品级系统测试：直接加 20 灵石（强化材料）
+                Panel.addItem(sv, WGRADE.LING_STONE_ID, 20);
+                MSG.pushMsg(sv, '[DEV] 已添加 灵石 ×20（品级强化材料）', '#7DFF7D');
+            }
+            // 2026-08-11 v2.98 用户反馈：「濒死倒地」「补刀致死」开发者按钮有 bug，已删除。
+            // 局内玩法的倒地/尸体/尸变/搜索/救助等逻辑完整保留（onDeath / updateDowned / deathDropLegacy
+            // / updateCorpseRevive / reviveZombieToCorpse / doInteract 等均不动），只移除这两个开发者入口。
             AudioSystem.playClick();
         });
     });
@@ -721,8 +810,9 @@ function bindEvents() {
         });
     });
 
-    // 疾病测试：染病种 / 痊愈 / 老化 / 设营地 / 刷金币
-    devEl.querySelectorAll('.wsl-dev-boxes [data-sick]').forEach(btn => {
+    // 疾病测试：染病种 / 痊愈 / 老化（主控区）+ 设营地（全局）/ 刷金币（主控区）
+    // 2026-08-11 v2.99 按钮分散在两个 Tab 面板，选择器改为全局 [data-sick]
+    devEl.querySelectorAll('[data-sick]').forEach(btn => {
         btn.addEventListener('click', () => {
             const sv = curSv;
             if (!sv || !sv.active) return;
@@ -1185,6 +1275,17 @@ function setAllStatsFull(sv) {
     sv.exhausted = false;
     sv.infection = 0;
     sv._sick = null;
+    // 2026-08-11 v2.99 一键回满 = 恢复健康：清死因残留（防"回满后再死"弹窗仍显示旧死因）
+    sv._deathReason = null;
+    sv._lastHitBy = null;
+    // 2026-08-11 v2.98 测试玩家发现：一键回满/属性全满未清倒地状态——若玩家濒死倒地中点
+    // "一键回满"，sv.hp 拉满但 _downed 残留 → updateDowned 仍走倒地逻辑（救援倒计时/濒死标志
+    // 不消失）。与主循环 _devGod 块一致：全满 = 立即恢复健康，同步清倒地状态。
+    sv._downed = null;
+    sv._downedMembers = [];
+    sv._carryDowned = false;
+    sv._carryMateId = null;
+    sv._waitDowned = false;
     // 主控角色记录（NPC 列表里的主角）同步重置，保证 HUD/小队面板一致
     const pc = (sv.npcs || []).find(n => n.isPlayer || n.id === 'player');
     if (pc) {
@@ -1197,6 +1298,15 @@ function setAllStatsFull(sv) {
         pc.sick = null;
         pc.downed = false;
         pc.alive = true;
+        pc._deathReason = null;   // 2026-08-11 v2.99 一键回满清死因残留
+    }
+    // 2026-08-11 v2.98 兼容旧 devGod 块：_downedMembers 里的记录同时清 downed 标记（防队伍面板残留"濒"）
+    if (Array.isArray(sv.npcs)) {
+        for (const n of sv.npcs) {
+            if (n && n.downed && (n.isPlayer || n.id === 'player' || (sv.controllerId && n.id === sv.controllerId))) {
+                n.downed = false; n._penaltySec = 0; n._downedAtReal = null;
+            }
+        }
     }
 }
 

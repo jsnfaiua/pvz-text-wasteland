@@ -86,7 +86,8 @@ export function openSearch(sv, meta, options) {
         const done = immediate || !!it.done;
         const p = done ? null : pending.find(x => x.i === i);
         // 已完成直接揭示：played 预设为 true，不再播放弹出动画
-        return { id: it.id, n: it.n, revealT: p ? p.revealT : 0, dur, slot: slotOf[i], done, played: done };
+        // 2026-08-11 v2.98 保留完整对象引用（it）作为 corpseFull，拿取时用 addItemObj 保留品级/耐久等属性
+        return { id: it.id, n: it.n, revealT: p ? p.revealT : 0, dur, slot: slotOf[i], done, played: done, full: it };
     });
     const allDone = pending.length === 0;
     sv.search = {
@@ -99,7 +100,9 @@ export function openSearch(sv, meta, options) {
         lootBag: meta.lootBag || null,
         onClose: meta.onClose || null,
         gx: meta.gx, gy: meta.gy,
-        corpseFull: meta.corpseFull || null,   // 2026-08-11 尸体搜索：完整物品对象映射（拿取保留耐久/附魔等属性）
+        // 2026-08-11 尸体搜索：完整物品对象映射（拿取保留耐久/附魔等属性）
+        // 2026-08-11 v2.98 通用化：任何搜索（战利品袋/容器/尸体）都带完整对象，takeFromSearch 用 addItemObj 保留品级
+        corpseFull: meta.corpseFull || meta.items || null,
     };
     if (allDone) AudioSystem.playCollect();
     buildUI(sv);
@@ -183,7 +186,7 @@ function buildUI(sv) {
         '<div class="wsl-search-wrap">' +
         '  <div class="wsl-bag-head"><span id="wsl-s-title"></span>' +
         '    <span class="wsl-search-status" id="wsl-s-status"></span>' +
-        '    <button class="wsl-close-btn wsl-s-close" title="关闭 (ESC/F/B)">×</button></div>' +
+        '    <button class="wsl-close-btn wsl-s-close" title="关闭 (F/B)">×</button></div>' +
         Panel.legendHtml() +
         '  <div class="wsl-chest-cols">' +
         '    <div><div class="wsl-chest-title">容器</div><div class="wsl-findings" id="wsl-s-findings"></div></div>' +

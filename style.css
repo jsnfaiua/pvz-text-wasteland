@@ -31,6 +31,46 @@ body {
 }
 .hidden { display: none !important; }
 
+/* 2026-08-11 v2.99 用户要求：所有荒原 UI 弹窗不显示滚动条（滚轮），保持美观。
+   滚动功能保留（内容超长仍可滚），仅视觉隐藏——hover 时也保持隐藏，不突兀。 */
+.wsl-scaler, .wsl-bag, .wsl-bag-head, .wsl-chest-cols, .wsl-search-wrap, .wsl-wordcraft-box,
+.wsl-dev-body, .wsl-trade-panel, .wsl-npcmgr-box, .wsl-death-details, .wsl-save-list,
+#wsl-map, #wsl-tut, .wsl-detail-stats, .wsl-charpanel, .wsl-npcmgr,
+.wsl-bag-grid, .wsl-chest-grid, .wsl-search-body, .wsl-wordcraft-recipes,
+.wsl-dev-items, .wsl-dev-toggles, .wsl-dev-quick, .wsl-dev-boxes,
+.wsl-scaler * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.wsl-scaler *, .wsl-bag *, .wsl-search-wrap *, .wsl-wordcraft-box *, .wsl-trade-panel *,
+.wsl-npcmgr-box *, #wsl-map *, #wsl-tut *, .wsl-detail-stats *, .wsl-charpanel *,
+.wsl-dev-body *, .wsl-save-list *, .wsl-death-details *,
+.wsl-bag-grid *, .wsl-chest-grid *, .wsl-wordcraft-recipes *,
+.wsl-dev-items *, .wsl-dev-toggles *, .wsl-dev-quick *, .wsl-dev-boxes * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.wsl-scaler *::-webkit-scrollbar, .wsl-bag *::-webkit-scrollbar, .wsl-search-wrap *::-webkit-scrollbar,
+.wsl-wordcraft-box *::-webkit-scrollbar, .wsl-trade-panel *::-webkit-scrollbar, .wsl-npcmgr-box *::-webkit-scrollbar,
+#wsl-map *::-webkit-scrollbar, #wsl-tut *::-webkit-scrollbar, .wsl-detail-stats *::-webkit-scrollbar,
+.wsl-charpanel *::-webkit-scrollbar, .wsl-dev-body *::-webkit-scrollbar, .wsl-save-list *::-webkit-scrollbar,
+.wsl-death-details *::-webkit-scrollbar, .wsl-bag-grid *::-webkit-scrollbar, .wsl-chest-grid *::-webkit-scrollbar,
+.wsl-wordcraft-recipes *::-webkit-scrollbar, .wsl-dev-items *::-webkit-scrollbar,
+.wsl-dev-toggles *::-webkit-scrollbar, .wsl-dev-quick *::-webkit-scrollbar, .wsl-dev-boxes *::-webkit-scrollbar,
+.almanac-grid-main::-webkit-scrollbar, .detail-stats::-webkit-scrollbar, .shop-grid::-webkit-scrollbar,
+.tr-content::-webkit-scrollbar, .ws-list::-webkit-scrollbar, .ws-detail-scroll::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+.almanac-grid-main, .detail-stats, .shop-grid, .tr-content, .ws-list, .ws-detail-scroll {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.almanac-grid-main:hover, .detail-stats:hover, .shop-grid:hover, .ws-list:hover, .ws-detail-scroll:hover {
+    scrollbar-color: transparent transparent;
+}
+
 /* ---------- 主菜单 ---------- */
 #menu-screen {
     gap: 30px;
@@ -546,7 +586,7 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 20px;
-    max-height: 90vh; overflow-y: auto;
+    max-height: 90vh; overflow-y: auto; overflow-x: hidden;
 }
 .wsl-vol {
     display: flex;
@@ -2298,6 +2338,25 @@ body {
 
 .wsl-death.hidden { display: none !important; }
 
+/* 2026-08-11 v2.98 用户需求：游戏结束/全员阵亡时，画面渐渐变黑（眼睛闭上的感觉），再慢慢弹出游戏结束 UI。
+   .wsl-death 从透明渐黑（约 1.6s，模拟画面消失）；内容 .wsl-scaler 在全黑后渐入（延迟 1.6s，约 0.8s 浮现）。 */
+.wsl-death {
+    opacity: 0;
+    transition: opacity 1.6s ease;
+    background: rgba(0, 0, 0, 0.92);
+}
+.wsl-death.show {
+    opacity: 1;
+}
+.wsl-death .wsl-scaler {
+    opacity: 0;
+    animation: wsl-death-content-in 0.8s ease forwards 1.6s;
+}
+@keyframes wsl-death-content-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+}
+
 .wsl-death-title { color: #ff4444; font-size: 36px; letter-spacing: 8px; text-shadow: 0 0 16px #ff0000; }
 
 .wsl-death-sub { color: #999999; font-size: 14px; }
@@ -2337,7 +2396,7 @@ body {
 .wsl-save-group { color: #6d8a6d; font-size: 11px; letter-spacing: 2px; padding: 6px 6px 2px; }
 /* 2026-08-09：存档管理以「世界」为主导（角色随世界绑定，无独立角色 tab） */
 /* ================= NPC 交易面板（2026-08-09 优化：左右分栏 + 物品信息 + 价格） ================= */
-.wsl-trade-panel { background: #141a22; border: 2px solid #FFD700; border-radius: 10px; padding: 18px 22px; width: 620px; max-height: 80vh; overflow: auto; }
+.wsl-trade-panel { background: #141a22; border: 2px solid #FFD700; border-radius: 10px; padding: 18px 22px; width: 620px; max-height: 80vh; overflow-y: auto; overflow-x: hidden; }
 .wsl-trade-head { font-size: 19px; color: #FFD700; letter-spacing: 3px; margin-bottom: 4px; text-align: center; }
 .wsl-trade-balance { font-size: 12px; color: #8a9aa2; text-align: center; margin-bottom: 10px; }
 .wsl-trade-cols { display: flex; gap: 14px; align-items: flex-start; }
@@ -2406,6 +2465,24 @@ body {
     transition: all 0.15s;
 }
 .wsl-dev-close:hover { border-color: #ff6644; color: #ff6644; }
+/* 2026-08-11 v2.99 分区 Tab：主控角色 / 全局世界 */
+.wsl-dev-tabs {
+    display: flex; gap: 6px; padding: 8px 12px 6px;
+    background: rgba(255,179,71,0.05); border-bottom: 1px solid #2a2415;
+}
+.wsl-dev-tab {
+    flex: 1; padding: 8px 0; font-size: 13px; cursor: pointer; font-family: inherit;
+    letter-spacing: 2px; font-weight: bold; border-radius: 4px;
+    background: rgba(255,179,71,0.07); border: 1px solid #4a3d20; color: #8a7a4a;
+    transition: all 0.15s;
+}
+.wsl-dev-tab:hover { background: rgba(255,179,71,0.16); color: #cdb27a; }
+.wsl-dev-tab.on {
+    background: rgba(255,179,71,0.24); border-color: #b08a30; color: #ffcf87;
+    box-shadow: 0 0 10px rgba(255,179,71,0.28);
+}
+.wsl-dev-pane { display: block; }
+.wsl-dev-pane.hidden { display: none !important; }
 .wsl-dev-toggles, .wsl-dev-quick {
     display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
     padding: 10px 12px;
@@ -2488,7 +2565,7 @@ body {
     display: flex; align-items: center; justify-content: center;
     background: rgba(0, 0, 0, 0.42);   /* 半透明遮罩：搜索时可见角色/僵尸/世界，便于移动走位 */
     user-select: none;
-    overflow: auto;
+    overflow-y: auto; overflow-x: hidden;   /* v2.99：只允许纵向滚动，禁止横向滚轮 */
 }
 .wsl-search-wrap {
     width: 800px;   /* 固定宽度：格子内容变化（?/物品名/✓）不改变 grid 列宽，界面稳定不跳变 */

@@ -172,11 +172,11 @@ function buildUI() {
     ui.className = 'wsl-wordcraft';
     ui.innerHTML =
         '<div class="wsl-wordcraft-box">' +
-        '  <div class="wsl-wordcraft-head"><div><b>拼 字 台</b><span>文字不是物品，直到现实承认它</span></div><button class="wsl-close-btn" title="关闭 (K/ESC)">×</button></div>' +
+        '  <div class="wsl-wordcraft-head"><div><b>拼 字 台</b><span>文字不是物品，直到现实承认它</span></div><button class="wsl-close-btn" title="关闭 (K)">×</button></div>' +
         '  <div class="wsl-wordcraft-modes"></div>' +
         '  <div class="wsl-wordcraft-filters"></div>' +
         '  <div class="wsl-wordcraft-body"><div class="wsl-wordcraft-recipes"></div><div class="wsl-wordcraft-stage"></div></div>' +
-        '  <div class="wsl-wordcraft-foot">K / ESC 关闭 · 中途关闭会返还材料</div>' +
+        '  <div class="wsl-wordcraft-foot">K 关闭 · 中途关闭会返还材料</div>' +
         '</div>';
     document.getElementById('game-container').appendChild(ui);
     ui.querySelector('.wsl-close-btn').addEventListener('click', close);

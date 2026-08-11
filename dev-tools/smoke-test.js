@@ -1457,7 +1457,10 @@ for (const m of browserOnly) {
     const srEnd = srStart > 0 ? src.indexOf('\nfunction ', srStart + 10) : -1;
     const srBody = srStart > 0 && srEnd > 0 ? src.slice(srStart, srEnd) : '';
     assert(srBody.includes('WNPC.initRoster'), 'survival: softRespawn calls WNPC.initRoster to rebuild new player');
-    assert(srBody.includes('!n.isPlayer && n.id !== sv.controllerId'), 'survival: softRespawn filters out old player+controller records');
+    // 2026-08-11 v2.97 诈尸修复：重建判定只看 controllerId（老陈活着不误重建）。
+    // 2026-08-11 v2.98 测试玩家发现：主控死亡重建时 filter 删 isPlayer 尸体（含尸体）→
+    // initRoster 的 `!some(isPlayer)` 才能新建新主角（否则尸体 isPlayer=true → 不新建 → 悬空）。
+    assert(srBody.includes('!n.isPlayer'), 'survival: softRespawn 重建删 isPlayer 尸体（initRoster 才能新建新主角）');
     // onDeath 软核全灭分支（hadMates && !anyAliveMate）必须 include isPlayer 处理
     const anyAliveIdx = src.indexOf('const anyAliveMate');
     const onDeathBlock = anyAliveIdx > 0 ? src.slice(anyAliveIdx, src.indexOf('// ---- 从头就无队友', anyAliveIdx)) : '';
@@ -1617,7 +1620,7 @@ for (const m of browserOnly) {
         'survival: updateDowned 超时 = 现实流逝 + 惩罚');
     assert(surv.includes('spent >= dwnLimitSec'), 'survival: 超时判定');
     // ④ 成员超时同规则（现实时间）
-    assert(surv.includes('spentM >= B.DOWNED_LIMIT_SECONDS'), 'survival: 成员超时用现实时间');
+    assert(surv.includes('spentM >= mLimit') || surv.includes('spentM >= B.DOWNED_LIMIT_SECONDS'), 'survival: 成员超时用现实时间（支持递减 limitSec）');
     // ⑤ killNpc 对 downed 角色走补刀扣时分支
     assert(wnpc.includes('export function npcApplyDownedHit'), 'wnpc: npcApplyDownedHit 导出');
     assert(wnpc.includes('n._penaltySec += dmgNum * B.DOWNED_HIT_PENALTY_SEC'), 'wnpc: 补刀每点伤害扣 10 秒');
@@ -1645,7 +1648,12 @@ for (const m of browserOnly) {
     assert(wnpc.includes('function npcShareWithMates'), 'wnpc: npcShareWithMates 赠予函数');
     assert(wnpc.includes('npcShareWithMates(sv, n)'), 'wnpc: updateNeeds 调用赠予');
     assert(wnpc.includes('n._shareT != null && now - n._shareT < 2.5'), 'wnpc: 分享节流 2.5 秒');
-    assert(wnpc.includes("String(s.id || '').startsWith('ammo:')"), 'wnpc: 弹药分享');
+    // 2026-08-11 v2.99 弹药按队友对应武器类型赠予 + "按需补足"（非分一半）
+    assert(wnpc.includes("const ammoId = 'ammo:' + w.ammoType;"), 'wnpc: 弹药按队友武器 ammoType 匹配');
+    assert(wnpc.includes('if (!w || w.kind !== \'ranged\' || !w.ammoType) continue;'), 'wnpc: 无远程武器队友跳过弹药分享');
+    assert(wnpc.includes('const need = Math.max(0, B.DOWNED_SHARE_AMMO_KEEP - npcAmmoNeed(tgt));'), 'wnpc: 弹药按需补足（差多少给多少）');
+    assert(wnpc.includes('const give = Math.min(need, myTotal - B.DOWNED_SHARE_AMMO_KEEP);'), 'wnpc: 只给超出保留底线的部分');
+    assert(!wnpc.includes('Math.floor(myTotal / 2)'), 'wnpc: 不再分一半弹药');
     assert(wnpc.includes('n.water || 0) > B.DOWNED_SHARE_WATER_AT'), 'wnpc: 水分享');
     assert(wnpc.includes('n.food || 0) > B.DOWNED_SHARE_FOOD_AT'), 'wnpc: 食物分享');
     // ⑪ 存档/联机：现实时间字段持久化
@@ -1679,7 +1687,7 @@ for (const m of browserOnly) {
         'windoor: 室内僵尸 NPC 咬扫（与室外同款）');
     assert(wdoor.includes("npcApplyDownedHit(sv, n, (dmgTo / (contact.biteCd || 1)) * 0.2);"),
         'windoor: 室内僵尸咬倒地角色扣救援时间');
-    assert(wdoor.includes("killNpc(sv, n, '被僵尸咬死');"),
+    assert(wdoor.includes("killNpc(sv, n, '被僵尸啃咬致死');"),
         'windoor: 室内僵尸咬 NPC 致死走 killNpc（软核倒地分支）');
     // ⑰ 2026-08-11 v2.97 修复"本地 NPC 队友超出屏幕无指引"：drawMateGuide 此前被包在
     // `sv.p2 || 尸化自己 || 遗物` 条件里（仅有本地队友时永不执行，室内外不一致）→ 独立无条件调用。
@@ -1752,18 +1760,30 @@ for (const m of browserOnly) {
         'survival: 独狼死亡弹「重生/返回主菜单」（复用 showAllDeadChoices）');
     assert(soloBlock.includes('_softRespawnAllDeadFallback(sv, deadName, deadReason);'),
         'survival: 独狼死亡 typeof 兜底');
-    assert(surv.includes("const hadAnyMate = (sv.npcs || []).some(n => n && n.party && !n.isPlayer);"),
-        'survival: 独狼弹窗标题区分（你阵亡了 / 全员阵亡）');
+    // 2026-08-11 v2.97 修复"独狼复活后再死，显示全员阵亡+历史队友死亡明细"（用户反馈）：
+    // hadAnyMate 只看当前活着的 party 队友（排除历史尸体 alive=false）
+    assert(surv.includes('const hadAnyMate = (sv.npcs || []).some(n => n && n.alive && n.party && !n.isPlayer);'),
+        'survival: 独狼弹窗标题只看活人（避免历史尸体误判全员阵亡）');
     assert(surv.includes(`<div class="wsl-death-title">\${hadAnyMate ? '全员阵亡' : '你 阵 亡 了'}</div>`),
         'survival: 独狼弹窗标题 = 你阵亡了');
+    // 2026-08-11 v2.99 用户定稿：游戏结束/全员阵亡时，显示【队伍里每个角色】的死亡原因
+    // ——"某某某 被什么什么击杀了"，主控（用调用方实时传入的 deadName/deadReason）+ 全部 party 成员
+    // （含倒地/已死尸体）各一条；存活成员不收；历史尸体靠 softRespawn 重生清 party 标记排除。
+    assert(surv.includes('队伍里有几个角色就写几条死因'),
+        'survival: 全灭弹窗收集所有成员死因');
+    assert(surv.includes('pushDeath(m.name || m.id, m._deathReason)'),
+        'survival: 收集全部 party 成员死因');
+    assert(surv.includes('if (m.alive && !m.downed) continue;'),
+        'survival: 存活成员（无死因）不收');
     // ㉔ 2026-08-11 v2.97 修复"传送后队友靠拢极慢（过几秒才走一格）"（用户反馈）：
     // 根因 = A* 长距离寻路节点上限不足（旧 maxNodes=3000/12000，传送后展开不到起点 →
     // 空路径 → 直线走卡障碍 → 每 0.4s 重试失败）。改为距离自适应（clamp 上限防性能卡顿）。
-    assert(wnpc.includes('Math.min(120000, Math.max(12000, Math.ceil(maxDist * maxDist * 1.5)))'),
-        'wnpc: 流场 maxNodes 距离自适应（clamp 12000~120000）');
+    // 2026-08-11 v2.99 掉帧排查：流场重建 0.5s→1.0s、上限 120000→80000（降重建频率/最坏成本）
+    assert(wnpc.includes('Math.min(80000, Math.max(8000, Math.ceil(maxDist * maxDist * 1.5)))'),
+        'wnpc: 流场 maxNodes 距离自适应（clamp 8000~80000）');
     assert(wnpc.includes('Math.min(120000, Math.max(3000, md * md * 2))'),
         'wnpc: 单点 A* maxNodes 距离自适应');
-    assert(wnpc.includes('sv.now - f.t < 0.5'), 'wnpc: 流场缓存 0.5s 保留（性能）');
+    assert(wnpc.includes('sv.now - f.t < 1.0'), 'wnpc: 流场缓存 1.0s 保留（性能）');
     assert(wnpc.includes('sv.now - n._path.t < 0.4'), 'wnpc: 单NPC寻路缓存 0.4s 保留（性能）');
     // ㉕ 2026-08-11 v2.97 自动驾驶"到达后顶部 UI 区域名切换才算到达"（用户反馈）：
     // 到达判定 = 距目标点 2 格内 **且** 车当前区块属于目标区域（districtAt 确认）——
@@ -1790,6 +1810,198 @@ for (const m of browserOnly) {
     assert(wpathSrc.includes('if (dx && dy && (!cs(gx + dx, gy) || !cs(gx, gy + dy))) continue;'),
         'wpath: 斜走穿角检查保留');
     assert(wpathSrc.includes('10 * (dx + dy) - 6 * m'), 'wpath: octile 启发式保留（A* 最优）');
+    // ㉗ 2026-08-11 v2.97 修复"善意 NPC 打移动目标描边打空气"（用户反馈）：
+    // 玩家靠近吸引敌对仇恨 → 僵尸/恶意NPC朝玩家移动 → NPC 子弹命中半径 14 < 玩家 18 →
+    // 14px 命中框跟不上移动目标 → 描边。NPC 子弹命中半径提到 18（与玩家子弹一致）。
+    assert(wnpc.includes('// 2026-08-11 v2.97 修复"善意 NPC 打移动目标描边打空气"'),
+        'wnpc: 描边修复注释');
+    assert(wnpc.includes('let hit = null, best = 18;'),
+        'wnpc: NPC 子弹命中半径 14→18（与玩家一致，跟得上移动目标）');
+    // ㉘ 2026-08-11 v2.97 攻击判定与武器特效对应 + 索敌精度优化（用户要求）：
+    // ① 近战判定距离 = w.reach（去掉 +8，与特效 drawSwingEffect 长度一致，防"隔空打死"）；
+    // ② 长矛 thrust 垂距 24→16（匹配特效线宽）；
+    // ③ 子弹瞄准用目标实时坐标（threat.z/npc 本体，替代 0.12s 缓存快照，防描边）。
+    assert(wnpc.includes('const hitReach = wDef ? (wDef.reach || 40) : 40;   // 判定 = 特效长度（去掉 +8 冗余）'),
+        'wnpc: 近战判定距离 = w.reach（与特效长度一致，防隔空打死）');
+    assert(wnpc.includes('canHit = along >= 0 && along <= hitReach && perp < 16;'),
+        'wnpc: 长矛 thrust 垂距收紧到 16（匹配特效宽度）');
+    assert(!wnpc.includes('const meleeReach = wDef ? (wDef.reach || 40) + 8 : 48;'),
+        'wnpc: 删除 meleeReach(+8) 定义（判定不再比特效长）');
+    assert(wnpc.includes('const aimTx = threat.z ? threat.z.x : (threat.npc ? threat.npc.x : threat.x);'),
+        'wnpc: 子弹瞄准用目标实时坐标（防描边打空气）');
+    // ㉙ 2026-08-11 v2.97 补：低血近战判定（hit-and-run 分支）也去掉 +8——此前残留
+    // `reach2 = wDef2.reach + 8` 且边缘判定 `d <= reach2 + 20`（reach+28），是"隔着空被近战打死"的另一路径。
+    assert(wnpc.includes('const reach2 = wDef2 ? (wDef2.reach || 40) : 40;'),
+        'wnpc: 低血近战判定 = w.reach（去掉 +8，与主近战判定一致）');
+    assert(!wnpc.includes('const reach2 = wDef2 ? (wDef2.reach || 40) + 8 : 48;'),
+        'wnpc: 无残留低血近战 +8');
+    // ㉚ 2026-08-11 v2.97 修复"切队友视角救活幸存者后当前主控头顶残留濒死标志 + 死一人就全灭"：
+    // 幸存者作为 sv._downed（主控倒地）被队友 F 救活走 mateMedSubmit——此前只清 _downedMembers，
+    // 不清 sv._downed → 渲染层（drawPlayer 的 drawDownedTimeBar）在当前主控头顶画救援倒计时；
+    // 且 sv._downed 残留 → updateDowned 误判"主控倒地" → 死一个成员就触发全灭检测。
+    assert(surv.includes('// 幸存者作为 sv._downed（主控倒地）被队友 F 救活走的是 mateMedSubmit'),
+        'survival: mateMedSubmit 清 sv._downed 修复注释');
+    assert(surv.includes('if ((dId != null && m.id === dId) || (dName && m.name === dName)) {'),
+        'survival: 救活目标 == sv._downed 对应角色 → 清 _downed');
+    // 检查 mateMedSubmit 救活块内（5204-5212 区域）是否清 waitDowned/carryDowned
+    const mateIdx = surv.indexOf('const dId = sv._downed.id;');
+    const mateBlock = mateIdx > 0 ? surv.slice(mateIdx, mateIdx + 300) : '';
+    assert(mateBlock.includes('sv._downed = null') && mateBlock.includes('sv._waitDowned = false') && mateBlock.includes('sv._carryDowned = false'),
+        'survival: 清 _downed 连带清 waitDowned/carryDowned');
+    // ㉛ 2026-08-11 v2.97 修复"药品已集齐但点不动按钮，救不了队友"：
+    // 之前 done 时按钮 disabled，玩家看到"药品已集齐"灰按钮——已集齐但不知道需要点，队友反复倒下。
+    // 改为 enabled 绿字"集齐·完成救治"，点击明确触发救活（主控 + 队友界面都修）。
+    assert(surv.indexOf('done ? \'集齐·完成救治\'') > 0, 'survival: 队友救活界面 done 按钮改为 集齐·完成救治');
+    // 注释里"药品已集齐"是设计文档说明，不算——只检查按钮 HTML 文字是否还有
+    assert(surv.indexOf('>药品已集齐<') < 0, 'survival: 移除"药品已集齐"按钮文字（注释里的说明保留）');
+    // 主控界面 — 同样修复（用函数定义定位，避免匹配到 updateDowned 里新增的 renderRescue() 调用）
+    const mainStart = surv.indexOf('function renderRescue()');
+    const mainBlock = mainStart > 0 ? surv.slice(mainStart, mainStart + 5000) : '';
+    assert(mainBlock.indexOf('done ? \'集齐·完成救治\'') > 0, 'survival: 主控救活界面 done 按钮改为 集齐·完成救治');
+    // ㉜ 2026-08-11 v2.97 修复"NPC 在玩家周围游荡动画抽搐 + 移动过快"（用户反馈）：
+    // 游荡到达目标点（<0.15 格）→ 站定停动画（此前每帧微移+方向抖动 → 抽搐）；
+    // 游荡速度 0.5 → 0.35（上下/左右移动不过快，减少来回抽动）。阈值与 moveToward 站定一致。
+    assert(wnpc.includes('const wpDist = Math.hypot(n._wpX - n.x, n._wpY - n.y);'),
+        'wnpc: 游荡目标点距离判定');
+    assert(wnpc.includes('if (wpDist < TS * 0.15) {\n            n._moving = false;   // 站定：停走动动画'),
+        'wnpc: 游荡到达目标点 → 站定停动画（防抽搐）');
+    assert(wnpc.includes('moveToward(sv, n, n._wpX, n._wpY, dt, canStand, 0.35);'),
+        'wnpc: 游荡速度 0.5→0.35（移动不过快）');
+    // ㉜b 2026-08-11 v2.97 修复"NPC 跟随移动也抽搐"（用户反馈"我移动NPC跟随的时候也会有抽搐，闪避时反而减少"）：
+    // moveToward 目标点极近时站定（阈值 TS*0.15，只吸收贴脸微移残差）——此前贴脸时残差极小仍置
+    // _moving=true + 微移 → 走路动画在几乎不动的位置高频抖动；闪避拉开距离后残差变大 → 动画正常。
+    assert(wnpc.includes('if (dist < TS * 0.15) {\n        n._moving = false;\n        return;\n    }'),
+        'wnpc: moveToward 目标极近站定（吸收贴脸微移，防跟随抽搐）');
+    // ㉝ 2026-08-11 v2.97 修复"健康主控带濒死标志，被恶意NPC攻击致死后跳过切队友视角直接全灭"：
+    // ① _devGod 每帧拉满血时同步清当前主控 downed/_downed（全属性满=立即健康，不再残留标志）；
+    // ② onDeath 清理残留 _downed 时同步清主控记录 downed（防 mates 过滤/攻击路径错乱）；
+    // ③ 有存活队友时主控死亡必弹"切换队友视角"（反复验证 onDeath/updateDowned 分支矩阵 457 全过）。
+    assert(surv.includes('// 2026-08-11 v2.97 修复"主控头上有濒死标志但其实健康'),
+        'survival: _devGod 修复注释');
+    assert(surv.includes('const curPc = (sv.npcs || []).find(n => n.id === sv.controllerId) || (sv.npcs || []).find(n => n.isPlayer);'),
+        'survival: _devGod 定位当前主控记录');
+    assert(surv.includes('curPc.downed = false;'), 'survival: _devGod 清主控记录 downed');
+    assert(surv.includes('const _cpc = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);'),
+        'survival: onDeath 残留清理定位主控记录');
+    assert(surv.includes('if (_cpc) { _cpc.downed = false; _cpc._penaltySec = 0; }'),
+        'survival: onDeath 残留清理同步清主控记录 downed');
+    // ㉟ 2026-08-11 v2.97 修复"只剩当前主控活着却弹全员阵亡"（用户截图：HP 66/80 活着却弹了全员阵亡）：
+    // 队伍只剩 1 个活人（当前主控自己）时，mates 因 controllerId/isPlayer 排除变空 →
+    // anyAliveMate=false → 误判全灭。修复：controllerId 角色活着 / isPlayer 角色活着
+    // 任一即 anyAliveMate=true（不算全灭）。onDeath 与 updateDowned 都修。
+    const onDeathAnyIdx = surv.indexOf('// 2026-08-11 v2.97 修复"只剩当前主控活着却弹全员阵亡"');
+    const updateDownedAnyIdx = surv.indexOf('// 2026-08-11 v2.97 "当前主控自己活着"也算可行动者');
+    assert(onDeathAnyIdx > 0, 'survival: onDeath 增加"当前主控/原主角活着也算可行动者"修复注释');
+    assert(updateDownedAnyIdx > 0, 'survival: updateDowned 同款修复注释');
+    assert(surv.indexOf('const cur = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);', onDeathAnyIdx) > onDeathAnyIdx,
+        'survival: onDeath 定位当前 controllerId');
+    assert(surv.indexOf('const controllerAlive = !!(cur && cur.alive && !cur.downed);', onDeathAnyIdx) > onDeathAnyIdx,
+        'survival: onDeath 计算 controllerAlive');
+    assert(surv.indexOf('|| controllerAlive || playerAlive', onDeathAnyIdx) > onDeathAnyIdx,
+        'survival: onDeath anyAliveMate 含 controllerAlive/playerAlive');
+    assert(surv.indexOf('|| !!(_udc && _udc.alive && !_udc.downed) || _udp', updateDownedAnyIdx) > updateDownedAnyIdx,
+        'survival: updateDowned anyMateAlive 含 _udc/_udp');
+    // ㊱ 2026-08-11 v2.97 修复"切队友视角后主控濒死状态转移到队友身上"（用户反馈）：
+    // 根因 = enterDownedView（onDeath 弹窗切视角）调用 switchControl 后未清 sv._downed →
+    // updateDowned 每帧仍走主控倒地分支 → 全灭误判 + 渲染 drawDownedTimeBar 把救援倒计时
+    // 画到【新主控】头顶（状态"转移"到队友）。修复：切视角后清 _downed/_waitDowned/_carryDowned
+    //（旧主控已由 switchControl 标 downed 并入 _downedMembers 管理倒计时）。
+    const edvFixIdx2 = surv.indexOf('// 2026-08-11 v2.97 修复"切队友视角后主控濒死状态转移到队友身上"');
+    const edvBlock2 = edvFixIdx2 > 0 ? surv.slice(edvFixIdx2, edvFixIdx2 + 900) : '';
+    assert(edvBlock2.includes('sv._downed = null;') && edvBlock2.includes('sv._waitDowned = false;') && edvBlock2.includes('sv._carryDowned = false;'),
+        'survival: enterDownedView 切视角后清 _downed（防状态转移/全灭误判）');
+    // ㊳ 2026-08-11 v2.97 修复"幸存者诈尸"（用户反馈：幸存者死亡成尸体后，softRespawn 把它复活）：
+    // softRespawn 重建判定只按当前主控 controllerId（不再检查 isPlayer 尸体），且 filter 保留幸存者尸体。
+    assert(surv.includes('// 2026-08-11 v2.97 修复"幸存者诈尸"'), 'survival: 诈尸修复注释');
+    assert(surv.includes('const oldCtl = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);'),
+        'survival: softRespawn 重建判定只看当前主控');
+    assert(!/const oldIsPlayer = sv\.npcs/.test(surv), 'survival: 不再声明 oldIsPlayer（尸体不触发重建）');
+    // v2.98 更新：重建 filter 删 isPlayer 尸体（防 initRoster 不新建 → 重生后角色异常）
+    assert(surv.includes("sv.npcs = sv.npcs.filter(n => n.id !== sv.controllerId && !n.isPlayer);"),
+        'survival: 重建删 isPlayer 尸体（initRoster 新建干净新主角）');
+    // ㊴ 2026-08-11 v2.98 尸体尸变系统（用户定稿）：尸体 15 分钟现实时间尸变（无论是否搜完），
+    // 尸变丧尸背包=尸体未搜物品（守恒），被击败掉尸变尸体，搜索完彻底消失；重生刷尸改现实 15 分钟。
+    assert(bal.includes('CORPSE_REVIVE_SECONDS = 180'), 'bal: CORPSE_REVIVE_SECONDS=180（3分钟，用户缩短）');
+    assert(bal.includes("CORPSE_REVIVE_TAG = '（尸变）'"), 'bal: 尸变名字后缀');
+    assert(bal.includes('DOWNED_RESPAWN_PZ_SECONDS = 180'), 'bal: 重生刷尸 3 分钟（同步缩短）');
+    assert(surv.includes('function updateCorpseRevive(sv, dt, mode)'), 'survival: 尸变检测函数（场景过滤）');
+    assert(surv.includes('function corpseReviveZombie(sv, n)'), 'survival: 尸变丧尸生成');
+    assert(surv.includes('export function reviveZombieToCorpse(sv, z)'), 'survival: 尸变丧尸被击败掉尸体');
+    assert(surv.includes('updateCorpseRevive(sv, dt);'), 'survival: 大世界调用尸变检测');
+    assert(surv.includes('if (!n._corpse || n._revived) continue;'), 'survival: 尸变检测跳过条件');
+    // 2026-08-11 v2.99 修复"玩家尸化僵尸在脚下生成"：刷尸位置改用死亡地点（_lastDeathPos），不用重生点
+    assert(surv.includes("const _pzX = (sv._lastDeathPos && sv._lastDeathPos.x != null) ? sv._lastDeathPos.x : rx"), 'survival: 刷尸位置 = 死亡地点(_lastDeathPos)');
+    assert(surv.includes('atReal: sv.now != null ? sv.now : 0'), 'survival: 重生刷尸加 atReal');
+    assert(surv.includes('if (sv.now - sv._pzRespawn.atReal >= B.DOWNED_RESPAWN_PZ_SECONDS) {'), 'survival: 重生刷尸用现实秒');
+    // ㊵ 2026-08-11 v2.98 测试玩家模拟发现：尸变字段序列化缺失（读档后立即尸变/尸变丧尸不掉尸变尸体）
+    const wnpcSrc2 = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wnpc.js'), 'utf8');
+    const wstateSrc2 = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wstate.js'), 'utf8');
+    assert(wnpcSrc2.includes('_corpseAtReal: n._corpseAtReal != null ? n._corpseAtReal : null,'),
+        'wnpc: serializeNpcs 序列化 _corpseAtReal（防读档立即尸变）');
+    assert(wnpcSrc2.includes('_revived: !!n._revived,') && wnpcSrc2.includes('_revivedCorpse: !!n._revivedCorpse,'),
+        'wnpc: 序列化 _revived/_revivedCorpse（防重复尸变）');
+    assert(wstateSrc2.includes('_reviveFromCorpse: !!z._reviveFromCorpse,') && wstateSrc2.includes('_reviveCorpseName: z._reviveCorpseName || null,'),
+        'wstate: 序列化尸变丧尸标记（读档保持掉尸变尸体）');
+    assert(wstateSrc2.includes('_corpseAtReal: 0,'), 'wstate: 旧档遗留尸体给 _corpseAtReal（读档尸变倒计时）');
+    // ㊶ 2026-08-11 v2.98 测试玩家发现：主控补刀/超时彻底死亡后没有 _corpse 标记 → 尸体不能搜索。
+    // 修复：updateDowned 超时分支（3959）补设 _corpse + 内容 + 尸变时刻 + 可搜索提示。
+    assert(surv.includes('pc._corpse = true;') && surv.includes('pc._corpseContents = [];'),
+        'survival: 主控超时/补刀致死生尸体（可搜索遗物）');
+    assert(surv.includes('pc._corpseAtReal = sv.now != null ? sv.now : 0;'),
+        'survival: 主控尸体记录尸变时刻');
+    // ㊷ 2026-08-11 v2.98 测试玩家发现：重生后角色头顶残留尸变倒计时 + 脚下双尸体。
+    // ① softRespawn 清 _downedMembers/_carryDowned/_carryMateId（防倒地状态残留到新角色）；
+    // ② updateDowned 超时分支只给【非 isPlayer】倒地主控补尸体——isPlayer 主角遗物已由
+    //    deathDropLegacy 生成独立 corpse: 尸体，再给 player 记录生成 _corpse 会双尸体。
+    assert(surv.includes('sv._downedMembers = [];   // 2026-08-11 v2.98 重生清倒地成员列表'),
+        'survival: softRespawn 清 _downedMembers（防残留）');
+    assert(surv.includes('sv._carryMateId = null;'), 'survival: softRespawn 清 _carryMateId');
+    assert(surv.includes('if (!pc.isPlayer && !pc._corpse) {'),
+        'survival: 超时补尸体仅非 isPlayer（防双尸体）');
+    const wzombieSrc2 = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wzombie.js'), 'utf8');
+    const windoorSrc2 = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/windoor.js'), 'utf8');
+    assert(wzombieSrc2.includes('if (z._reviveFromCorpse) {'), 'wzombie: 室外尸变丧尸被击败掉尸变尸体');
+    assert(windoorSrc2.includes('if (z._reviveFromCorpse) {'), 'windoor: 室内尸变丧尸被击败掉尸变尸体');
+    const renderSrc2 = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/render.js'), 'utf8');
+    assert(renderSrc2.includes('⚠ 尸变'), 'render: 尸体头顶尸变倒计时');
+    assert(renderSrc2.includes('drawCorpse(ctx, cxs, cys, n, sv)'), 'render: 室外传 sv');
+    assert(renderSrc2.includes('drawCorpse(ctx, ox + n.x, oy + n.y, n, sv)'), 'render: 室内传 sv');
+    // ㊲ 2026-08-11 v2.97 修复"濒死队友被尸体搜索抢占"（用户反馈：濒死队友还不等于尸体）：
+    // 濒死（downed=true, alive=true）≠ 尸体（alive=false + _corpse）——尸体搜索判定排除 downed，
+    // 濒死队友只弹救助界面，不弹搜索界面（也不会被旁边旧尸体/误标 _corpse 抢占）。
+    // 2026-08-11 v2.98 尸变前反复打开搜索界面：普通尸体搜完（_corpseSearched）仍可重开搜索；
+    // 2026-08-11 v2.98 定稿（用户确认）：普通尸体掏空保留（像容器可反复打开），尸变尸体（_revivedCorpse）搜索完消失。
+    assert(surv.includes('if (!n || !n._corpse || n.downed) continue;'),
+        'survival: corpseBest 排除 downed（濒死不弹搜索）+ 所有尸体可反复提示搜索');
+    assert(surv.includes('const c = sv.npcs && sv.npcs.find(n => n && n._corpse && !n.downed && n.id === tg.corpse);'),
+        'survival: doInteract 尸体搜索排除 downed（防御双保险）+ 所有尸体可重开');
+    // onClose 掏空处理（2026-08-11 v2.98 用户定稿）：普通尸体掏空保留（可反复打开）；
+    // 尸变尸体（_revivedCorpse）搜索完彻底消失（splice）。
+    assert(surv.includes('if (c._revivedCorpse)'),
+        'survival: 尸变尸体/普通尸体区分（尸变尸体搜完消失）');
+    assert(surv.includes('sv.npcs.splice(idx, 1)'),
+        'survival: 尸变尸体掏空从世界移除（splice）');
+    assert(surv.includes('c._corpseSearched = true') && surv.includes('// —— 普通尸体：掏空保留（像容器可反复打开），未尸变照样 15 分钟尸变 ——'),
+        'survival: 普通尸体掏空保留（不 splice，可反复打开）');
+    // ㊸ 2026-08-11 v2.98 濒死队友互动提示（用户反馈"濒临死亡的队友不能救援，没有提示"）：
+    // downedMatePrompt 依赖 _downedMembers 中 m.alive && m.downed——补刀未超时保持 downed 有提示；
+    // 防御修复：updateDownedMembersTimeout 移除异常成员时若 party 且无 _corpse → 补成尸体（防凭空消失）。
+    assert(surv.includes('if (!m || !m.alive || !m.downed) continue;'),
+        'survival: 濒死队友救治提示需 alive+downed');
+    assert(surv.includes('// 若成员【活着但非 downed】（异常状态被移除，如某路径误清 downed）且无 _corpse →'),
+        'survival: 异常成员补尸体防御注释');
+    assert(surv.includes('m._corpse = true;') && surv.includes('m._corpseAtReal = sv.now != null ? sv.now : 0;'),
+        'survival: 异常成员转尸体（可搜索，防凭空消失）');
+    // ④ 救助界面一致：队友界面补"背起/放下"按钮 + 全宽关闭 + 统一提示（与主控界面一致）
+    assert(surv.includes("(sv._carryMateId === m.id"), 'survival: 队友救助界面背起/放下按钮');
+    assert(surv.includes("data-act=\"carrymate\""), 'survival: 队友救助背起事件');
+    assert(surv.includes("sv._carryMateId = m.id;"), 'survival: 队友背起设置 _carryMateId');
+    assert(surv.includes('提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间'),
+        'survival: 队友界面提示文案统一');
+    assert(surv.includes('const cm = Array.isArray(sv._downedMembers) ? sv._downedMembers.find(x => x && x.id === sv._carryMateId) : null;'),
+        'survival: updateDownedMembersTimeout 队友背起坐标跟随');
+    assert(surv.includes('if (sv._carryMateId === m.id) sv._carryMateId = null;'),
+        'survival: 救活被背起队友 → 清 _carryMateId');
 }
 
 // 2026-08-10 静态回归：①友好/入队队友不再对敌对 NPC 子弹无敌（b.hostile 命中 friendly）；

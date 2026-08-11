@@ -38,7 +38,8 @@ export const Z_SPEED_MUL = 1.9;   // 僵尸速度倍率,2026-08-10 调慢 ~14%(�
 // 尸化玩家精英僵尸（hardcore 死亡后留世；§13.1 数值收口）
 export const PZ_BASE_HP = 70;        // 基础生命（×天数/难度/环 ×精英系数）
 export const PZ_ELITE_MUL = 1.8;     // 精英系数（血量）
-export const PZ_SPEED = 0.19;        // 速度（× Z_SPEED_MUL）,2026-08-08 调慢 ~14%
+export const PZ_SPEED = 24;          // 速度（× Z_SPEED_MUL）,2026-08-12 修复:原 0.19 量级错误(×1.9=0.36px/s≈静止)
+//                                    普通僵尸 speed=20(×1.9=38px/s);精英设 24(×1.9=45.6px/s)略快于普通、慢于玩家(61.6px/s)
 export const PZ_DAMAGE = 22;         // 接触伤害基准
 export const PZ_INF_LOW = 0.15;      // 尸化初期腐烂度下限
 export const PZ_INF_RANGE = 0.2;     // 腐烂度随机幅度（运行时表现类，不进存档）
@@ -76,6 +77,11 @@ export const DOWNED_LIMIT_SECONDS = 1200;  // 濒死可救治总时长（现实�
 export const DOWNED_HIT_PENALTY_SEC = 10;  // 濒死角色每受到 1 点攻击伤害，救援时间减少 10 秒
 export const DOWNED_SHARE_FOOD_AT = 60;    // 赠予系统：自己饱食高于此值才分享食物（保证自己生存）
 export const DOWNED_SHARE_WATER_AT = 60;   // 赠予系统：自己水分高于此值才分享水
+// 2026-08-11 v2.98 尸体尸变系统（用户定稿）：
+export const CORPSE_REVIVE_SECONDS = 180;      // 尸体未搜完 → 尸变倒计时（现实 3 分钟，2026-08-11 v2.98 用户缩短：15 分钟→3 分钟）
+export const CORPSE_REVIVE_TAG = '（尸变）';    // 尸变丧尸 / 尸变尸体名字后缀
+export const DOWNED_RESPAWN_PZ_SECONDS = 180;   // 软核重生点刷"玩家名"僵尸延迟（现实 3 分钟，与尸变时间同步缩短）
+export const INFECTION_AUTO_GROW_PER_SEC = 0.8; // 感染自动恶化速率（感染值>0 且无抑制药时，每秒自动增加；无药约 2 分钟从 0 到满）
 export const DOWNED_SHARE_AMMO_KEEP = 20;  // 赠予系统：弹药保留底线（低于此值不分享；高于则匀一半给缺弹药的队友）
 export const DOWNED_SHARE_MED_KEEP = 2;    // 赠予系统：药品保留底线（自己 ≥ 此值且队友受伤/生病才给）
 export const Z_DAY_SCALE = 0.05;
@@ -354,11 +360,14 @@ export const Z_DOOR_FRONT_ANGLE = Math.PI / 3; // 正面判定夹角（±60°）
 export const Z_TEXT_UNLOCK_DAY = 7;
 export const Z_TEXT_SPAWN_CHANCE = 0.06;
 export const TEXT_ZOMBIE_TYPES = {
-    remnant: { name: '残名尸', char: '残', hp: 280, speed: 0.22, damage: 18, color: '#7a6b8a', ability: 'scatter', desc: '保留部分旧名，命中时震散玩家背包中的字块' },
-    deleter: { name: '删字尸', char: '删', hp: 320, speed: 0.18, damage: 22, color: '#5a3030', ability: 'delete', desc: '命中时删除玩家正在追踪的一个字块' },
-    swapper: { name: '换字尸', char: '换', hp: 260, speed: 0.25, damage: 15, color: '#3a5040', ability: 'corrupt', desc: '命中时将玩家一个字块污染为不稳状态' },
-    giant: { name: '巨字尸', char: '巨', hp: 1500, speed: 0.08, damage: 45, color: '#8A3A5A', ability: 'stomp', desc: '尸潮首领：高血高伤，击杀必掉传送宝石与稀有字块' },
+    remnant: { name: '残名尸', char: '残', hp: 280, speed: 19, damage: 18, color: '#7a6b8a', ability: 'scatter', desc: '保留部分旧名，命中时震散玩家背包中的字块' },
+    deleter: { name: '删字尸', char: '删', hp: 320, speed: 18, damage: 22, color: '#5a3030', ability: 'delete', desc: '命中时删除玩家正在追踪的一个字块' },
+    swapper: { name: '换字尸', char: '换', hp: 260, speed: 22, damage: 15, color: '#3a5040', ability: 'corrupt', desc: '命中时将玩家一个字块污染为不稳状态' },
+    giant: { name: '巨字尸', char: '巨', hp: 1500, speed: 16, damage: 45, color: '#8A3A5A', ability: 'stomp', desc: '尸潮首领：高血高伤，击杀必掉传送宝石与稀有字块' },
 };
+// 2026-08-12 修复"文字僵尸速度量级错误"：原 speed 0.22/0.18/0.25/0.08 与普通僵尸 20 不同量级，
+// × Z_SPEED_MUL(1.9) 后仅 0.15~0.47 px/s ≈ 静止不动。改为与普通僵尸同量级（19/18/22/16，
+// ×1.9 = 36/34/42/30 px/s，略慢于普通 38 或相当，特殊能力型稍慢合理），修复后能正常追玩家。
 export const Z_TEXT_ABILITY_CHANCE = 0.35;
 export const Z_GIANT_UNLOCK_DAY = 3;        // 巨字尸（尸潮首领）最早出现天数
 export const Z_GIANT_HORDE_CHANCE = 0.25;   // 每次尸潮刷首领概率

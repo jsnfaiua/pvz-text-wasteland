@@ -13,7 +13,7 @@ import { drawMsg } from './wmsg.js';
 import { TS } from './wconst.js';
 import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H } from './windoor.js';
 import { districtAt, districtProfile, infectionAt } from './wdistrict.js';
-import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED, wxSpeedMul, fogRadius, windDirAt, windDirAtHour, SEASON_NAMES, seasonAt, DOWNED_LIMIT_SECONDS } from './wbalance.js';
+import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED, wxSpeedMul, fogRadius, windDirAt, windDirAtHour, SEASON_NAMES, seasonAt, DOWNED_LIMIT_SECONDS, CORPSE_REVIVE_SECONDS } from './wbalance.js';
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
 export { TS };
 
@@ -1442,6 +1442,9 @@ function drawWakeOverlay(ctx, sv, W, H) {
         ctx.restore();
     }
     // 4) 苏醒文字：睁眼前半段浮现、持续、结尾淡出
+    // 2026-08-11 v2.99 重生（_wake.reborn）与开场表现完全一致：画内随睁眼浮现/持续/淡出，
+    // 仅文字内容不同（开场"你在荒野中醒来…" / 重生"你 醒 了 过 来"）。
+    const wakeTxt = wk.reborn ? '你 醒 了 过 来' : '你在荒野中醒来…';
     const ta = prog < 0.4 ? prog / 0.4 : (prog < 0.82 ? 1 : clamp((1 - prog) / 0.18, 0, 1));
     if (ta > 0.02) {
         const wob = Math.round(Math.sin(sv.now * 1.5) * 1);
@@ -1453,7 +1456,7 @@ function drawWakeOverlay(ctx, sv, W, H) {
         ctx.fillStyle = '#B8C6D6';
         ctx.shadowColor = '#000';
         ctx.shadowBlur = 8;
-        ctx.fillText('你在荒野中醒来…', W / 2 + wob, H * 0.42);
+        ctx.fillText(wakeTxt, W / 2 + wob, H * 0.42);
         ctx.restore();
     }
 }
@@ -3905,7 +3908,8 @@ function drawBullets(ctx, sv, camX, camY) {
 // ---------- 玩家（闪现残影 / 跳跃滞空 / 格挡盾 / 完美防反光环 / 无敌帧闪烁） ----------
 // ---------- 尸体（2026-08-10 成员死亡后形象留在原地，可搜索遗物） ----------
 // 躺倒尸体：暗色上衣横躺（水平条 + 头部圆点），带"尸体"名牌；无碰撞、不参与 AI。
-function drawCorpse(ctx, sx, sy, n) {
+// 2026-08-11 v2.98 加 sv 参数：未尸变尸体头顶显示尸变倒计时（现实 15 分钟，⚠ 尸变 m:ss）。
+function drawCorpse(ctx, sx, sy, n, sv) {
     const shirt = (n.look && n.look.shirt) || '#6b7480';
     const skin = (n.look && n.look.skin) || '#d8c9a8';
     // 阴影
@@ -3921,13 +3925,32 @@ function drawCorpse(ctx, sx, sy, n) {
     ctx.beginPath();
     ctx.arc(sx + TS * 0.48, sy - 2, 4, 0, Math.PI * 2);
     ctx.fill();
-    // 名条（尸体姓名）
+    // 名条（尸体姓名：尸变尸体标"XX（尸变）"，普通尸体标"XX 的尸体"）
     ctx.save();
     ctx.font = 'bold 10px "Microsoft YaHei", monospace';
     ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(210,225,235,0.55)';
-    ctx.fillText((n.name || '幸存者') + ' 的尸体', sx, sy - 14);
+    ctx.fillStyle = n._revivedCorpse ? 'rgba(255,85,85,0.85)' : 'rgba(210,225,235,0.55)';
+    ctx.fillText(n._revivedCorpse ? (n.name || '幸存者') : ((n.name || '幸存者') + ' 的尸体'), sx, sy - 14);
     ctx.restore();
+    // 2026-08-11 v2.98 尸变倒计时：仅未尸变的普通尸体（_revivedCorpse 尸变尸体不二次尸变，不显示）
+    if (!n._revivedCorpse && !n._revived && sv && n._corpseAtReal != null) {
+        const total = CORPSE_REVIVE_SECONDS || 900;
+        const elapsed = Math.max(0, (sv.now || 0) - n._corpseAtReal);
+        const remain = Math.max(0, total - elapsed);
+        const ratio = Math.max(0, Math.min(1, remain / total));
+        const bw = 44, bh = 4;
+        const bx = sx - bw / 2, by = sy - TS / 2 - 30;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+        const col = ratio > 0.5 ? '#7DFF7D' : (ratio > 0.25 ? '#FFB347' : '#FF5544');
+        ctx.fillStyle = col;
+        ctx.fillRect(bx, by, Math.max(1, Math.round(bw * ratio)), bh);
+        const m = Math.floor(remain / 60), s = Math.floor(remain % 60);
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.font = 'bold 9px "Microsoft YaHei", monospace';
+        ctx.fillText(`⚠ 尸变 ${m}:${String(s).padStart(2, '0')}`, sx, by - 3);
+        ctx.textAlign = 'center';
+    }
 }
 
 // 2026-08-11 v2.97 濒死救援时间血条：角色头顶显示剩余可救治时间（现实时间 20 分钟），
@@ -3959,7 +3982,10 @@ function downedRemainSec(sv, dwn) {
     const start = dwn.downedAtReal != null ? dwn.downedAtReal : (dwn._downedAtReal != null ? dwn._downedAtReal : (sv.now || 0));
     const penalty = dwn._penaltySec || 0;
     const spent = Math.max(0, (sv.now || 0) - start) + penalty;
-    return Math.max(0, DOWNED_LIMIT_SECONDS - spent);
+    // 2026-08-11 v2.98 救援时间随濒死次数递减：用 dwn.limitSec（与救援界面同源），
+    // 旧档/缺失时回退默认 DOWNED_LIMIT_SECONDS——保证头顶倒计时与救援界面实时一致。
+    const limit = dwn.limitSec || DOWNED_LIMIT_SECONDS;
+    return Math.max(0, limit - spent);
 }
 
 // ---------- NPC（像素小人 + 名条 + 阵营色 + 血条） ----------
@@ -3972,7 +3998,7 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
         if (n._corpse) {
             const cxs = n.x - camX, cys = n.y - camY;
             if (cxs < -80 || cxs > W + 80 || cys < -80 || cys > H + 80) continue;
-            drawCorpse(ctx, cxs, cys, n);
+            drawCorpse(ctx, cxs, cys, n, sv);   // v2.98 传 sv：显示尸变倒计时
             continue;
         }
         if (!n.alive) continue;
@@ -5201,8 +5227,12 @@ function drawStatusHUD(ctx, sv, W, districtNameOverride) {
 
 // ---------- 顶部 / 底部 HUD ----------
 // 2026-08-10 底部操作提示循环横幅：文本从右向左滚动，循环往复。
-// 每帧按 performance.now 推进偏移，offset 取模 (textWidth + W + gap) → 无缝循环。
+// 2026-08-11 v2.98 用户需求：改为"单段从右滚到左**完全消失** → 停顿一会儿 → 再从右边重新出现"的循环
+// （不再是 3 段无缝衔接）；且角色死亡进入游戏结束界面时**停止滚动**（横幅定格，世界静止）。
 let _bannerCache = null;   // { text, width, color, font } → 复用 measureText 结果
+let _bannerBase = 0;       // 当前动画周期的起点（performance.now）
+let _bannerDeadAt = 0;     // 死亡定格：记住死亡时刻，动画时间冻结
+const BANNER_PAUSE = 1.5;  // 文本完全消失后停顿秒数（再从右边出现）
 function drawScrollBanner(ctx, sv, W, H, text, color) {
     ctx.save();
     ctx.textBaseline = 'middle';
@@ -5211,27 +5241,34 @@ function drawScrollBanner(ctx, sv, W, H, text, color) {
     if (!_bannerCache || _bannerCache.key !== key) {
         ctx.font = font;
         _bannerCache = { key, width: ctx.measureText(text).width };
+        _bannerBase = performance.now();   // 文本变化时重置周期
     }
     const speed = 40;                    // 滚动速度 px/s（恒定，从右向左）
-    const gap = 120;                     // 相邻两段文本之间的间隔
     const w = _bannerCache.width;
-    const total = w + gap;               // 一段的完整周期 = 文本宽 + 间隔
-    const t = (performance.now() / 1000) * speed;
-    // 从右向左恒定速度滚动：phase 在 [0, total) 内线性增长 → off 从 W 单调减到 W-total，
-    // 取模回绕 → 循环往复。速度恒定（off 对时间的导数恒为 -speed）。
+    // 2026-08-11 v2.98 死亡定格：sv.dead 时横幅停住（不滚动、不随世界继续动）。
+    // 用 _bannerDeadT 记住死亡时刻，之后动画时间冻结。
+    if (sv.dead) {
+        if (!_bannerDeadAt) _bannerDeadAt = performance.now();
+        _bannerBase += performance.now() - _bannerDeadAt;   // 冻结进度
+        _bannerDeadAt = performance.now();
+    } else {
+        _bannerDeadAt = 0;
+    }
+    // 周期 = 文本从右滚到完全消失的移动距离(W + w) + 停顿时长，用"像素距离"做单位：
+    // 滚动距离 = W + w（文本左缘从 W 到 -w，即完全滚出屏幕）；之后停顿 BANNER_PAUSE*speed 像素距离。
+    const scrollDist = W + w;
+    const total = scrollDist + BANNER_PAUSE * speed;
+    const t = (performance.now() - _bannerBase) / 1000 * speed;
     const phase = t % total;
-    const off = W - phase;               // 当前段左缘 x
+    const off = W - phase;               // 文本左缘 x（从 W 滚到 -w → 完全消失）
     // 绘制黑色半透明底条
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.fillRect(0, H - 26, W, 26);
     ctx.font = font;
     ctx.fillStyle = color || '#888888';
     ctx.textAlign = 'left';
-    // 画三段（当前段 + 前后邻段），其中与屏幕 [−w, W] 相交的都会显示：
-    // 任意时刻至少一段覆盖屏幕 → 从右飘入、向左移出、再从右缓缓出现，永不中断。
-    ctx.fillText(text, off - total, H - 13);
+    // 只画当前段：off 在 [W, -w] 区间移动；停顿段（phase > scrollDist）时屏幕无文字（完全消失后再现）。
     ctx.fillText(text, off, H - 13);
-    ctx.fillText(text, off + total, H - 13);
     ctx.restore();
 }
 
@@ -5253,7 +5290,7 @@ function drawHUD(ctx, sv, W, H) {
     // 底部操作提示（2026-08-10 循环滚动横幅：从右飘到左，往复循环；不含开发者模式）
     drawScrollBanner(ctx, sv, W, H, sv.build
         ? '建造模式：1-5 选择 · 左键放置 · F 拆除 · G/ESC 退出'
-        : 'WASD 移动 · Shift 奔跑 · Q 闪现 · E 格挡 · 空格 跳跃 · 左键/J 攻击 · F 交互 · V 背起/放下 · G 建造 · B 背包 · C 角色属性 · H 队伍管理 · F1 新手教程 · P 暂停 · F11 全屏 · ALT+ESC 退出全屏');
+        : 'WASD 移动 · Shift 奔跑 · Q 闪现 · E 格挡 · 空格 跳跃 · 左键/J 攻击 · R 换弹 · X 切武器 · F 交互/搜索/救治 · V 背起/放下 · G 建造 · B 背包 · C 角色属性 · H 队伍管理 · T 集合队友/倒地切主控 · F1 新手教程 · P 暂停 · F11 全屏 · ALT+ESC 退出全屏');
 
     // 交互提示
     ctx.font = 'bold 16px "Microsoft YaHei", monospace';
@@ -5532,7 +5569,7 @@ function drawInterior(ctx, sv, W, H) {
         for (const n of sv.npcs) {
             // 2026-08-10 室内尸体渲染（成员死亡后形象留在房间，可搜索遗物）
             if (n._corpse && n.inInterior) {
-                drawCorpse(ctx, ox + n.x, oy + n.y, n);
+                drawCorpse(ctx, ox + n.x, oy + n.y, n, sv);   // v2.98 传 sv：显示尸变倒计时
                 continue;
             }
             if (!n.alive || !n.inInterior) continue;
@@ -5636,13 +5673,24 @@ function drawInterior(ctx, sv, W, H) {
     // （含倒地主角，标注濒死状态），与室外一致。
     drawTeamPanel(ctx, sv, W, H);
     // 室内专属：室 内 · 楼层 · 僵尸数量
+    // 2026-08-11 v2.98 用户反馈"室内 UI 文字重叠"：drawStatusHUD 已经在 x=232 处绘制了天数/区域
+    // 文字 + 后面延伸的 [季节] · 天气（可能跨越 x>400），原来固定 x=400 与天气文字重叠。
+    // 修复：动态计算天气文字末尾 x 作为室内文字起点；若超出右边界则右对齐到 W-12 后再向前排。
     const curFloor = it.floor || 1;
     const floorTag = curFloor > 1 ? `${curFloor}层` : (curFloor < 0 ? `地下${Math.abs(curFloor)}层` : '1层');
     const left = it.zombies.length;
+    const wxFullBase = `第 ${sv.day} 天  ${String(Math.floor((sv.t / sv.dayLen) * 24)).padStart(2, '0')}:${String(Math.floor((((sv.t / sv.dayLen) * 24) % 1) * 60)).padStart(2, '0')}  [${itDName}]`;
+    const wxSeason = `[${SEASON_NAMES[seasonAt(sv.day)] || '夏'}]`;
+    const wxWeather = sv._weather && wxInfo(sv._weather).particles !== 0 ? ` · ${wxIntensity(sv._weather, wxLevelCur(sv)).name}` : ' · 晴朗';
     ctx.textAlign = 'left';
     ctx.font = '14px "Microsoft YaHei", monospace';
+    // 天气文字起点 = wxBase 宽 + 6 + [季节]宽 + 6 + 天气宽 + 6（即每段后留 6px 间隔）
+    const wxEndX = 232 + ctx.measureText(wxFullBase + wxSeason + wxWeather).width + 18;
+    // 室内文字起点：取天气末尾后 6px；但要避免与右对齐的"背包/金币"（W-12 处）重叠——
+    // 背包占位约 110 像素，室内文字起点上限 = W - 12 - 120。
+    const interiorStartX = Math.min(wxEndX + 6, W - 132);
     ctx.fillStyle = '#D29A5B';
-    ctx.fillText(`室 内 · ${floorTag} · ${left > 0 ? `僵尸 ×${left}` : '已清剿'}`, 400, 17);
+    ctx.fillText(`室 内 · ${floorTag} · ${left > 0 ? `僵尸 ×${left}` : '已清剿'}`, interiorStartX, 17);
     // 2026-08-11 室内队友边缘指引：同室外（sv.camX=-ox 兼容，队友屏幕外显示指向箭头+名字+距离）
     const guideDrawn = [];
     drawMateGuide(ctx, sv, W, H, guideDrawn);

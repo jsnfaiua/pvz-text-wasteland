@@ -90,11 +90,15 @@ function buildUI(sv) {
         '<div style="position:relative;width:88%;height:86%;display:flex;flex-direction:column;">' +
         '  <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px 6px;">' +
         '    <span style="color:#cfd8dd;font-size:15px;letter-spacing:2px;">◈ 世界地图 <span id="wsl-map-region" style="color:#ffd24a;"></span></span>' +
-        '    <span style="color:#8a9aa2;font-size:12px;">滚轮缩放 · M/ESC 关闭</span>' +
+        '    <span style="color:#8a9aa2;font-size:12px;">滚轮缩放 · M 关闭</span>' +
+        // 2026-08-11 v2.99 用户要求：所有弹窗都有叉号关闭按钮
+        '    <button id="wsl-map-close" style="background:none;border:none;color:#8a9aa2;font-size:20px;cursor:pointer;line-height:1;padding:2px 6px;" title="关闭 (M)">✕</button>' +
         '  </div>' +
         '  <canvas id="wsl-map-cv" style="flex:1;width:100%;height:100%;border:1px solid #3a4a55;"></canvas>' +
         '</div>';
     document.getElementById('game-container').appendChild(ui);
+    const mc = ui.querySelector('#wsl-map-close');
+    if (mc) mc.addEventListener('click', () => close());
     mapCv = ui.querySelector('#wsl-map-cv');
     mapCv.addEventListener('wheel', (e) => {
         e.preventDefault();

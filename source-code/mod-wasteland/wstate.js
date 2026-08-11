@@ -84,6 +84,12 @@ export function serializeSV(sv, deps) {
             isPlayerZombie: !!z.isPlayerZombie,
             playerName: z.playerName || null, skin: z.skin || null,
             inv: z.inv || null, hotbar: z.hotbar || null, wpnKey: z.wpnKey || null,
+            // 2026-08-11 v2.98 尸变丧尸标记（读档保持：被击败时掉"尸变尸体"，物品守恒）
+            _reviveFromCorpse: !!z._reviveFromCorpse,
+            _reviveCorpseName: z._reviveCorpseName || null,
+            // v2.99 尸变僵尸 home 坐标（读档保持：僵尸 wander 范围受 home 限制，留在死亡地点）
+            _deathHomeX: z._deathHomeX != null ? z._deathHomeX : null,
+            _deathHomeY: z._deathHomeY != null ? z._deathHomeY : null,
         })),
     };
 }
@@ -199,6 +205,8 @@ export function applySnapshot(run, saved, deps) {
             med: saved._downed.med || 0, herb: saved._downed.herb || 0,
             downedAtReal: saved._downed.downedAtReal != null ? saved._downed.downedAtReal : (run.now != null ? run.now : 0),
             _penaltySec: saved._downed._penaltySec || 0,
+            // 2026-08-12 v2.101 每人独立濒死次数：本次救援限时随档保持（旧档无 limitSec → 默认 DOWNED_LIMIT_SECONDS）
+            limitSec: saved._downed.limitSec != null ? saved._downed.limitSec : null,
         } : null;
         if (Array.isArray(saved.hotbar)) {
             run.hotbar = saved.hotbar.slice(0, HOTBAR_SIZE);
@@ -322,6 +330,12 @@ export function serializeWorld(sv, deps) {
             isPlayerZombie: !!z.isPlayerZombie,
             playerName: z.playerName || null, skin: z.skin || null,
             inv: z.inv || null, hotbar: z.hotbar || null, wpnKey: z.wpnKey || null,
+            // 2026-08-11 v2.98 尸变丧尸标记（读档保持：被击败时掉"尸变尸体"，物品守恒）
+            _reviveFromCorpse: !!z._reviveFromCorpse,
+            _reviveCorpseName: z._reviveCorpseName || null,
+            // v2.99 尸变僵尸 home 坐标（读档保持：僵尸 wander 范围受 home 限制，留在死亡地点）
+            _deathHomeX: z._deathHomeX != null ? z._deathHomeX : null,
+            _deathHomeY: z._deathHomeY != null ? z._deathHomeY : null,
         })),
         npcs: deps.WNPC.serializeNpcs(sv),
         px: sv.px, py: sv.py, faceX: sv.faceX, faceY: sv.faceY,
@@ -408,6 +422,9 @@ export function applyWorld(run, data, deps) {
                     role: 'friendly', look: run.character || null,
                     x: data.legacyDrop.x, y: data.legacyDrop.y, hp: 0, maxHp: 100,
                     alive: false, _corpse: true, _corpseContents: data.legacyDrop.contents, _corpseSearched: false,
+                    // 2026-08-11 v2.98 旧档遗留尸体：_corpseAtReal 缺失 → 读档后尸变检测兜底为当前时刻 → 立即尸变。
+                    // 旧档无时刻，给一个"很久以前"的时间戳让它进入正常倒计时（此时实际已超时 → 读档后尸变，合理）
+                    _corpseAtReal: 0,
                     inInterior: false, interiorKey: null, interiorFloor: null,
                     atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
                 });

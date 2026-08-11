@@ -22,6 +22,7 @@ globalThis.window = {
             decodeAudioData: (b, ok) => ok && ok({ duration: 1 }),
             createOscillator: () => ({ connect() {}, start() {}, stop() {}, frequency: { value: 0 }, type: '' }),
             createMediaElementSource: () => ({ connect() {} }),
+            addEventListener() {}, removeEventListener() {}, state: 'running', resume() {},
         };
     },
     webkitAudioContext: undefined,

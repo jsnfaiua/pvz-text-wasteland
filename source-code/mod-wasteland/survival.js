@@ -506,7 +506,7 @@ function loop(now) {
     // 背包打开也不暂停世界（边整理边警戒）；储物柜/暂停/拼字台仍暂停世界。搜索进度由下方单独推进。
     if (!Panel.isChestOpen() && !pauseOpen && !WW.isOpen() && !sv.dead) update(dt);
     else if (!sv.dead) {
-        sv.now += dt;
+        sv.now += dt * (sv._devTimeScale || 1);
         if (WW.isOpen()) WW.update(dt);
     }
     if (WSearch.isOpen() && !sv.dead) WSearch.updateSearch(sv, dt);
@@ -525,7 +525,7 @@ function startBgKeepAlive() {
     if (sv._bulletT > 0) { sv._bulletT -= dt; dt *= WA.BULLET_TIME_SCALE; }   // 完美闪避子弹时间(0.2x 慢动作)
         sv.last = now;
         if (!Panel.isChestOpen() && !pauseOpen && !sv.dead) update(dt);
-        else sv.now += dt;
+        else sv.now += dt * (sv._devTimeScale || 1);
     }, 1000 / 20);
 }
 
@@ -659,7 +659,7 @@ function syncControllerInterior() {
 }
 
 function update(dt) {
-    sv.now += dt;
+    sv.now += dt * (sv._devTimeScale || 1);
     sv.playT += dt;
     // 2026-08-10 世界地图：探索记录（玩家所在区块 + 8 邻域；host 权威，guest 经 updateGuest 上报）
     WMAP.markExplore(sv);
@@ -707,6 +707,16 @@ function update(dt) {
         const infEff = playerInfectionEffects(sv.infection);
         const effMaxHp = Math.round(B.MAX_HP * infEff.maxHpMul);
         if (sv.hp > effMaxHp) sv.hp = effMaxHp;
+        // 2026-08-11 v2.98 用户需求：感染值>0（被僵尸咬沾染）且未用抑制药（抗生素/草药）时，
+        // 感染值**缓慢自动增加**（无药约 2 分钟从 0 到满）；满 100 → 直接致死 → 走尸体/尸变逻辑。
+        sv.infection = addPlayerInfection(sv.infection, B.INFECTION_AUTO_GROW_PER_SEC * dt);
+        if (sv.infection >= PLAYER_INFECTION.max) {
+            // 感染满 → 致死（hp=0 让帧尾 onDeath 走完整死亡流程：掉遗物/尸体/软核重生或全灭）
+            log('感染彻底侵蚀了你的身体，你死了……', '#FF5544');
+            sv._deathReason = '感染恶化致死';
+            sv.hp = 0;
+            sv.dead = false;
+        }
         sv._infLogT = (sv._infLogT || 0) - dt;
     }
 
@@ -784,6 +794,27 @@ function update(dt) {
         sv.exhausted = false;
         sv._starved = false;
         sv._dehydrated = false;
+        // 2026-08-11 v2.97 修复"主控头上有濒死标志但其实健康，被攻击致死后又跳过切队友视角"：
+        // _devGod 此前只拉满 hp/stamina，**不清 `sv._downed` / 当前主控记录的 `downed` 标志**——
+        // 渲染层（drawPlayer 的 drawDownedTimeBar）在健康主控头顶残留救援倒计时（用户截图）；
+        // 且残留 downed 让后续 onDeath 的 mates 过滤/攻击路径错乱（恶意 NPC 对 downed 走扣时，
+        // 主控被"打死"记录但 sv.hp 仍满 → 状态悬空）。全属性满 = 立即恢复健康，同步清倒地状态。
+        const curPc = (sv.npcs || []).find(n => n.id === sv.controllerId) || (sv.npcs || []).find(n => n.isPlayer);
+        if (curPc) {
+            curPc.downed = false;
+            curPc.alive = true;
+            curPc.hp = Math.max(curPc.hp || 0, sv.maxHp || B.MAX_HP);
+            curPc._penaltySec = 0;
+        }
+        if (sv._downed) {
+            sv._downed = null;
+            sv._waitDowned = false;
+            sv._carryDowned = false;
+        }
+        if (Array.isArray(sv._downedMembers)) {
+            const cid = curPc && curPc.id;
+            sv._downedMembers = sv._downedMembers.filter(x => x && x !== curPc && x.id !== cid);
+        }
     }
     }
 
@@ -825,6 +856,8 @@ function update(dt) {
 
     // NPC 生态（大世界）
     WNPC.updateNpcs(sv, dt, canStand);
+    // 2026-08-11 v2.98 尸体尸变检测（大世界）；v2.99 默认室外模式：只尸变室外尸体（室内尸体由室内循环负责）
+    updateCorpseRevive(sv, dt);
     // 软核倒地救治状态机（2026-08-09）：主角倒地后队友背回床旁、玩家送药救活、超时尸变
     // 2026-08-10 软核成员倒地：无主控倒地但有倒地成员（_downedMembers）时同样驱动状态机（超时死亡）
     if (sv._downed || (sv._downedMembers && sv._downedMembers.length)) updateDowned(sv, dt, canStand);
@@ -1294,6 +1327,8 @@ export function removeZombieById(id) {
         const contents = WZ.rollLootContents(quality, z.type);
         if (contents.length) sv.drops.push({ x: z.x, y: z.y, id: 'loot:' + quality, n: 1, contents });
     }
+    // 2026-08-11 v2.98 尸变丧尸被击杀（联机）→ 掉尸变尸体（物品守恒）
+    if (z._reviveFromCorpse) reviveZombieToCorpse(sv, z);
     sv.effects.push({ kind: 'dead', x: z.x, y: z.y, life: 0.6, maxLife: 0.6, label: z.name });
     AudioSystem.playZombieDie();
     sv.zombies.splice(i, 1);
@@ -2197,6 +2232,9 @@ function updateInteriorMode(dt) {
             WNPC.updateNpc(sv, n, dt, interiorCanStand, sv.camp, controller);
         }
     }
+    // 2026-08-11 v2.98 尸体尸变检测（室内：倒地尸体在室内同样 15 分钟尸变）
+    // v2.99 传 'indoor'：只尸变当前房间的室内尸体（防室内坐标被当室外坐标生成、瞬移到主控身边）
+    updateCorpseRevive(sv, dt, 'indoor');
     WG.syncMag(sv);
     WG.updateWeapon(sv, dt);
     WG.updateBullets(sv, dt);
@@ -2424,35 +2462,48 @@ function updatePrompt() {
     // 2026-08-11 优先级修正：濒死队友【救治】优先于【命令】。4 人队伍里跟随队友常贴玩家，
     // 若"命令活队友"排在"救治倒地队友"前，靠近倒地队友时提示会被旁边的活队友抢占成"命令"——
     // 用户反馈"救助界面关闭后再开变成了命令面板"。濒死角色不应出现命令面板。
-    // 最终优先级：地块 > 尸体 > 救治倒地队友 > 队员（命令）> 救治倒地主控。
+    // 2026-08-11 v2.98 最终优先级修正（用户反馈"濒死队友旁有遗物尸体，交互变成搜索尸体"）：
+    // 濒死角色（downed）优先【救治】，尸体（彻底死亡）其次。此前"尸体 > 救治倒地队友"——
+    // 濒死倒地时 deathDropLegacy 生成独立遗物尸体（corpse:N，非 downed）就在倒地队友旁边，
+    // 尸体搜索抢占救助 → 无救治按钮、按 F 打开搜索。人还活着应先救人。
+    // 最终优先级：地块 > 救治倒地队友 > 救治倒地主控 > 尸体 > 队员（命令）。
     let corpseBest = null;
     if (!best && sv.npcs) {
         let cbd = 1.9 * TS;
         for (const n of sv.npcs) {
-            if (!n || !n._corpse || n._corpseSearched) continue;
+            // 2026-08-11 v2.97 修复"濒死队友被尸体搜索抢占"（用户反馈：濒死队友还不等于尸体）：
+            // 排除 downed 角色（濒死待救 ≠ 尸体）——否则濒死队友若被误标 _corpse（或旁边有旧尸体
+            // 更近），交互优先弹"搜索尸体"而非"救助界面"，必须先搜完才救（玩家反馈）。
+            // 尸体 = 彻底死亡（alive=false + _corpse）；濒死（downed=true, alive=true）只走救助。
+            // 2026-08-11 v2.98 尸变前/后尸体都像容器一样可反复打开搜索界面（用户需求定稿）：
+            // 所有尸体（普通/尸变，已搜完掏空与否）都提示搜索；仅排除倒地（downed）角色（走救助）。
+            if (!n || !n._corpse || n.downed) continue;
             const d = Math.hypot(n.x - sv.px, n.y - sv.py);
             if (d < cbd) { cbd = d; corpseBest = n; }
         }
     }
     if (best) { sv.promptTarget = best; }
-    else if (corpseBest) {
-        sv.promptTarget = { corpse: corpseBest.id };
-        sv.prompt = `搜索 ${corpseBest.name} 的尸体 [F]`;
-        return;
-    } else if (downedMatePrompt) {
+    else if (downedMatePrompt) {
         // 2026-08-10 队友濒死救治：提示链漏用 downedMatePrompt 的 bug 修复——
         // 计算了但从未写入 promptTarget，导致靠近倒地队友按 F 无反应（不弹救助界面）。
         // 2026-08-11 优先级提前到"队员（命令）"之前：濒死队友必须优先显示救治，不显示命令面板。
+        // 2026-08-11 v2.98 再提前到"尸体搜索"之前：濒死队友旁常有自身遗物尸体（deathDropLegacy
+        // 生成 corpse:N），若尸体优先会弹"搜索尸体"抢占"救治"（用户反馈）。人还活着先救人。
         sv.promptTarget = downedMatePrompt.target;
         sv.prompt = downedMatePrompt.prompt;
+        return;
+    } else if (downedPrompt) {
+        // 2026-08-11 v2.98 倒地主控同样优先于尸体：主控濒死时旁有遗物尸体也应显示"救治/背起"。
+        sv.promptTarget = downedPrompt.target;
+        sv.prompt = downedPrompt.prompt;
+        return;
+    } else if (corpseBest) {
+        sv.promptTarget = { corpse: corpseBest.id };
+        sv.prompt = `搜索 ${corpseBest.name} 的尸体 [F]`;
         return;
     } else if (nbest) {
         sv.promptTarget = { npc: nbest.id };
         sv.prompt = nbest.party ? `命令 ${nbest.name} [F]` : `交谈 ${nbest.name} [F]`;
-        return;
-    } else if (downedPrompt) {
-        sv.promptTarget = downedPrompt.target;
-        sv.prompt = downedPrompt.prompt;
         return;
     } else { sv.promptTarget = null; }
     // 领地旗帜：站在旗帜附近 → 收起
@@ -2543,13 +2594,19 @@ function doInteract() {
     //   ② 已搜索完成的物品记 r=1，重开直接显示；未搜索的继续搜索动画；
     //   ③ 全部拿走（掏空）→ 尸体消失（清死亡指引）。
     if (tg.corpse) {
-        const c = sv.npcs && sv.npcs.find(n => n && n._corpse && !n._corpseSearched && n.id === tg.corpse);
+        // 2026-08-11 v2.97 防御：濒死角色（downed）即使被误标 _corpse 也不开搜索界面（只能救助）
+        // 2026-08-11 v2.98 测试玩家发现（用户反馈）：尸变前搜完应能反复打开搜索界面——
+        // 不再要求 `!_corpseSearched`（普通尸体搜完保留、可重开）；尸变尸体 _revivedCorpse 掏空
+        // 后消失（onClose 处理），未掏空时也可重开续搜。
+        const c = sv.npcs && sv.npcs.find(n => n && n._corpse && !n.downed && n.id === tg.corpse);
         if (!c) return;
         const d = Math.hypot(c.x - sv.px, c.y - sv.py);
         if (d >= 1.9 * TS) return;
         if (WSearch.isOpen() || sv.search) return;   // 已有搜索界面打开 → 忽略
         const contents = c._corpseContents || [];
-        if (!contents.length) { c._corpseSearched = true; c._corpseSearchedDay = sv.day; return; }
+        // 普通尸体搜完但未尸变：仍可打开空界面（用户需求：尸变前反复打开搜索界面）；内容为空的
+        // 尸变尸体（掏空会消失，不应再开）由 onClose 的 splice 处理——此处空内容也开界面（显示空）。
+        // if (!contents.length) { c._corpseSearched = true; c._corpseSearchedDay = sv.day; return; }
         // 完整对象映射：给每个完整对象加 _rem（剩余可拿数量），供 takeFromSearch 保留属性入包
         const corpseFull = contents.map(o => ({ ...o, _rem: o.n || 1 }));
         // 与容器一致：done = 已搜索完成（r=1 直接显示），slot = 固定槽位（重开位置不变）
@@ -2562,23 +2619,40 @@ function doInteract() {
             cap: Math.max(6, contents.length),
             corpseFull,
             onClose: (remaining) => {
-                // 与容器一致：未拿走物品写回尸体（保留完整属性 + r 搜索完成标记 + slot），
-                // 已拿走的（taken）从尸体移除。尸体仍保留在原地（可再次打开续搜）。
+                // 2026-08-11 v2.98 尸体搜索定稿（用户确认）：
+                //   · 普通尸体（未尸变，非 _revivedCorpse）：掏空后【不消失】，像容器一样可反复打开搜索界面
+                //     （空界面），未尸变照样 15 分钟尸变——物品守恒：拿走的数量不再出现，没拿走的保留。
+                //   · 尸变尸体（_revivedCorpse，丧尸被击败掉落）：【搜索完彻底消失】（与普通尸体不同）。
+                //     掏空（rest 为空）即从 sv.npcs 移除；未掏空时保留、可续搜。
+                // 未拿走物品写回尸体（保留完整属性 + r 搜索完成标记 + slot），掏空处理下方分两种。
                 const rest = (remaining || []).filter(o => o && o.n > 0).map(o => {
                     const f = corpseFull.find(x => x && x.id === o.id);
                     const base = f ? { ...f } : { id: o.id };
                     delete base._rem;
                     return { ...base, n: o.n, r: !!o.r, slot: o.slot };
                 });
+                if (c._revivedCorpse) {
+                    // —— 尸变尸体：掏空彻底消失，未掏空保留续搜 ——
+                    c._corpseContents = rest;
+                    if (!rest.length) {
+                        // 搜索完 → 从世界移除（尸体消失）
+                        if (Array.isArray(sv.npcs)) {
+                            const idx = sv.npcs.indexOf(c);
+                            if (idx >= 0) sv.npcs.splice(idx, 1);
+                        }
+                        log(`搜索了 ${c.name} 的尸体（物品已全部取走，尸变尸体消失）`, '#9fd6ff');
+                    } else {
+                        log(`搜索了 ${c.name} 的尸体（已取走部分物品，剩余 ${rest.length} 件留在原地可再搜）`, '#9fd6ff');
+                    }
+                    return;
+                }
+                // —— 普通尸体：掏空保留（像容器可反复打开），未尸变照样 15 分钟尸变 ——
                 c._corpseContents = rest;
                 if (!rest.length) {
-                    // 掏空 → 尸体消失（遗物全拿走），清死亡指引
-                    const idx = sv.npcs.indexOf(c);
-                    if (idx >= 0) sv.npcs.splice(idx, 1);
-                    if (sv._legacyDrop && Math.abs(c.x - sv._legacyDrop.x) < TS && Math.abs(c.y - sv._legacyDrop.y) < TS) sv._legacyDrop = null;
-                    log(`搜索了 ${c.name} 的尸体（全部物品已取走，尸体消失）`, '#9fd6ff');
+                    c._corpseSearched = true;
+                    c._corpseSearchedDay = sv.day;
+                    log(`搜索了 ${c.name} 的尸体（物品已取走，尸体保留可再次打开）`, '#9fd6ff');
                 } else {
-                    const doneN = rest.filter(x => x.r).length;
                     log(`搜索了 ${c.name} 的尸体（已取走部分物品，剩余 ${rest.length} 件留在原地可再搜）`, '#9fd6ff');
                 }
             },
@@ -3186,6 +3260,8 @@ function updatePlantBullets() {
                 sv._downed._penaltySec += Math.round(b.damage) * B.DOWNED_HIT_PENALTY_SEC;
             } else if (!sv._devGod) {
                 sv.hp = Math.max(0, sv.hp - b.damage);
+                // 2026-08-11 v2.98 击杀明细：记录最后攻击者（植物弹丸），死亡弹窗显示"被植物弹丸击中致死"
+                sv._lastHitBy = { name: '敌对植物', weapon: '弹丸', via: '植物' };
             }
             sv.hurtT = 0.3;
             sv.effects.push({ kind: 'hit', x: sv.px, y: sv.py, life: 0.15, maxLife: 0.15, label: '刺' });
@@ -3225,48 +3301,51 @@ function deathDropLegacy(sv, deadName) {
     // 不依赖指引是否存在。
     sv._legacyDrop = { x: dropX, y: dropY };
     sv._lastDeathPos = { x: dropX, y: dropY };
-    if (total === 0) {
-        // 无物品：不掉空遗物袋（contents 空、拾取无意义），仅保留死亡地点指引
-        return { kept, vanished };
-    }
-    // 2026-08-09 用户要求"按物品数量确定掉落几个物品，不是按格子数"：
-    // 原"每个物品独立概率 roll"会让玩家感觉"10% 但偶尔全不掉/全掉，不符合 10% 比例"。
-    // 改为【确定性数量】——按价值降序，掉后 N 件（低价值优先掉，保留高价值），N = ceil(total × dropRate)。
-    // ceil 让 10 件物品掉 1 件（10%），1 件物品也至少掉 1 件（空背包或稀有物品仍会掉）。
-    // 同时【关键修复】原代码保留下来的物品只 push 到 kept 但未清空 sv.inv[i]，
-    // 导致 kept 与背包物品同时存在 → 截图显示"物品被复制"（背包里所有物品都进了遗物包裹，但身上没消失）。
-    // 现在保留的也必须 sv.inv[i] = null，避免复制。
-    const dropCount = Math.max(1, Math.ceil(total * dropRate));
-    // 价值降序 → 前 (total - dropCount) 件保留为 kept（高价值），后 dropCount 件 vanished（低价值先掉）
-    const keepN = total - dropCount;
-    for (let i = 0; i < total; i++) {
-        const { i: idx, s } = slots[i];
-        if (i < keepN) {
-            // 2026-08-10 用户要求"物品功能不会丧失"：保留完整物品对象（含 wpn: 武器耐久/附魔等
-            // 自定义属性），不能只存 {id,n}——否则搜索尸体拿回的武器/消耗品丢属性导致失效。
-            kept.push({ ...s, n: s.n });
-        } else {
-            vanished.push(s.id);
+    // 2026-08-11 v2.98 用户需求：**背包空的尸体也要可搜索**——生成空尸体（_corpseContents=[]），
+    // 靠近 F 可打开空搜索界面（显示空），15 分钟照样尸变，尸变丧尸被击败掉尸变尸体，搜索完消失。
+    // 此前 `total===0` 直接 return / `kept` 空不生成 → 空背包死亡后无尸体可搜（违背需求）。
+    // 非空背包：按价值降序确定性掉落，kept = 保留在高价值物品（掉尸体里），vanish = 永久消失。
+    if (total > 0) {
+        // 2026-08-09 用户要求"按物品数量确定掉落几个物品，不是按格子数"：
+        // 原"每个物品独立概率 roll"会让玩家感觉"10% 但偶尔全不掉/全掉，不符合 10% 比例"。
+        // 改为【确定性数量】——按价值降序，掉后 N 件（低价值优先掉，保留高价值），N = ceil(total × dropRate)。
+        // ceil 让 10 件物品掉 1 件（10%），1 件物品也至少掉 1 件（空背包或稀有物品仍会掉）。
+        // 同时【关键修复】原代码保留下来的物品只 push 到 kept 但未清空 sv.inv[i]，
+        // 导致 kept 与背包物品同时存在 → 截图显示"物品被复制"（背包里所有物品都进了遗物包裹，但身上没消失）。
+        // 现在保留的也必须 sv.inv[i] = null，避免复制。
+        const dropCount = Math.max(1, Math.ceil(total * dropRate));
+        // 价值降序 → 前 (total - dropCount) 件保留为 kept（高价值），后 dropCount 件 vanished（低价值先掉）
+        const keepN = total - dropCount;
+        for (let i = 0; i < total; i++) {
+            const { i: idx, s } = slots[i];
+            if (i < keepN) {
+                // 2026-08-10 用户要求"物品功能不会丧失"：保留完整物品对象（含 wpn: 武器耐久/附魔等
+                // 自定义属性），不能只存 {id,n}——否则搜索尸体拿回的武器/消耗品丢属性导致失效。
+                kept.push({ ...s, n: s.n });
+            } else {
+                vanished.push(s.id);
+            }
+            sv.inv[idx] = null;   // 关键修复：无论保留还是消失，背包槽位都清空（消除"复制" bug）
         }
-        sv.inv[idx] = null;   // 关键修复：无论保留还是消失，背包槽位都清空（消除"复制" bug）
     }
     // 2026-08-10 遗物以【主角尸体】形式留在死亡点（用户要求：遗物包裹 = 尸体，靠近 F 搜索）：
     // 不再生成 loot:legacy 掉落袋，而是复用成员尸体机制（_corpse + _corpseContents + drawCorpse +
     // F 交互搜索），尸体无碰撞、可穿过、形象常驻，搜索后标记 _corpseSearched（提示消失）。
-    // kept 为空（全部永久消失）时只保留死亡地点指引，不生成空尸体。
-    if (kept.length) {
-        if (!Array.isArray(sv.npcs)) sv.npcs = [];
-        const corpseSeq = (sv._corpseSeq = (sv._corpseSeq || 0) + 1);
-        sv.npcs.push({
-            id: 'corpse:' + corpseSeq, name: deadName || sv.characterName || '幸存者',
-            role: 'friendly', look: sv.character || null,
-            x: dropX, y: dropY, hp: 0, maxHp: 100,
-            alive: false, _corpse: true, _corpseDay: sv.day, _corpseContents: kept, _corpseSearched: false,
-            // 尸体放世界坐标（门口），无需室内标记（世界坐标室外渲染）
-            inInterior: false, interiorKey: null, interiorFloor: null,
-            atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
-        });
-    }
+    // 2026-08-11 v2.98 用户需求：**无论背包空不空都生成尸体**（空尸体也可搜索/尸变）。
+    if (!Array.isArray(sv.npcs)) sv.npcs = [];
+    const corpseSeq = (sv._corpseSeq = (sv._corpseSeq || 0) + 1);
+    sv.npcs.push({
+        id: 'corpse:' + corpseSeq, name: deadName || sv.characterName || '幸存者',
+        role: 'friendly', look: sv.character || null,
+        x: dropX, y: dropY, hp: 0, maxHp: 100,
+        alive: false, _corpse: true, _corpseDay: sv.day,
+        // 2026-08-11 v2.98 尸体尸变系统：记录尸体生成现实时刻
+        _corpseAtReal: sv.now != null ? sv.now : 0,
+        _corpseContents: kept, _corpseSearched: false,
+        // 尸体放世界坐标（门口），无需室内标记（世界坐标室外渲染）
+        inInterior: false, interiorKey: null, interiorFloor: null,
+        atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
+    });
     return { kept, vanished };
 }
 // 软核重生（2026-08-09）：无队友死亡 / 倒地救治队友全灭 共用。
@@ -3287,8 +3366,14 @@ function softRespawn(sv, dropTxt, deadName) {
         ry = Math.round(Math.sin(ang) * dist + 0.5) * TS;
     }
     // 重生点刷"玩家名"僵尸（用户 2026-08-09：重生后能看到位置，但过 3 天才刷）
-    // 记录延迟刷尸：3 天后在重生点生成"玩家名"僵尸（由 updatePzRespawn 每帧推进）
-    sv._pzRespawn = { x: rx, y: ry, name: deadName, day: sv.day + B.DOWNED_RESPAWN_PZ_DELAY_DAYS };
+    // 2026-08-11 v2.98 改为现实时间：15 分钟后在重生点生成"玩家名"僵尸（由 updatePzRespawn 每帧推进）
+    // 2026-08-11 v2.99 修复"玩家尸化僵尸瞬移到脚下"：用户反馈"脚下额外生成一只"——
+    // 原重生点 rx/ry = 床旁 = 玩家当前脚下，15 分钟后 updatePzRespawn 在此处生成玩家尸化精英僵尸，
+    // 视觉上"瞬移过来"。改为：刷尸位置 = 死亡地点（_lastDeathPos），玩家离开后僵尸留在原死亡点不追玩家。
+    // 软核死亡：只标记 _pzRespawn 延迟刷尸；不主动设置 rx/ry = 重生点。
+    const _pzX = (sv._lastDeathPos && sv._lastDeathPos.x != null) ? sv._lastDeathPos.x : rx;
+    const _pzY = (sv._lastDeathPos && sv._lastDeathPos.y != null) ? sv._lastDeathPos.y : ry;
+    sv._pzRespawn = { x: _pzX, y: _pzY, name: deadName, day: sv.day + B.DOWNED_RESPAWN_PZ_DELAY_DAYS, atReal: sv.now != null ? sv.now : 0 };
     // 重生恢复
     sv.hp = sv.maxHp; sv.hurtT = 0;
     sv.zombies = []; sv.horde = null;
@@ -3309,6 +3394,30 @@ function softRespawn(sv, dropTxt, deadName) {
         }
     }
     sv._downed = null;
+    sv._downedMembers = [];   // 2026-08-11 v2.98 重生清倒地成员列表（防残留尸体倒计时）
+    // 2026-08-11 v2.98 修复"重生后第一次死亡显示旧的 _lastHitBy"：
+    // 重生后若玩家在新死亡前没被新攻击，_lastHitBy 残留上次死因（"被大壮用狙击枪致死"）→ 下次死亡仍用旧值。
+    // 重生时清空 → 下次死亡时若没新攻击，按状态推断死因（疾病/饥饿/缺水/战斗兜底）。
+    sv._lastHitBy = null;
+    // 2026-08-11 v2.99 修复"后续死亡明细不更新（一直显示第一次的死因）"：
+    // 死因推断 `_deathReason = (curN._deathReason) || sv._deathReason` 复用持久化残留值——
+    // 重生时只清 _lastHitBy 不清 _deathReason → 第二次死亡直接取上次死因，弹窗明细永不刷新。
+    // 重生必须清空：下次死亡重新按状态/攻击来源推断。
+    sv._deathReason = null;
+    // 当前主控记录的 _deathReason 同样残留（onDeath 3628 会写入）——若主控记录被保留
+    // （切视角队友场景不重建 initRoster），下次 `(curN._deathReason) || sv._deathReason`
+    // 仍优先取旧值 → 一并清空，保证每次死亡明细重新推断。
+    const _ctlN = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);
+    if (_ctlN) _ctlN._deathReason = null;
+    // 2026-08-11 v2.99 重生 = 旧队伍解散：清除已死成员的 party 标记。
+    // 全灭弹窗收集"当前队伍每个角色死因"依赖 party 标记——若不清除，重生后再全灭会
+    // 把上一世的历史队伍尸体也罗列进弹窗（用户反馈"一个人死不该显示历史队友明细"）。
+    // 已死尸体不跑 AI，清 party 不影响行为。
+    if (Array.isArray(sv.npcs)) {
+        for (const n of sv.npcs) { if (n && !n.alive && n.party) n.party = false; }
+    }
+    sv._carryDowned = false;
+    sv._carryMateId = null;
     sv._waitDowned = false;   // 重生解除原地等待限制
     // 2026-08-09 修复"重生后雷阵雨先稀疏再变密"：
     // 粒子是世界坐标固定池，玩家从死亡点瞬移到重生点 → 相机跳到新位置，旧粒子全部越界被丢弃，
@@ -3332,13 +3441,22 @@ function softRespawn(sv, dropTxt, deadName) {
     // 重新创建一个"幸存者"作为新主控（全新能力/天赋/角色形象）。原主控的遗物尸体已在
     // deathDropLegacy 生成（contains全部背包物品，靠近 F 搜索），原主控记录可直接删除。
     // 硬核一条命不进 softRespawn，无此问题。
+    // 2026-08-11 v2.97 修复"幸存者诈尸"（用户反馈：幸存者已死亡成尸体，主控老陈还活着，
+    // 结果幸存者尸体复活成会动的活人，被恶意 NPC 击杀）：
+    // 此分支本意 = "当前主控（controllerId）已死/倒地时，删旧主控 + initRoster 重建新主角"。
+    // 但原条件还检查 oldIsPlayer（isPlayer 记录）——幸存者（isPlayer）即使只是尸体
+    // （alive=false 带 _corpse，不是当前主控）也命中 → ① 幸存者尸体被 filter 删除
+    // ② initRoster 新建满血幸存者 → 诈尸！正确逻辑：只按【当前主控 controllerId】判断。
+    // 幸存者尸体若另有其主（主控是老陈），保持不变，不触发重建。
     const oldCtl = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);
-    const oldIsPlayer = sv.npcs && sv.npcs.find(n => n.isPlayer);
-    if (oldCtl && (oldCtl.alive === false || oldCtl.downed || oldCtl.hp <= 0)
-        || oldIsPlayer && (oldIsPlayer.alive === false || oldIsPlayer.downed || oldIsPlayer.hp <= 0)) {
-        // 清掉旧主控记录（删掉 isPlayer 记录，让 initRoster 重建）
+    if (oldCtl && (oldCtl.alive === false || oldCtl.downed || oldCtl.hp <= 0)) {
+        // 清掉旧主控记录（删掉 controllerId 记录 + isPlayer 尸体记录，让 initRoster 重建新主角）
+        // 2026-08-11 v2.98 测试玩家发现：保留 isPlayer 尸体会让 initRoster 的
+        // `!sv.npcs.some(n => n.isPlayer)` 为 false → 不新建主角 → controllerId=null 悬空、
+        // 重生后角色异常（旧尸体残留）。死亡遗物已由 deathDropLegacy 生成独立 corpse: 尸体
+        // 承载（可搜索），isPlayer 尸体记录可安全删除——initRoster 才能新建干净的新主角。
         if (Array.isArray(sv.npcs)) {
-            sv.npcs = sv.npcs.filter(n => !n.isPlayer && n.id !== sv.controllerId);
+            sv.npcs = sv.npcs.filter(n => n.id !== sv.controllerId && !n.isPlayer);
         }
         sv.controllerId = null;
         WNPC.initRoster(sv);   // 补全新主控（makePlayerEntry：满血、幸存者名、随机天赋，无 downed 标记）
@@ -3356,16 +3474,123 @@ function softRespawn(sv, dropTxt, deadName) {
     log(`你在濒死边缘撑了过来……${dropTxt}`, '#7fd6ff');
     AudioSystem.playDefeat();
     saveNow();
+    // 2026-08-11 v2.99 用户需求：重生睁眼与开场"荒野中醒来"表现完全一致——复用 sv._wake
+    // （drawWakeOverlay 渲染模糊+灰雾+单调变亮 + 文字随睁眼浮现/持续/淡出），仅文字内容
+    // 不同（画内 reborn 分支显示"你 醒 了 过 来"）。时长比开场 2.4s 略长（3s）。
+    sv._wake = { t: 0, dur: 3, reborn: true };
 }
 
 // 延迟刷尸推进（2026-08-09）：软核重生/超时死亡后，过 DOWNED_PZ_DELAY_DAYS 天在重生点刷"玩家名"僵尸
+// 2026-08-11 v2.98 改现实时间：重生点刷"玩家名"僵尸延迟 = DOWNED_RESPAWN_PZ_SECONDS(15 分钟现实秒)
 function updatePzRespawn(sv) {
     if (!sv._pzRespawn) return;
+    if (sv._pzRespawn.atReal != null) {
+        // 新格式（现实秒）：sv.now 推进，到时刷尸
+        if (sv.now - sv._pzRespawn.atReal >= B.DOWNED_RESPAWN_PZ_SECONDS) {
+            WZ.spawnPlayerZombie(sv, { x: sv._pzRespawn.x, y: sv._pzRespawn.y, name: sv._pzRespawn.name });
+            log(`重生点出现了一只「${sv._pzRespawn.name}」的僵尸……`, '#FF5544');
+            sv._pzRespawn = null;
+            saveNow();
+        }
+        return;
+    }
+    // 旧格式（游戏天数，兼容旧档）
     if (sv.day >= sv._pzRespawn.day) {
         WZ.spawnPlayerZombie(sv, { x: sv._pzRespawn.x, y: sv._pzRespawn.y, name: sv._pzRespawn.name });
         log(`重生点出现了一只「${sv._pzRespawn.name}」的僵尸……`, '#FF5544');
         sv._pzRespawn = null;
         saveNow();
+    }
+}
+
+// ================= 2026-08-11 v2.98 尸体尸变系统（用户定稿） =================
+// 规则：
+//   ① 每个尸体（主角/成员）生成时记录 _corpseAtReal（现实时刻，尸变倒计时起点）；
+//   ② 尸体头顶显示尸变倒计时（现实 15 分钟，drawCorpse 渲染"⚠ 尸变 m:ss"）；
+//   ③ 15 分钟到 → 尸体尸变，原地生成「XX（尸变）」丧尸，背包 = 尸体未搜完物品（物品守恒）；
+//   ④ 已搜完的尸体也会尸变（用户："搜完15分钟后照样尸变"），丧尸背包为空（物品已被拿走）；
+//   ⑤ 尸变丧尸被击败 → 掉「XX（尸变）」尸体（标记 _revivedCorpse），搜索完彻底消失；
+//   ⑥ 重生点刷"玩家名"僵尸：3 天 → 现实 15 分钟（见 updatePzRespawn 新格式）。
+// 尸变丧尸生成（复用 WZ.spawnPlayerZombie，但背包用尸体未搜物品，物品守恒）
+function corpseReviveZombie(sv, n) {
+    const contents = (n._corpseContents || []).filter(s => s && s.n > 0);
+    const name = (n.name || '幸存者') + B.CORPSE_REVIVE_TAG;
+    // 2026-08-11 v2.98 用户要求：**尸变僵尸攻击逻辑与正常僵尸完全一致**（室内室外、单机联机同步）。
+    // 之前复用 spawnPlayerZombie（精英玩家僵尸 isPlayerZombie:true）——会用背包继承的远程武器射击玩家、
+    // 近战伤害/速度/血量按精英系数强化，与普通僵尸行为不同。现改为用普通僵尸生成 spawnZombie(sv, 'normal', ...)：
+    //   · 攻击逻辑 = 普通僵尸（近战啃咬、无远程射击、普通伤害/速度/血量随天数成长）；
+    //   · 室内室外：spawnZombie 已支持 sv.interior（生成进室内僵尸数组，室外进 sv.zombies）；
+    //   · 单机联机：id 用 sv._zIdSeq（联机快照差分同步），与普通僵尸一致。
+    // 只继承尸体本人的名字与外观（角色/肤色/上衣），不继承远程武器（无远程射击）。
+    const z = WZ.spawnZombie(sv, 'normal', n.x, n.y, false);
+    z.name = name;                       // 尸变僵尸名（保持"XX（尸变）"）
+    // 2026-08-12 v2.99 用户定稿：尸变丧尸攻击逻辑与正常僵尸一样。
+    // 移除 v2.99"留家不追玩家"的 _deathHomeX/Y 记录——尸变丧尸与普通僵尸一致（主动追玩家/正常寻路）。
+    z.inv = contents.map(s => ({ ...s }));   // 背包守恒：尸体未搜物品给尸变丧尸（被击败掉回尸变尸体）
+    // 2026-08-11 v2.98 测试玩家发现：尸变丧尸外观继承尸体本人（n.look），而非当前主控 sv.character——
+    // 否则队友（老陈）尸体尸变后外观是"幸存者"（当前操控者），名字对但形象错。
+    if (n.look) {
+        z.char = (n.look.skin) ? '亡' : '尸';
+        z.skin = n.look.skin || '#78936b';
+        z.color = n.look.shirt || '#58656d';
+        z.look = n.look;
+    }
+    z._reviveFromCorpse = true;          // 标记：尸变丧尸（被击败掉尸变尸体）
+    z._reviveCorpseName = name;          // 尸变尸体名
+    // 移除尸体记录（已尸变）
+    const idx = sv.npcs.indexOf(n);
+    if (idx >= 0) sv.npcs.splice(idx, 1);
+    log(`${n.name} 的尸体尸变了！变成了「${name}」……`, '#FF5544');
+    AudioSystem.playZombieSpawn && AudioSystem.playZombieSpawn();
+    return z;
+}
+// 尸变丧尸被击败 → 掉「XX（尸变）」尸体（物品 = 丧尸背包，守恒；搜索完彻底消失）
+// 由僵尸死亡清理处（wzombie.updateZombies / windoor / survival 清理）调用
+export function reviveZombieToCorpse(sv, z) {
+    if (!z || !z._reviveFromCorpse) return;
+    const contents = (z.inv || []).filter(s => s && s.n > 0).map(s => ({ ...s }));
+    const corpseName = z._reviveCorpseName || (z.playerName || '幸存者') + B.CORPSE_REVIVE_TAG;
+    if (!Array.isArray(sv.npcs)) sv.npcs = [];
+    sv.npcs.push({
+        id: 'rev' + ((sv._revSeq = (sv._revSeq || 0) + 1)),
+        isPlayer: false, name: corpseName, role: 'friendly', look: null,
+        x: z.x, y: z.y, hp: 0, maxHp: 100, alive: false,
+        _corpse: true, _corpseDay: sv.day,
+        _corpseAtReal: sv.now != null ? sv.now : 0,   // 记录时刻（尸变尸体不二次尸变）
+        _corpseContents: contents, _corpseSearched: false,
+        _revivedCorpse: true,   // 标记：尸变尸体（不二次尸变，搜索完彻底消失）
+        inInterior: false, interiorKey: null, interiorFloor: null,
+        atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
+    });
+    log(`${corpseName} 被击败，留下尸变的尸体（可搜索）……`, '#9fd6ff');
+}
+// 每帧尸变检测：未尸变的尸体倒计时到 → 尸变（节流 0.25s，防多尸体同时处理开销）
+// 2026-08-11 v2.99 修复"队友尸变的僵尸瞬移到主控身边"：
+// 尸变检测在【大世界循环】和【室内循环】各调一次，此前两处都遍历全部尸体——室内尸体
+// （inInterior=true）在大世界循环被尸变时，spawnZombie 以 sv.interior 判定场景，主控在室外
+// 则僵尸被生成进室外数组、却带着室内坐标 → 坐标错乱，看起来"瞬移到主控身边"。
+// 修复：按当前场景过滤——室外模式只尸变室外尸体，室内模式只尸变当前房间的室内尸体。
+function updateCorpseRevive(sv, dt, mode) {
+    if (!sv || !Array.isArray(sv.npcs) || !sv.npcs.length) return;
+    if (sv._corpseReviveT != null && sv.now - sv._corpseReviveT < 0.25) return;
+    sv._corpseReviveT = sv.now;
+    const indoor = mode === 'indoor';
+    for (let i = sv.npcs.length - 1; i >= 0; i--) {
+        const n = sv.npcs[i];
+        if (!n._corpse || n._revived) continue;   // 非尸体 / 已尸变跳过
+        if (n._revivedCorpse) continue;           // 尸变尸体不二次尸变
+        if (indoor) {
+            // 室内模式：只尸变当前房间内的尸体（interiorKey 匹配，避免 A 房间尸体在 B 房间尸变坐标错位）
+            if (!n.inInterior) continue;
+            if (n.interiorKey && sv.interior && sv.interior.key && n.interiorKey !== sv.interior.key) continue;
+        } else {
+            if (n.inInterior) continue;           // 室外模式：室内尸体由室内循环负责
+        }
+        const at = n._corpseAtReal != null ? n._corpseAtReal : (sv.now || 0);
+        if (sv.now - at >= B.CORPSE_REVIVE_SECONDS) {
+            n._revived = true;   // 防重入
+            try { corpseReviveZombie(sv, n); } catch (e) { /* 生成失败不阻塞 */ }
+        }
     }
 }
 function onDeath() {
@@ -3379,6 +3604,12 @@ function onDeath() {
     // （hp<=0 + _downed 同时存在，说明上次 onDeath 未结算完），清掉让本次走正常流程，避免重复设置同名倒地。
     // 注意：`_downed` 与 hp<=0 共存 = 脏状态；正常路径 _downed 仅在 onDeath 内设置且同时设 hp=1。
     if (sv._downed) {
+        // 2026-08-11 v2.97 修复"健康主控带濒死标志，被攻击致死后跳过切队友视角直接全灭"：
+        // 残留 _downed 往往伴随当前主控记录 downed=true 悬空（如 _devGod 拉满血不清标志）——
+        // 清 _downed 时**同步清当前主控记录的 downed**，否则该记录仍被当倒地：恶意 NPC 攻击走
+        // npcApplyDownedHit（扣时而非致死，sv.hp 可能仍满 → onDeath 悬空），mates 过滤也受影响。
+        const _cpc = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);
+        if (_cpc) { _cpc.downed = false; _cpc._penaltySec = 0; }
         sv._downed = null;
         sv._waitDowned = false;
         log('……清理残留濒死状态，重新结算', '#FFB347');
@@ -3390,7 +3621,36 @@ function onDeath() {
     const deadName = (curN && curN.name) || sv.characterName || '幸存者';
     // 2026-08-11 击败原因（濒死/全灭弹窗显示"XXX 被什么击败了"）：主控记录可能已有
     // _deathReason（killNpc 记录）；血量归零直接 onDeath 的（被咬/被打/饥饿/疾病）兜底按来源推断。
-    const deadReason = (curN && curN._deathReason) || sv._deathReason || '战斗中被击败';
+    // 2026-08-11 v2.98 用户需求"击杀明细详细"：按状态推断真正死因（饥饿/缺水/疾病/感染/战斗），
+    // 让"被你阵亡了"弹窗显示"幸存者因饥饿致死"等真实原因，而非笼统的"战斗中被击败"。
+    // 战斗死因优先用 _lastHitBy（击杀者 + 武器）→ "被大壮用狙击枪击杀了"（用户示例）。
+    let deadReason = (curN && curN._deathReason) || sv._deathReason;
+    if (!deadReason) {
+        // 优先级：疾病 > 感染 > 饥饿/缺水 > 战斗
+        if (sv._sick && B && B.SICKNESS && B.SICKNESS[sv._sick.type]) {
+            deadReason = `疾病（${B.SICKNESS[sv._sick.type].name}）恶化致死`;
+        } else if (sv.infection >= 100) {
+            deadReason = '感染恶化致死';
+        } else if (sv.food <= 0 && sv.water <= 0) {
+            deadReason = '饥饿与缺水致死';
+        } else if (sv.food <= 0) {
+            deadReason = '饥饿致死';
+        } else if (sv.water <= 0) {
+            deadReason = '缺水致死';
+        } else {
+            // 战斗死因：优先用最后攻击来源（恶意 NPC 近战/远程、僵尸啃咬、敌对植物）
+            const lhb = sv._lastHitBy;
+            if (lhb && lhb.name) {
+                if (lhb.weapon) {
+                    deadReason = `被${lhb.name}用${lhb.weapon}击杀致死`;
+                } else {
+                    deadReason = `被${lhb.name}击杀致死`;
+                }
+            } else {
+                deadReason = '战斗中被击败';
+            }
+        }
+    }
     // 主控原因同步给当前主控记录（供全灭详情收集）
     if (curN) curN._deathReason = deadReason;
     sv._deathReason = deadReason;
@@ -3414,11 +3674,19 @@ function onDeath() {
     // ================= 掉落惩罚（软核/硬核通用）=================
     // 死亡次数越多，遗物包裹掉落越丰富越稀有（有上限），玩家身上保留一部分。
     // 2026-08-10 传入倒下者名字：尸体显示该名字（切队友视角倒下的是队友，尸体就是该队友）。
-    const drop = deathDropLegacy(sv, deadName);
-    // 2026-08-10 软核死亡位置指引：有物品 → 主角尸体留在死亡点（靠近 F 搜索遗物）；无物品 → 死亡位置被标记；
-    // 屏幕边缘统一为红色「死亡地点」指引方便找回上次死亡位置。
-    const dropTxt = (drop.vanished.length ? `（${drop.vanished.length} 件物品永久消失）` : '')
-        + (drop.kept.length ? `，尸体留在死亡点（靠近搜索 [F]）` : '，死亡位置已标记（屏幕边缘指引）');
+    // 2026-08-11 v2.98 用户反馈"濒临死亡渲染上有尸体效果"：濒死（软核有队友 → 倒地救治）时
+    // **不调用 deathDropLegacy**——死亡点不立即生成独立 corpse:N 遗物尸体，避免地上"濒死角色 +
+    // 自己的尸体"两个渲染重叠看起来很奇怪。仅在【真正死亡】路径（软核无队友/队友全灭/硬核）才调
+    // deathDropLegacy 生成可搜尸体。濒死期间只显示"濒死待救"渲染（红圈+救援倒计时），
+    // 不再有躺倒尸体/尸变倒计时。超时死亡/全灭时由 updateDowned 超时分支或 killNpc 生成尸体。
+    let drop = null;
+    let dropTxt = '';
+    const doDeathDrop = () => {
+        if (drop) return;
+        drop = deathDropLegacy(sv, deadName);
+        dropTxt = (drop.vanished.length ? `（${drop.vanished.length} 件物品永久消失）` : '')
+            + (drop.kept.length ? `，尸体留在死亡点（靠近搜索 [F]）` : '，死亡位置已标记（屏幕边缘指引）');
+    };
     // 存活队友（NPC 队伍成员，含原主角记录以外的 party 成员；排除倒地主角本人记录 isPlayer）
     // 2026-08-09 修复"室内死亡切到室外队友"：优先选与主控同位置（同室内/同室外）的队友，
     // 切视角不会跑到另一个空间去。
@@ -3443,6 +3711,22 @@ function onDeath() {
             // ---- 有队友：倒地救治（2026-08-09 用户：倒地瞬间弹选择框）----
             // 主角先进入倒地状态（位置/名字/限时起始/已提交药品），然后弹选择框：
             //   「切换队友视角」→ 立即切到最近存活队友操控；「原地等待」→ 保持当前视角（倒地）
+            // 2026-08-12 v2.101 用户定稿：**每个人的救助时间是单独计算的，按自己的濒死次数，不是队伍累计**。
+            // 原实现用队伍累计 sv._downedCount——主控 A 倒下 3 次后切到队友 B，B 作为新主控首次倒下
+            // 却复用累计次数(3) → 时间从 20 分钟变成 10 分钟（错误）。改为【当前主控角色对象 curN 自己
+            // 独立的 _downedCount】：B 作为新主控首次濒死 = B._downedCount=1 → 20 分钟。
+            // 每人次数规则不变：第 n 次濒死 → 20 分钟 / 2^(n-1)，最低 60 秒。
+            const ctlOwner = (sv.npcs || []).find(n => n.id === sv.controllerId) || (sv.npcs || []).find(n => n.isPlayer);
+            if (ctlOwner) {
+                ctlOwner._downedCount = (ctlOwner._downedCount || 0) + 1;
+                const ctlLimitSec = downedLimitForCount(ctlOwner._downedCount);
+                ctlOwner.limitSec = ctlLimitSec;   // 同步记到角色对象（switchControl 2736 检测是否已计数，防双重 +1）
+                var limitSec = ctlLimitSec;
+            } else {
+                // 找不到角色对象（异常兜底）：用主控专属计数（仍非队伍共享）
+                sv._ctlDownedCount = (sv._ctlDownedCount || 0) + 1;
+                var limitSec = downedLimitForCount(sv._ctlDownedCount);
+            }
             sv._downed = {
                 name: deadName, px: sv.px, py: sv.py,
                 dayDead: sv.day, med: 0, herb: 0,
@@ -3450,8 +3734,16 @@ function onDeath() {
                 // 2026-08-11 v2.97 现实时间救援倒计时：sv.now 是现实秒（主循环 dt 累积），
                 // 20 分钟内未被救活 → 彻底死亡；被攻击每次伤害额外扣 DOWNED_HIT_PENALTY_SEC 秒。
                 downedAtReal: sv.now != null ? sv.now : 0,
-                _penaltySec: 0,   // 累计被攻击扣掉的时间（秒），超时判定 = (sv.now - downedAtReal) + _penaltySec >= DOWNED_LIMIT_SECONDS
+                limitSec,   // 2026-08-11 v2.98 本次救援总时长（随濒死次数递减）
+                _penaltySec: 0,   // 累计被攻击扣掉的时间（秒），超时判定 = (sv.now - downedAtReal) + _penaltySec >= limitSec
             };
+            // 2026-08-11 v2.98 开发者「补刀致死」测试：角色濒死（非彻底死亡），救援时间设为"将尽"
+            // （仅剩 3 秒）——切到队友视角后很快超时 → 彻底死亡 + 生尸体，完成"补刀→濒死→超时致死→尸体"链路。
+            // 不清 _downedMembers 中主控记录的时间（补刀标记由成员超时管理同样生效），只调整主控倒计时。
+            if (sv._devDownedKill) {
+                sv._downed.downedAtReal = (sv.now != null ? sv.now : 0) - (B.DOWNED_LIMIT_SECONDS - 3);
+                sv._devDownedKill = false;   // 一次性标志，用完即清
+            }
             // 2026-08-10 标记"倒下的主控记录"为 downed（而非固定 isPlayer）：切换视角后倒下的
             // 是当前主控队友（controllerId），需标记该记录倒地——否则它仍被当存活队员：
             // 恶意 NPC 继续打它（反复鞭尸/掉遗物）、mates 永远非空（无限切视角不结束）、
@@ -3463,9 +3755,18 @@ function onDeath() {
                 WNPC.switchControl(sv, mate.id, true);
                 sv.hurtT = 0;
                 sv.dead = false;   // 解锁主循环：倒地救治期间世界继续运转（队友 AI 背人、玩家操控队友找药）
+                // 2026-08-11 v2.97 修复"切队友视角后主控濒死状态转移到队友身上"（用户反馈）：
+                // switchControl 已把旧主控（濒死）标 downed 并入 _downedMembers（2597 行），由
+                // updateDownedMembersTimeout 管理倒计时；但 sv._downed（onDeath 设置的倒地记录）
+                // 残留不清理 → updateDowned 每帧仍走"主控倒地"分支 → ① 全灭检测把新主控(controllerId)
+                // 和旧主控(isPlayer/downed)都排除 → 队友满血也被误判全灭；② 渲染层 drawPlayer 的
+                // drawDownedTimeBar 在【新主控】头顶画救援倒计时（状态"转移"到队友身上）。
+                // 清掉后 updateDowned 走 `!dwn → updateDownedMembersTimeout`（只管理成员倒计时）。
+                sv._downed = null;
+                sv._waitDowned = false;
+                sv._carryDowned = false;
                 log(`${mate.name} 将濒死的你带回重生点救治……${dropTxt}`, '#7fd6ff');
                 log(`操控 ${mate.name} 搜集药品（伤口药/抗生素/草药×3）送到倒地主角旁 F 救治，限 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟内集齐`, '#7fd6ff');
-                AudioSystem.playDefeat();
                 saveNow();
             };
             const waitInPlace = () => {
@@ -3477,13 +3778,15 @@ function onDeath() {
                 sv._waitDowned = true;   // 倒地主角视角：不能移动，等待救援
                 log(`你倒在地上等待救援……${dropTxt}`, '#7fd6ff');
                 log(`队友会来救助你（清怪后背回床旁/原地送药），限 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟内集齐药品`, '#7fd6ff');
-                AudioSystem.playDefeat();
                 saveNow();
             };
-            AudioSystem.playDefeat();
+            // 2026-08-11 v2.98 用户需求：死亡音效只在点击"重生/返回主菜单"时播放——
+            // 濒死倒地/切队友视角/原地等待/弹窗瞬间**不播放**死亡音效（角色只是濒死待救，未彻底死亡）。
             Panel.showDeathChoices(
                 '<div class="wsl-death-title">你 倒 下 了</div>' +
-                `<div class="wsl-death-sub">${deadName} 被 ${deadReason} 击败了<br>${dropTxt}<br>（软核难度 · 有队友可救助）</div>` +
+                // 2026-08-11 v2.98 用户需求：此界面是"濒死倒地待救"（角色只是濒临死亡、未彻底死亡），
+                // 不显示角色死亡明细（去掉"被 XX 击败了"），只提示倒地待救与救援剩余时间。
+                `<div class="wsl-death-sub">${deadName} 濒临死亡，倒地待救<br>${dropTxt}<br>（软核难度 · 有队友可救助）</div>` +
                 `<div class="wsl-death-hint">选择操控队友去搜集药品救你，或原地等待队友前来救助。限 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟内集齐药品。</div>`,
                 [
                     { label: '切换队友视角', cls: 'primary', onClick: () => { Panel.hideDeath(); enterDownedView(); } },
@@ -3496,7 +3799,16 @@ function onDeath() {
         // 若从一开始就无队友 → 软核重生（独自继续）。
         // 2026-08-10 软核成员倒地：倒地成员（downed）不能行动也不能救主控——主控死亡且无【可行动】队友
         // 时（成员全倒地或全阵亡），视为"全员濒死=无人可救"→ 直接全员彻底死亡 + 生尸体（防切到倒地成员卡死）。
-        const anyAliveMate = (sv.npcs || []).some(n => n.alive && !n.downed && n.party && n.id !== sv.controllerId && !n.isPlayer);
+        // 2026-08-11 v2.97 修复"只剩当前主控活着却弹全员阵亡"（用户截图：HP 66/80 活着却弹了全员阵亡）：
+    // 队伍只剩 1 个活人（当前主控自己）时，`mates` 会被 controllerId/isPlayer 排除 → 空，
+    // `anyAliveMate=false` → `hadMates=true` → 误判全员阵亡。这里把"当前主控自己活着"也视为可行动：
+    // 只要 controllerId 对应角色（或者原主角 isPlayer 还有活人）**任意一个活着且没倒地**，
+    // `anyAliveMate` 就为 true → 不触发全灭（走独狼重生的友军集合流程）。
+    const cur = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);
+    const playerAlive = (sv.npcs || []).some(n => n.isPlayer && n.alive && !n.downed);
+    const controllerAlive = !!(cur && cur.alive && !cur.downed);
+    const anyAliveMate = mates.length >= 1 || controllerAlive || playerAlive
+        || (sv.p2 && !sv.p2.inInterior) || (sv.p2s && Object.values(sv.p2s).some(p => !p.inInterior));
         // 2026-08-10 修复"正常模式独狼被杀直接退出"：先判断是否【从头就有过 party 队友】——
         // 软核（正常）模式下，即使原本有队友但已全部阵亡/倒地（无人能救），也应【软核重生】而非
         // 直接结束游戏——重生后成员列表清空（原主角/成员都已死亡，重生的是新主角，孤身继续）。
@@ -3504,6 +3816,8 @@ function onDeath() {
         const hadMates = (sv.npcs || []).some(n => n.party && n.id !== sv.controllerId && !n.isPlayer);
         if (hadMates && !anyAliveMate) {
             log(`${deadName} 的队友全部阵亡或濒死，无人能救……`, '#FF5544');
+            // 2026-08-11 v2.98 队友全灭 = 真正死亡 → 生成遗物尸体可搜
+            doDeathDrop();
             // 2026-08-11 全员濒死/死亡弹窗（共享函数，onDeath 与 updateDowned 全灭检测共用）
             // 2026-08-11 v2.96 加 typeof 兜底：模块未完整加载/被裁剪时降级到软核重生（绝不抛 ReferenceError）。
             if (typeof showAllDeadChoices === 'function') {
@@ -3520,6 +3834,7 @@ function onDeath() {
         // 2026-08-11 v2.97 修复"无队友死亡没有重生/返回主菜单选项"（用户反馈）：独狼死亡此前
         // 直接 softRespawn 无弹窗。改为弹「重生/返回主菜单」选择框（复用 showAllDeadChoices）——
         // 点"重生"才 softRespawn 继续，点"返回主菜单"退出到菜单。
+        doDeathDrop();   // 2026-08-11 v2.98 独狼/无队友死亡 → 生成遗物尸体可搜
         sv.interior = null;   // 无队友重生：离开房间回到室外
         if (typeof showAllDeadChoices === 'function') {
             showAllDeadChoices(sv, deadName, deadReason, dropTxt);
@@ -3529,6 +3844,7 @@ function onDeath() {
     } else {
         // ================= 硬核（一条命）：无救治 =================
         // 掉落道具（上面已做）；尸化留世（保留尸化僵尸）。
+        doDeathDrop();   // 2026-08-11 v2.98 硬核死亡 → 生成遗物尸体可搜
         sv.interior = null;   // 硬核结算：离开房间回到室外
         const pz = WZ.spawnPlayerZombie(sv);
         sv._pzId = pz.id;
@@ -3548,7 +3864,7 @@ function onDeath() {
             sv.hp = 1;
             log(`${deadName} 倒地了……按 [T] 切换到 ${mates[0].name} 视角，或队友靠近后 F 交互切换`, '#FF5544');
             log(`（硬核一条命 · 无救治，切换到队友后继续生存）`, '#FF5544');
-            AudioSystem.playDefeat();
+            // 2026-08-11 v2.98 用户需求：死亡音效只在点击"重生/返回主菜单"时播放——切队友视角不播
             saveNow();
             return;
         }
@@ -3563,7 +3879,6 @@ function onDeath() {
                 localStorage.removeItem('u:' + ((getSession && getSession() && getSession().username) || '__guest__') + ':wasteland_profile');
             } catch (e) { /* 清理失败不阻塞退出 */ }
         }
-        AudioSystem.playDefeat();
         // 弹"游戏结束"界面（复用死亡弹窗），点按钮才返回主菜单（避免直接退出的卡顿/原地重生感）
         Panel.showDeathChoices(
             '<div class="wsl-death-title">游 戏 结 束</div>' +
@@ -3574,6 +3889,8 @@ function onDeath() {
                     label: '返回主菜单',
                     cls: 'primary',
                     onClick: () => {
+                        // 2026-08-11 v2.98 用户需求：死亡音效只在点击"重生/返回主菜单"时播放
+                        AudioSystem.playDefeat();
                         Panel.hideDeath();
                         sv.dead = true;
                         exitWasteland(true);
@@ -3596,6 +3913,8 @@ export function downedMedSubmit(sv, med, herb) {
         // 2026-08-10 用户要求"救起来 30% 血量，其他状态保持原样（濒临死亡之前是什么样就是什么样）"：
         // 不再清感染/疾病（此前 pc.infection = 0; pc.sick = null 重置状态）。
         if (pc) { pc.downed = false; pc.alive = true; pc.hp = Math.max(1, Math.round(pc.maxHp * 0.3)); }
+        // 2026-08-11 v2.99 救活的角色记录死因同样清空（防 onDeath 3628 残留旧值被下次复用）
+        if (pc) pc._deathReason = null;
         const name = sv._downed.name || '幸存者';
         sv._downed = null;
         // 2026-08-10 用户要求"救活后死亡地点标志消失"：人被救活了，死亡地点指引不再需要。
@@ -3603,6 +3922,10 @@ export function downedMedSubmit(sv, med, herb) {
         // 且 _lastDeathPos 持久记录仍保留，不影响开发者传送死亡点功能。）
         sv._legacyDrop = null;
         sv._waitDowned = false;   // 救活解除原地等待限制
+        // 2026-08-11 v2.99 救活后清死因残留：防"被救活后再次死亡，弹窗仍显示上次死因"。
+        // 救活 = 角色恢复健康，下次死亡按新的状态/攻击来源重新推断。
+        sv._deathReason = null;
+        sv._lastHitBy = null;
         // 2026-08-10 状态保留：不重置感染/疾病（用户要求"其他状态保持原样"）
         log(`${name} 被救活了！`, '#7DFF7D');
         saveNow();
@@ -3644,6 +3967,8 @@ export const showAllDeadChoices = (sv, deadName, deadReason, dropTxt) => {
             if (!n._corpse) {
                 n._corpse = true;
                 n._corpseDay = sv.day;
+                // 2026-08-11 v2.98 尸体尸变系统：记录尸体生成现实时刻
+                n._corpseAtReal = sv.now != null ? sv.now : 0;
                 n._corpseContents = [];
                 for (const s of n.inv || []) { if (s) n._corpseContents.push({ ...s, n: s.n || 1 }); }
                 n._corpseSearched = false;
@@ -3655,6 +3980,8 @@ export const showAllDeadChoices = (sv, deadName, deadReason, dropTxt) => {
             if (!n._corpse) {
                 n._corpse = true;
                 n._corpseDay = sv.day;
+                // 2026-08-11 v2.98 尸体尸变系统：记录尸体生成现实时刻
+                n._corpseAtReal = sv.now != null ? sv.now : 0;
                 n._corpseContents = [];
                 for (const s of n.inv || []) { if (s) n._corpseContents.push({ ...s, n: s.n || 1 }); }
                 n._corpseSearched = false;
@@ -3665,29 +3992,42 @@ export const showAllDeadChoices = (sv, deadName, deadReason, dropTxt) => {
     sv._downed = null;
     sv._downedMembers = [];
     sv._carryDowned = false;
+    sv._carryMateId = null;   // 2026-08-11 v2.97 界面一致：全灭/重生时清队友背起状态
     sv._waitDowned = false;
-    // 收集击败详情（此时所有角色已彻底死亡，不再有 downed=true）
+    // 收集击败详情（用户定稿 v2.99）：游戏结束/全员阵亡时，显示【队伍里每个角色】的死亡原因
+    // ——"某某某 被什么什么击杀了"，主控 + 全部 party 成员各一条。
+    // 实时更新保证：
+    //   ① 主控死因直接用本次调用传入的 deadName/deadReason（onDeath 每帧按最新状态推断、
+    //      updateDowned 用 _downed.deathReason），不读残留字段 → 每次死亡明细都是当前原因；
+    //   ② 成员救活/重生时已清 _deathReason（mateMedSubmit/downedMedSubmit/softRespawn）→
+    //      再死重新按攻击来源记录，不会复用旧死因（"被僵尸咬死"残留 bug 已修复）。
+    // 历史尸体排除：softRespawn 重生时已把旧 party 尸体的 party 标记清除 → 本弹窗只收当前队伍。
+    const thisReason = deadReason || '战斗中被击败';
     const deathDetails = [];
-    // 主控本人
-    const ctl = sv.npcs.find(n => n.id === sv.controllerId) || sv.npcs.find(n => n.isPlayer);
-    if (ctl) deathDetails.push({ name: deadName || ctl.name || '幸存者', reason: (ctl._deathReason || deadReason || '战斗中被击败') });
-    // 倒地成员（_downedMembers）
-    for (const m of sv._downedMembers || []) {
-        if (m && (m.name || m.id)) deathDetails.push({ name: m.name || m.id, reason: m._deathReason || '战斗中倒地' });
+    const seenNames = new Set();
+    const pushDeath = (nm, reason) => {
+        nm = nm || '幸存者';
+        if (seenNames.has(nm)) return;
+        seenNames.add(nm);
+        deathDetails.push({ name: nm, reason: reason || thisReason });
+    };
+    // ① 主控/当前主控（本次死亡主控）——用调用方传入的实时原因
+    pushDeath(deadName || sv.characterName, thisReason);
+    // ② 全部 party 成员（活着的/倒地的/已死的尸体都收——用户要求"队伍里有几个角色就写几条死因"）
+    for (const m of sv.npcs || []) {
+        if (!m || !m.party) continue;
+        if (m._revivedCorpse) continue;          // 尸变尸体不是队伍角色
+        if (m.alive && !m.downed) continue;       // 存活成员无死因（防御：全灭弹窗不应出现存活者）
+        pushDeath(m.name || m.id, m._deathReason);
     }
-    // 其他 party 成员（含已死亡留尸体的）
-    for (const n of sv.npcs || []) {
-        if (!n || n.isPlayer || !n.party || n.id === sv.controllerId) continue;
-        if ((sv._downedMembers || []).some(m => m && m.id === n.id)) continue;   // 已收集
-        if (n.downed) deathDetails.push({ name: n.name || n.id, reason: n._deathReason || '战斗中倒地' });
-        else if (!n.alive) deathDetails.push({ name: n.name || n.id, reason: n._deathReason || '阵亡' });
-        else deathDetails.push({ name: n.name || n.id, reason: n._deathReason || '战斗中倒地' });
-    }
-    // 去重
-    const seen = new Set();
-    const uniq = deathDetails.filter(d => { if (seen.has(d.name)) return false; seen.add(d.name); return true; });
-    const detailHtml = uniq.map(d =>
-        `<div class="wsl-death-detail">☠ ${d.name} 被 ${d.reason} 击败</div>`).join('');
+    // ③ 倒地主控记录（sv._downed 可能尚未同步进 npcs，如主控倒地全灭分支）
+    if (sv._downed && sv._downed.name) pushDeath(sv._downed.name, (sv._downed.deathReason || thisReason));
+    const uniq = deathDetails;
+    // 2026-08-11 v2.98 击杀明细更详细（用户要求："被 XXX 用 XXX 击杀"/"被僵尸啃咬致死"等完整描述）：
+    // _deathReason 已是自然语言描述（含"被..."开头），直接渲染即可，不再拼接"被 X 击败"前缀防重复。
+    const detailHtml = uniq.length
+        ? uniq.map(d => `<div class="wsl-death-detail">☠ ${d.name} · ${d.reason}</div>`).join('')
+        : `<div class="wsl-death-detail">☠ ${deadName || sv.characterName || '幸存者'} · ${thisReason}</div>`;
     // 原 party 成员全部阵亡（清空成员列表）：重生主角不是原来的主角，原成员不再入队。
     // 2026-08-10 死亡成员留尸体遗物（killNpc 标记 _corpse，含成员背包全部物品，靠近 F 搜索）；
     // 主控本人记录（isPlayer）的重生遗物已在 onDeath 的 deathDropLegacy 生成（主角尸体）。
@@ -3697,7 +4037,7 @@ export const showAllDeadChoices = (sv, deadName, deadReason, dropTxt) => {
     // 末尾会检测并 create new survivor。
     const doRespawn = () => {
         for (const n of sv.npcs || []) {
-            if (n && n.party && n.id !== sv.controllerId && n.alive) { WNPC.killNpc(sv, n, '被击杀'); }
+            if (n && n.party && n.id !== sv.controllerId && n.alive) { WNPC.killNpc(sv, n, '战斗中被击败'); }
             else if (n && n.isPlayer) { n.alive = false; n.downed = false; n.hp = 0; }
         }
         sv._downed = null;
@@ -3709,15 +4049,20 @@ export const showAllDeadChoices = (sv, deadName, deadReason, dropTxt) => {
         softRespawn(sv, dropTxt || '', deadName);
     };
     // 2026-08-11 v2.97 独狼死亡：标题改为"你阵亡了"（无队友可显示；有队友才说"全员阵亡"）
-    const hadAnyMate = (sv.npcs || []).some(n => n && n.party && !n.isPlayer);
+    // 弹窗标题判定只看【当前还活着的 party 队友】（排除历史尸体 alive=false）：hadAnyMate=true 仅当
+    // 当前还有活着 party NPC 队友——独狼复活后再死（历史尸体仍在 sv.npcs 但都已 alive=false）→ false，
+    // 显示"你阵亡了"独狼标题而非"全员阵亡"（用户反馈"一个人生不该显示全员阵亡"）。
+    const hadAnyMate = (sv.npcs || []).some(n => n && n.alive && n.party && !n.isPlayer);
     Panel.showDeathChoices(
         `<div class="wsl-death-title">${hadAnyMate ? '全员阵亡' : '你 阵 亡 了'}</div>` +
         `<div class="wsl-death-sub">${hadAnyMate ? '队伍已无人幸存……' : '你独自一人倒在了荒原上……'}</div>` +
         `<div class="wsl-death-details">${detailHtml}</div>` +
         `<div class="wsl-death-hint">软核模式：你可以重生继续，或返回主菜单。</div>`,
         [
+            // 2026-08-11 v2.98 用户需求：死亡音效只在点击"重生/返回主菜单"时播放——
+            // 重生按钮走 doRespawn → softRespawn 结尾播放（3437 行）；返回主菜单此处补播。
             { label: '重生', cls: 'primary', onClick: () => { Panel.hideDeath(); doRespawn(); } },
-            { label: '返回主菜单', cls: 'danger', onClick: () => { Panel.hideDeath(); sv.dead = true; exitWasteland(true); } },
+            { label: '返回主菜单', cls: 'danger', onClick: () => { AudioSystem.playDefeat(); Panel.hideDeath(); sv.dead = true; exitWasteland(true); } },
         ]);
 };
 // 2026-08-11 兜底：当 showAllDeadChoices 不可用时（极端情况：模块未完整加载/被裁剪），
@@ -3725,7 +4070,7 @@ export const showAllDeadChoices = (sv, deadName, deadReason, dropTxt) => {
 function _softRespawnAllDeadFallback(sv, deadName, reason) {
     if (sv && sv.npcs) {
         for (const n of sv.npcs) {
-            if (n && n.party && n.id !== sv.controllerId && n.alive) { try { WNPC.killNpc(sv, n, '被击杀'); } catch(_){} }
+            if (n && n.party && n.id !== sv.controllerId && n.alive) { try { WNPC.killNpc(sv, n, '战斗中被击败'); } catch(_){} }
             else if (n && n.isPlayer) { n.alive = false; n.downed = false; n.hp = 0; }
         }
     }
@@ -3740,11 +4085,26 @@ function _softRespawnAllDeadFallback(sv, deadName, reason) {
     try { softRespawn(sv, '', deadName || '幸存者'); } catch(_) {}
     log(`（降级）${deadName || '幸存者'} 的队伍已无人幸存，直接重生继续……`, '#FF8800');
 }
+// 2026-08-11 v2.98 用户需求：救援时间随濒死次数递减——第一次 20 分钟，第二次 10 分钟，
+// 第三次 5 分钟……每次减半（-50%），最低兜底 60 秒（防止次数过多减到 0）。
+// 次数=1 → 20 分钟（默认）；次数=n → 20 分钟 / 2^(n-1)，下限 60 秒。
+function downedLimitForCount(count) {
+    const base = B.DOWNED_LIMIT_SECONDS || 1200;
+    const n = Math.max(1, Math.floor(count || 1));
+    const half = Math.pow(2, n - 1);
+    return Math.max(60, Math.round(base / half));
+}
 function updateDowned(sv, dt, canStand) {
     const dwn = sv._downed;
     // 2026-08-10 软核成员倒地：主控未倒地但存在倒地成员（_downedMembers）时，只跑成员超时管理，
     // 不执行主控的背人/救治（dwn 为 null 时跳过下方主控专属逻辑）。
     if (!dwn) { updateDownedMembersTimeout(sv); return; }
+    // 2026-08-11 v2.98 用户需求：救援界面时间与游戏内头顶倒计时实时同步——救援界面打开时刷新。
+    // 2026-08-11 节流（0.25s）：避免每帧重建 DOM 导致"关闭按钮"点击丢失/卡顿（用户反馈关不掉）。
+    if (rescueOpen()) {
+        sv._rescueRefreshT = (sv._rescueRefreshT || 0) - dt;
+        if (sv._rescueRefreshT <= 0) { sv._rescueRefreshT = 0.25; renderRescue(); }
+    }
     // 玩家背人中：倒地主角跟随玩家移动（背到床旁/安全点），此时不触发队友自动背人
     if (sv._carryDowned) {
         dwn.px = sv.px; dwn.py = sv.py;
@@ -3769,7 +4129,12 @@ function updateDowned(sv, dt, canStand) {
     // 只有【可行动】队友才算"能救的人"。主控倒地 + 全部成员倒地（无人能行动）时，
     // 视为"全员濒死 = 无人可救"→ 直接全员彻底死亡 + 生尸体（防卡死等待）。
     // 此前 anyDownedMember 计入可救 → 主控+成员全倒地时 anyMateAlive=true → 永不结算，游戏卡死。
-    const anyMateAlive = mates.length >= 1
+    // 2026-08-11 v2.97 "当前主控自己活着"也算可行动者：避免只剩 1 个活人（当前主控）时
+    // `mates` 因 controllerId/isPlayer 排除变空 → 误判"全员阵亡"弹窗。同 onDeath 一致逻辑：
+    // controllerId 角色活着 / isPlayer 角色活着 / 联机队友存活 任一即 anyMateAlive=true。
+    const _udc = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);
+    const _udp = (sv.npcs || []).some(n => n.isPlayer && n.alive && !n.downed);
+    const anyMateAlive = mates.length >= 1 || !!(_udc && _udc.alive && !_udc.downed) || _udp
         || (sv.p2 && !sv.p2.inInterior) || (sv.p2s && Object.values(sv.p2s).some(p => !p.inInterior));
     if (!anyMateAlive) {
         // 2026-08-11 全灭弹窗（用户需求）：倒地主控 + 全部队友阵亡/倒地（无人能救）→
@@ -3793,16 +4158,37 @@ function updateDowned(sv, dt, canStand) {
     if (dwn._penaltySec == null) dwn._penaltySec = 0;
     const nowReal = sv.now != null ? sv.now : 0;
     const spent = Math.max(0, nowReal - dwn.downedAtReal) + (dwn._penaltySec || 0);
-    const dwnLimitSec = B.DOWNED_LIMIT_SECONDS;
+    // 2026-08-11 v2.98 救援时间随濒死次数递减：优先用 _downed.limitSec（创建时按次数算出），
+    // 旧档/无该字段时回退默认 DOWNED_LIMIT_SECONDS（向后兼容，不破坏既有档）。
+    const dwnLimitSec = dwn.limitSec || B.DOWNED_LIMIT_SECONDS;
     if (spent >= dwnLimitSec) {
         if (!dwn._pzScheduled) {
+            // 2026-08-11 v2.98 用户需求：救援时间到了 → 自动关闭救援界面（主角彻底死亡，界面无意义）
+            if (rescueOpen()) closeRescue();
             // 2026-08-11 v2.97 现实时间耗尽 → 彻底死亡；再经 DOWNED_PZ_DELAY_DAYS(1天) 尸变
             // （尸变仍用游戏天数调度，保持跨会话一致）。
             dwn._pzScheduled = sv.day + B.DOWNED_PZ_DELAY_DAYS;
             log(`${dwn.name} 救治超时，已彻底死亡……`, '#FF5544');
             // 倒下的名册记录清除（已死亡）；2026-08-10 可能是队友记录而非固定 isPlayer
             const pc = sv.npcs.find(n => n.downed) || sv.npcs.find(n => n.id === 'player' || n.isPlayer);
-            if (pc) { pc.alive = false; pc.downed = false; pc.hp = 0; }
+            if (pc) {
+                pc.alive = false; pc.downed = false; pc.hp = 0;
+                // 2026-08-11 v2.98 测试玩家发现①：主控补刀/超时彻底死亡后没有 _corpse 标记 →
+                // 尸体不生成 → 不能搜索遗物。补设尸体（可搜索 + 尸变倒计时，与成员一致）。
+                // 2026-08-11 v2.98 测试玩家发现②（本轮）：isPlayer 主角的遗物已由 deathDropLegacy
+                // 生成独立 corpse: 尸体（含全部背包），**不应再给 player 记录生成第二具尸体** →
+                // 重生后脚下"双尸体"（corpse:1 遗物 + player 重复）。仅非 isPlayer 的倒地主控
+                //（切视角后的队友）才补尸体。原主控（isPlayer）只置死，遗物由 corpse: 承载。
+                if (!pc.isPlayer && !pc._corpse) {
+                    pc._corpse = true;
+                    pc._corpseDay = sv.day;
+                    pc._corpseAtReal = sv.now != null ? sv.now : 0;
+                    pc._corpseContents = [];
+                    for (const s of pc.inv || []) { if (s) pc._corpseContents.push({ ...s, n: s.n || 1 }); }
+                    pc._corpseSearched = false;
+                    log(`${pc.name} 的尸体留在原地（靠近搜索 [F]）……`, '#9fd6ff');
+                }
+            }
         }
         // 延迟天数到 → 在重生点（床）刷尸
         if (sv.day >= dwn._pzScheduled) {
@@ -3856,23 +4242,65 @@ function updateDowned(sv, dt, canStand) {
 
 // 2026-08-10 软核成员倒地管理：超时 → 真正死亡；玩家/队友靠近倒地成员且持有药品 → 自动救助。
 function updateDownedMembersTimeout(sv) {
+    // 2026-08-11 v2.98 用户需求：队友救援界面时间与游戏内头顶倒计时实时同步——界面打开时刷新。
+    // mateRescueOpen 状态 = mateRescueId 非空（renderMateRescue 内部用 rescueEl/mateRescueId）。
+    // 节流（0.25s，用 sv.now）：避免每帧重建 DOM 导致按钮点击丢失（与主控救援界面一致）。
+    if (mateRescueId != null && typeof renderMateRescue === 'function') {
+        const _now = sv.now != null ? sv.now : performance.now();
+        if (_now - (sv._mateRescueRefreshAt || 0) >= 0.25) { sv._mateRescueRefreshAt = _now; renderMateRescue(); }
+    }
+    // 2026-08-11 v2.97 队友背起（界面一致需求）：背起的倒地队友坐标跟随玩家，
+    // 与主控背起 _carryDowned 完全一致（含室内跨场景坐标同步）。
+    if (sv._carryMateId) {
+        const cm = Array.isArray(sv._downedMembers) ? sv._downedMembers.find(x => x && x.id === sv._carryMateId) : null;
+        if (!cm || !cm.alive || !cm.downed) { sv._carryMateId = null; }
+        else {
+            cm.x = sv.px; cm.y = sv.py;
+            if (sv.interior) { cm.inInterior = true; cm.interiorKey = sv.interior.key; cm.interiorFloor = sv.interior.floor || 1; }
+            else { cm.inInterior = false; cm.interiorKey = null; cm.interiorFloor = null; }
+        }
+    }
     if (!sv._downedMembers || !sv._downedMembers.length) return;
     for (let i = sv._downedMembers.length - 1; i >= 0; i--) {
         const m = sv._downedMembers[i];
-        if (!m || !m.alive || !m.downed) { sv._downedMembers.splice(i, 1); continue; }
+        if (!m || !m.alive || !m.downed) {
+            // 2026-08-11 v2.97 被移除的是正在背起的队友 → 清 _carryMateId（防悬空）
+            if (sv._carryMateId === m.id) sv._carryMateId = null;
+            // 2026-08-11 v2.98 测试玩家发现（用户反馈"濒死队友不能救援，没有提示"）：
+            // 若成员【活着但非 downed】（异常状态被移除，如某路径误清 downed）且无 _corpse →
+            // 直接 splice 会让它凭空消失（既不能救治也不能搜索）。防御：保留为尸体（可搜索遗物），
+            // 避免"人凭空蒸发"。
+            if (m && m.party && !m._corpse) {
+                m.downed = false; m.alive = false; m.hp = 0;
+                m._deathReason = m._deathReason || '战斗中倒地（状态异常）致死';
+                m._corpse = true;
+                m._corpseDay = sv.day;
+                m._corpseAtReal = sv.now != null ? sv.now : 0;
+                m._corpseContents = [];
+                for (const s of m.inv || []) { if (s) m._corpseContents.push({ ...s, n: s.n || 1 }); }
+                m._corpseSearched = false;
+                log(`${m.name} 倒下了（状态异常，保留尸体可搜索）……`, '#FFB347');
+            }
+            sv._downedMembers.splice(i, 1);
+            continue;
+        }
         // 2026-08-11 v2.97 现实时间救援倒计时（与主控 _downed 一致）：成员倒地也是现实 20 分钟
         if (m._downedAtReal == null) m._downedAtReal = (sv.now != null ? sv.now : 0);
         if (m._penaltySec == null) m._penaltySec = 0;
         const spentM = Math.max(0, (sv.now != null ? sv.now : 0) - m._downedAtReal) + (m._penaltySec || 0);
+        // 2026-08-11 v2.98 成员救援时间随濒死次数递减：用 m.limitSec（killNpc/切视角入队时按次数算出），旧档回退默认
+        const mLimit = m.limitSec || B.DOWNED_LIMIT_SECONDS;
         // 超时 → 真正死亡
-        if (spentM >= B.DOWNED_LIMIT_SECONDS) {
+        if (spentM >= mLimit) {
             log(`${m.name} 救治超时，已死亡……`, '#FF5544');
             m.downed = false; m.alive = false; m.hp = 0;
-            m._deathReason = m._deathReason || '救治超时';   // 2026-08-11 击败详情（全灭弹窗）
+            m._deathReason = m._deathReason || '救援时间耗尽致死';   // 2026-08-11 v2.98 击败详情（全灭弹窗）
             // 2026-08-10 疏漏修复：超时死亡的成员同样生成尸体遗物（与 killNpc 的 party 死亡一致）——
             // 此前只置 alive=false 不留 _corpse，导致该队友尸体消失、遗物全丢（用户要求成员尸体留原地搜索）。
             m._corpse = true;
             m._corpseDay = sv.day;   // 记录死亡天数（超期腐烂清理用）
+            // 2026-08-11 v2.98 尸体尸变系统：记录尸体生成现实时刻
+            m._corpseAtReal = sv.now != null ? sv.now : 0;
             m._corpseContents = [];
             for (const s of m.inv || []) {
                 if (!s) continue;
@@ -3880,6 +4308,8 @@ function updateDownedMembersTimeout(sv) {
                 m._corpseContents.push({ ...s, n: s.n || 1 });
             }
             m._corpseSearched = false;
+            // 2026-08-11 v2.97 超时死亡的若是正在背起的队友 → 清 _carryMateId
+            if (sv._carryMateId === m.id) sv._carryMateId = null;
             sv._downedMembers.splice(i, 1);
             continue;
         }
@@ -4026,7 +4456,9 @@ function showWeaponRepairPopup() {
     const ok = hasTool('tool:wrench') && partsN >= B.WEAPON_REPAIR_PARTS;
     const info = Panel.getItemInfo(s.id);
     wrepairEl.style.display = 'flex';
-    wrepairEl.innerHTML = '<div style="background:#1a1014;border:2px solid #FF5544;border-radius:10px;padding:20px 28px;width:380px;text-align:center;">' +
+    wrepairEl.innerHTML = '<div style="background:#1a1014;border:2px solid #FF5544;border-radius:10px;padding:20px 28px;width:380px;text-align:center;position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：所有弹窗都有叉号关闭按钮（右上角；点击关闭，不强制修复）
+        '<button id="wsl-wrepair-close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;padding:2px;" title="稍后修复">✕</button>' +
         `<div style="font-size:19px;color:#FF5544;letter-spacing:3px;margin-bottom:6px;">⚒ ${info.name} 损坏了！</div>` +
         `<div style="font-size:12px;color:#8a9aa2;margin-bottom:14px;">耐久归零，无法使用；可用扳手 + 零件×${B.WEAPON_REPAIR_PARTS} 修复</div>` +
         `<div style="display:flex;gap:10px;justify-content:center;">` +
@@ -4044,6 +4476,12 @@ function showWeaponRepairPopup() {
         }
     });
     wrepairEl.querySelector('#wsl-wrepair-later').addEventListener('click', () => {
+        sv._brokenWpnPrompt = null;
+        wrepairEl.style.display = 'none';
+    });
+    // 2026-08-11 v2.99 右上角叉号：同"稍后"，关闭弹窗不强制修复
+    const wrc = wrepairEl.querySelector('#wsl-wrepair-close');
+    if (wrc) wrc.addEventListener('click', () => {
         sv._brokenWpnPrompt = null;
         wrepairEl.style.display = 'none';
     });
@@ -4173,11 +4611,12 @@ function renderCarMenu() {
     const driveDis = m.repaired ? '' : ' dis';
     const driveLabel = m.repaired ? '驾驶' : (isWreck ? '无法驾驶（已报废）' : '驾驶（需先修理）');
     opts += `<button class="menu-btn wsl-car-opt${driveDis}" data-act="drive" style="min-width:220px;">${driveLabel}</button>`;
-    opts += `<button class="menu-btn wsl-car-opt" data-act="close" style="min-width:220px;">关闭 (ESC)</button>`;
     const stateTxt = m.repaired ? (cond === 'intact' ? '· 完好可驾驶' : '· 已修复') : (isWreck ? '· 已报废' : '· 待修理');
     const fuelTxt = isWreck ? '' : ` · 油量 ${Math.round(m.fuel != null ? m.fuel : 0)}/${B.FUEL_MAX} · 耐久 ${Math.ceil(m.hp != null ? m.hp : 0)}/${WV.CAR_MAX_HP}`;
     carMenuEl.innerHTML =
-        '<div class="wsl-scaler" style="gap:12px;">' +
+        '<div class="wsl-scaler" style="gap:12px;position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+        '<button class="wsl-car-opt" data-act="close" style="position:absolute;top:6px;right:8px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;min-width:0;padding:2px;" title="关闭 (F)">✕</button>' +
         `<div style="font-size:20px;color:#FFD700;letter-spacing:3px;margin-bottom:6px;">汽 车 ${stateTxt}${fuelTxt}</div>` +
         opts + '</div>';
     carMenuEl.querySelectorAll('.wsl-car-opt').forEach(el => {
@@ -4304,7 +4743,6 @@ function renderNpcMenu() {
         opts.push({ act: 'cure', label: `治疗 ${s.name}（对症药 或 草药×${s.cure}）${ok ? '' : ' ✗ 无药'}` });
     }
     opts.push({ act: 'attrs', label: '查看属性（天赋/先天/成长）' });
-    opts.push({ act: 'close', label: '关闭 (ESC)' });
     const roleTxt = npc.role === 'hostile' ? '恶意' : (npc.role === 'friendly' ? '友善' : '中立');
     // 阵营归属：营地居民（campId 匹配当前营地）/ 他乡营地 / 流浪者 / 敌对势力
     let campTxt = '';
@@ -4314,7 +4752,9 @@ function renderNpcMenu() {
     else campTxt = '流浪者';
     const age = npc.age ?? (sv.day - npc.bornDay);
     const sickTxt = npc.sick && B.SICKNESS[npc.sick.type] ? ` · 染病：${B.SICKNESS[npc.sick.type].name}` : '';
-    npcMenuEl.innerHTML = '<div class="wsl-scaler" style="gap:12px;">' +
+    npcMenuEl.innerHTML = '<div class="wsl-scaler" style="gap:12px;position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+        '<button class="wsl-npc-opt" data-act="close" style="position:absolute;top:6px;right:8px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;min-width:0;padding:2px;" title="关闭 (F)">✕</button>' +
         `<div style="font-size:20px;color:#FFD700;letter-spacing:2px;margin-bottom:4px;">${npc.name} · ${roleTxt}${campTxt ? ` · ${campTxt}` : ''}${npc.party ? ' · 队伍' : ''}${npc.hired ? ` · 雇佣(${npc.hireFee ? npc.hireFee.label : ''})` : ''}</div>` +
         `<div style="font-size:12px;color:#8a9aa2;margin-bottom:10px;">HP ${Math.ceil(npc.hp)}/${npc.maxHp} · 饱食 ${Math.round(npc.food)} · 水分 ${Math.round(npc.water)} · ${B.ageStage(age).name}（${age}天） · 武器 ${npc.wpnName || '拳头'}${sickTxt}</div>` +
         opts.map(o => `<button class="menu-btn wsl-npc-opt" data-act="${o.act}" style="min-width:240px;">${o.label}</button>`).join('') +
@@ -4410,9 +4850,10 @@ function openNpcCommandMenu(npc) {
         { c: 'camp', label: '返回营地干活', disabled: !sv.camp },
         { c: 'drive', label: '驾驶汽车出行…（选择目的地）' },
         { c: 'dismiss', label: '解散离队' },
-        { c: 'close', label: '取消 (ESC)' },
     ];
-    npcCmdEl.innerHTML = '<div class="wsl-scaler" style="gap:12px;">' +
+    npcCmdEl.innerHTML = '<div class="wsl-scaler" style="gap:12px;position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+        '<button class="wsl-npc-cmd" data-c="close" style="position:absolute;top:6px;right:8px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;min-width:0;padding:2px;" title="取消 (F)">✕</button>' +
         `<div style="font-size:20px;color:#FFD700;letter-spacing:2px;margin-bottom:4px;">${npc.name} · 命令</div>` +
         `<div style="font-size:12px;color:#8a9aa2;margin-bottom:10px;">${npc.party ? '队伍成员' : '非队员'}${sv.camp ? '' : ' · 暂无营地，返回营地需先插旗'}</div>` +
         opts.map(o => `<button class="menu-btn wsl-npc-cmd${o.disabled ? ' dis' : ''}" data-c="${o.c}" style="min-width:240px;">${o.label}</button>`).join('') +
@@ -4533,11 +4974,12 @@ function openDriveDestMenu(npc) {
     opts.push({ d: 'suburb', label: '探索郊区' });
     opts.push({ d: 'ruins', label: '探索废墟' });
     opts.push({ d: 'free', label: '自由探索（随机远方）' });
-    driveDestEl.innerHTML = '<div class="wsl-scaler" style="gap:12px;">' +
+    driveDestEl.innerHTML = '<div class="wsl-scaler" style="gap:12px;position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+        '<button class="wsl-drive-opt" data-d="close" style="position:absolute;top:6px;right:8px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;min-width:0;padding:2px;" title="取消 (F)">✕</button>' +
         `<div style="font-size:20px;color:#FFD700;letter-spacing:2px;margin-bottom:4px;">${npc.name} · 驾驶目的地</div>` +
         '<div style="font-size:12px;color:#8a9aa2;margin-bottom:10px;">需附近 24 格内有归属汽车（修复/驾驶过才有"所属"标记）；出发后全员自动乘车，F 取消</div>' +
         opts.map(o => `<button class="menu-btn wsl-drive-opt" data-d="${o.d}" style="min-width:240px;">${o.label}</button>`).join('') +
-        '<button class="menu-btn wsl-drive-opt" data-d="close" style="min-width:240px;">取消 (ESC)</button>' +
         '</div>';
     driveDestEl.querySelectorAll('.wsl-drive-opt').forEach(el => el.addEventListener('click', () => {
         const d = el.dataset.d;
@@ -4604,14 +5046,15 @@ function renderCampPanel() {
     const logs = (sv.npcs || []).filter(n => n.alive && n.state === 'camp')
         .flatMap(n => n.workLog.map(e => ({ name: n.name, text: e.text, day: e.day })))
         .slice(0, 8);
-    campPanelEl.innerHTML = '<div class="wsl-scaler" style="gap:10px;max-width:480px;">' +
+    campPanelEl.innerHTML = '<div class="wsl-scaler" style="gap:10px;max-width:480px;position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+        '<button class="wsl-camp-opt" data-act="close" style="position:absolute;top:6px;right:8px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;min-width:0;padding:2px;" title="关闭 (F)">✕</button>' +
         '<div style="font-size:20px;color:#FFD700;letter-spacing:4px;margin-bottom:6px;text-align:center;">◇ 营 地 ◇</div>' +
         `<div style="font-size:13px;color:#8a9aa2;margin-bottom:6px;">营地同伴 ${(sv.npcs || []).filter(n => n.alive && n.state === 'camp').length} 人</div>` +
         '<div style="font-size:13px;color:#ccd;margin-bottom:8px;">工作日志：</div>' +
         (logs.length ? logs.map(l => `<div style="font-size:12px;color:#ffe9a8;text-align:left;">第${l.day}天 · ${l.text}</div>`).join('')
             : '<div style="font-size:12px;color:#778;">营地暂无人干活</div>') +
         '<button class="menu-btn wsl-camp-opt" data-act="chest" style="min-width:240px;margin-top:8px;">打开营地物资箱</button>' +
-        '<button class="menu-btn wsl-camp-opt" data-act="close" style="min-width:240px;">关闭 (ESC)</button>' +
         '</div>';
     campPanelEl.querySelectorAll('.wsl-camp-opt').forEach(el => el.addEventListener('click', () => {
         if (el.dataset.act === 'close') { campPanelEl.style.display = 'none'; AudioSystem.playClick(); return; }
@@ -4654,7 +5097,9 @@ function renderCharPanel() {
         const bonus = v > 10 ? ` +${Math.round((v - 10) * 2)}%` : (v < 10 ? ` ${Math.round((v - 10) * 2)}%` : '');
         return `<div style="font-size:13px;color:#e8e8e8;margin:2px 0;">${B.ATTRIB_NAMES[k]} <span style="color:#FFD700;">${v}</span> ${bar}${bonus}</div>`;
     };
-    charPanelEl.innerHTML = '<div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:20px 26px;width:460px;">' +
+    charPanelEl.innerHTML = '<div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:20px 26px;width:460px;position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+        '<button data-act="close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;" title="关闭 (C)">✕</button>' +
         `<div style="font-size:20px;color:#39d98a;letter-spacing:3px;margin-bottom:4px;text-align:center;">◇ 角色属性 ◇</div>` +
         `<div style="font-size:13px;color:#8a9aa2;text-align:center;margin-bottom:12px;">${p.name} · ${B.ageStage(age).name}（${age}天） · 武器 ${p.wpnName || '拳头'}</div>` +
         `<div style="border-top:1px solid #2a3540;padding-top:10px;">${B.ATTRIB_KEYS.map(attrRow).join('')}</div>` +
@@ -4662,7 +5107,6 @@ function renderCharPanel() {
         `<div style="font-size:13px;color:#ffb08a;margin-top:4px;">${cg ? `先天疾病：${cg.name}（${cg.desc}）` : '先天：健康'}</div>` +
         `<div style="font-size:13px;color:#ff8866;margin-top:4px;">${sickTxt}</div>` +
         `<div style="font-size:12px;color:#8a9aa2;margin-top:8px;border-top:1px solid #2a3540;padding-top:6px;">后天成长：近战 ${act.melee || 0}/60 · 受击 ${act.hit || 0}/40 · 奔跑 ${Math.round(act.run || 0)}/300</div>` +
-        '<button data-act="close" style="width:100%;margin-top:14px;padding:8px;background:#232c34;border:1px solid #4a5a66;color:#ccd;border-radius:6px;cursor:pointer;">关闭 (ESC)</button>' +
         '</div>';
     charPanelEl.querySelector('[data-act="close"]').addEventListener('click', closeCharPanel);
 }
@@ -4710,9 +5154,11 @@ function renderNpcMgr() {
     const members = (sv.npcs || []).filter(n => n.alive && n.party);
     const sel = members.find(n => n.id === sv.npcMgr.selId) || members[0];
     if (!sel) {
-        npcMgrEl.innerHTML = '<div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:20px 26px;width:440px;">' +
+        npcMgrEl.innerHTML = '<div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:20px 26px;width:440px;position:relative;">' +
+            // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+            '<button class="wsl-npcmgr-opt" data-act="close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;" title="关闭 (H)">✕</button>' +
             '<div style="font-size:15px;color:#8a9aa2;text-align:center;margin:8px 0;">队伍里暂时没有人（最多 4 人，招募/雇佣 NPC 后按 H 打开）</div>' +
-            '<button class="menu-btn wsl-npcmgr-opt" data-act="close" style="width:100%;margin-top:14px;">关闭 (ESC)</button></div>';
+            '</div>';
         bindNpcMgrOpts();
         return;
     }
@@ -4747,7 +5193,9 @@ function renderNpcMgr() {
     // 玩家背包格子（点击 = 赠送给选中成员；右下角提示）
     const playerInv = sv.inv.map((s, i) => cell(s, i, 'pi')).join('');
     // 固定整体尺寸（点击成员不变化）：宽 920 高 540，内部分栏固定宽
-    npcMgrEl.innerHTML = '<div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:14px 18px;width:920px;height:560px;display:flex;flex-direction:column;box-sizing:border-box;">' +
+    npcMgrEl.innerHTML = '<div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:14px 18px;width:920px;height:560px;display:flex;flex-direction:column;box-sizing:border-box;position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+        '<button class="wsl-npcmgr-opt" data-act="close" style="position:absolute;top:10px;right:14px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;z-index:2;" title="关闭 (H)">✕</button>' +
         `<div style="font-size:17px;color:#39d98a;letter-spacing:3px;margin-bottom:8px;text-align:center;flex-shrink:0;">◇ 队伍管理 ◇</div>` +
         '<div style="display:flex;gap:12px;flex:1;min-height:0;">' +
         // 左：成员列表（固定宽）
@@ -4778,7 +5226,6 @@ function renderNpcMgr() {
         '<button class="menu-btn wsl-npcmgr-opt" data-act="drink" style="min-width:0;padding:6px 0;font-size:12px;">喝水</button>' +
         `<button class="menu-btn wsl-npcmgr-opt" data-act="cure" style="min-width:0;padding:6px 0;font-size:12px;${sick ? '' : 'opacity:0.45;'}">治病${sick ? '' : ''}</button>` +
         `<button class="menu-btn wsl-npcmgr-opt" data-act="inf" style="min-width:0;padding:6px 0;font-size:12px;${sel.infection > 0 ? '' : 'opacity:0.45;'}">减感染</button>` +
-        '<button class="menu-btn wsl-npcmgr-opt" data-act="close" style="min-width:0;padding:6px 0;font-size:12px;grid-column:1/3;">关闭 (ESC)</button>' +
         '</div>' +
         '</div>' +
         // 右：背包面板（成员背包 + 玩家背包，固定宽）
@@ -4961,6 +5408,10 @@ function openRescue() {
         rescueEl.id = 'wsl-rescue';
         rescueEl.style.cssText = 'position:absolute;inset:0;z-index:908;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei",monospace;';
         document.getElementById('game-container').appendChild(rescueEl);
+        // 2026-08-11 v2.98 锦上添花：点击遮罩空白处关闭救助界面（内容区域点击不关闭）
+        rescueEl.addEventListener('click', (e) => {
+            if (e.target === rescueEl) closeRescue();
+        });
     }
     rescueEl.classList.remove('hidden');
     rescueEl.style.display = 'flex';
@@ -4979,10 +5430,13 @@ function downedRemainTxt(sv) {
     if (dwn.downedAtReal == null) dwn.downedAtReal = (sv.now != null ? sv.now : 0);
     if (dwn._penaltySec == null) dwn._penaltySec = 0;
     const spent = Math.max(0, (sv.now != null ? sv.now : 0) - dwn.downedAtReal) + (dwn._penaltySec || 0);
-    const remainSec = Math.max(0, B.DOWNED_LIMIT_SECONDS - spent);
+    // 2026-08-11 v2.98 救援时间随濒死次数递减：limit = dwn.limitSec（创建时按次数算出），
+    // 与游戏内头顶倒计时（updateDowned 超时判定）同源，保证界面/头顶一致。
+    const limit = dwn.limitSec || B.DOWNED_LIMIT_SECONDS;
+    const remainSec = Math.max(0, limit - spent);
     const m = Math.floor(remainSec / 60), s = Math.floor(remainSec % 60);
     const txt = `${m} 分 ${String(s).padStart(2, '0')} 秒`;
-    return { txt, onBed, limit: B.DOWNED_LIMIT_SECONDS, remainSec };
+    return { txt, onBed, limit, remainSec };
 }
 function renderRescue() {
     if (!rescueEl || !sv._downed) return;
@@ -4995,12 +5449,14 @@ function renderRescue() {
     const devInf = WDEV.isDev() && sv._devInf;   // 开发者无限资源：视为药品无限，可直接提交
     const hasMed = devInf || sv.inv.some(s => s && (s.id === B.DOWNED_RESCUE_MED || s.id === 'med:pan'));
     let herbs = 0; for (const s of sv.inv) if (s && s.id === 'herb') herbs += s.n;
-    rescueEl.innerHTML = '<div style="background:#141a22;border:2px solid #E8836A;border-radius:10px;padding:20px 26px;width:460px;">' +
+    rescueEl.innerHTML = '<div style="background:#141a22;border:2px solid #E8836A;border-radius:10px;padding:20px 26px;width:460px;position:relative;">' +
+        // 2026-08-11 v2.98 锦上添花：右上角 × 关闭按钮（点击关闭，不中止救治）
+        '<button data-act="close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;">✕</button>' +
         `<div style="font-size:18px;color:#E8836A;letter-spacing:2px;margin-bottom:6px;text-align:center;">♨ 救治 ${name}</div>` +
         `<div style="font-size:12px;color:#8a9aa2;text-align:center;margin-bottom:14px;">${name} 正处于<b style="color:#FF5544;">濒临死亡</b>状态，需要及时救治</div>` +
         // 存活倒计时（v2.97 现实时间：20 分钟窗口，被攻击加速减少）
         `<div style="font-size:14px;color:#FFD700;margin-bottom:4px;border:1px solid #3a3a24;background:#1a1a20;padding:8px 10px;border-radius:6px;">` +
-        `⏳ 还能存活：<b>${txt}</b> <span style="color:#8a9aa2;font-size:11px;">（现实 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟，被攻击每次伤害 -10 秒）</span></div>` +
+        `⏳ 还能存活：<b>${txt}</b> <span style="color:#8a9aa2;font-size:11px;">（现实 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟，被攻击每次伤害 -10 秒）${devInf ? ' · <b style="color:#39d98a;">开发者无限资源</b>' : ''}</span></div>` +
         // 待提交药品
         `<div style="font-size:14px;color:#e8e8e8;margin:12px 0 4px;">待提交药品：</div>` +
         `<div style="font-size:12px;color:#ccd;margin-bottom:2px;">伤口药/抗生素 ${needMed > 0 ? '<b style="color:#7DFF7D;">' + needMed + '</b>' : '<span style="color:#39d98a;">已集齐 ✔</span>'}${needMed > 0 ? ' 瓶，或 草药 ' + needHerb + ' 株' : ''}</div>` +
@@ -5008,7 +5464,8 @@ function renderRescue() {
         `<div style="font-size:12px;color:#8a9aa2;margin-top:6px;">药品集齐后即可救治${name}。对症药/抗生素各计 1 瓶，草药每 3 株计 1 进度。</div>` +
         // 操作
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;">' +
-        `<button class="menu-btn" data-act="submit" style="min-width:0;${done ? 'opacity:0.5;' : ''}" ${done ? 'disabled' : ''}>${done ? '药品已集齐' : (hasMed || herbs > 0 ? '提交药品' : '无药品')}</button>` +
+        // 2026-08-11 v2.97 修复"药品已集齐但点不动按钮"（主控版）：done 时按钮 enabled + 绿字"集齐·完成救治"，点击提交救活。
+        `<button class="menu-btn" data-act="submit" style="min-width:0;${done ? 'color:#39d98a;font-weight:bold;' : ''}">${done ? '集齐·完成救治' : (hasMed || herbs > 0 ? '提交药品' : '无药品')}</button>` +
         // 2026-08-10 用户需求：救助界面加"背起"按钮（背起濒死玩家，移速减慢）
         (sv._carryDowned
             ? '<button class="menu-btn" data-act="putdown" style="min-width:0;">放下</button>'
@@ -5108,17 +5565,21 @@ function renderMateRescue() {
     const needHerb = B.DOWNED_HERB_EQUIV - (m.herb || 0);
     const done = needMed <= 0 || needHerb <= 0;
     // 存活倒计时（v2.97 现实时间：与主控同规则，20 分钟窗口 + 被攻击减时）
+    // 2026-08-11 v2.98 成员救援时间随濒死次数递减：用 m.limitSec（与超时判定/头顶倒计时同源），旧档回退默认
     const onBed = false;   // v2.97 不再按床延长（用户新规则：固定 20 分钟现实时间）
     if (m._downedAtReal == null) m._downedAtReal = (sv.now != null ? sv.now : 0);
     if (m._penaltySec == null) m._penaltySec = 0;
     const spentM = Math.max(0, (sv.now != null ? sv.now : 0) - m._downedAtReal) + (m._penaltySec || 0);
-    const remainSecM = Math.max(0, B.DOWNED_LIMIT_SECONDS - spentM);
+    const mLimit = m.limitSec || B.DOWNED_LIMIT_SECONDS;
+    const remainSecM = Math.max(0, mLimit - spentM);
     const mm = Math.floor(remainSecM / 60), ss = Math.floor(remainSecM % 60);
     const txt = `${mm} 分 ${String(ss).padStart(2, '0')} 秒`;
     const devInfM = WDEV.isDev() && sv._devInf;   // 开发者无限资源：视为药品无限，可直接提交
     const hasMed = devInfM || sv.inv.some(s => s && (s.id === B.DOWNED_RESCUE_MED || s.id === 'med:pan'));
     let herbs = 0; for (const s of sv.inv) if (s && s.id === 'herb') herbs += s.n;
-    rescueEl.innerHTML = '<div style="background:#141a22;border:2px solid #E8836A;border-radius:10px;padding:20px 26px;width:460px;">' +
+    rescueEl.innerHTML = '<div style="background:#141a22;border:2px solid #E8836A;border-radius:10px;padding:20px 26px;width:460px;position:relative;">' +
+        // 2026-08-11 v2.98 锦上添花：右上角 × 关闭按钮（点击关闭，不中止救治）
+        '<button data-act="close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;">✕</button>' +
         `<div style="font-size:18px;color:#E8836A;letter-spacing:2px;margin-bottom:6px;text-align:center;">♨ 救治 ${name}</div>` +
         `<div style="font-size:12px;color:#8a9aa2;text-align:center;margin-bottom:14px;">${name} 正处于<b style="color:#FF5544;">濒临死亡</b>状态，需要及时救治</div>` +
         `<div style="font-size:14px;color:#FFD700;margin-bottom:4px;border:1px solid #3a3a24;background:#1a1a20;padding:8px 10px;border-radius:6px;">⏳ 还能存活：<b>${txt}</b> <span style="color:#8a9aa2;font-size:11px;">（现实 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟，被攻击每次伤害 -10 秒）${devInfM ? ' · <b style="color:#39d98a;">开发者无限资源</b>' : ''}</span></div>` +
@@ -5126,12 +5587,34 @@ function renderMateRescue() {
         `<div style="font-size:12px;color:#ccd;margin-bottom:2px;">伤口药/抗生素 ${needMed > 0 ? '<b style="color:#7DFF7D;">' + needMed + '</b>' : '<span style="color:#39d98a;">已集齐 ✔</span>'}${needMed > 0 ? ' 瓶，或 草药 ' + needHerb + ' 株' : ''}</div>` +
         `<div style="font-size:12px;color:#8a9aa2;">已提交：对症药/抗生素 <span style="color:#FFD700;">${m.med || 0}</span>/${B.DOWNED_NEED_MED} · 草药 <span style="color:#FFD700;">${m.herb || 0}</span>/${B.DOWNED_HERB_EQUIV}</div>` +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;">' +
-        `<button class="menu-btn" data-act="submit" style="min-width:0;${done ? 'opacity:0.5;' : ''}" ${done ? 'disabled' : ''}>${done ? '药品已集齐' : (hasMed || herbs > 0 ? '提交药品' : '无药品')}</button>` +
-        '<button class="menu-btn" data-act="close" style="min-width:0;">关闭（不中止救治）</button>' +
+        // 2026-08-11 v2.97 修复"药品已集齐但点不动按钮，救不了队友"：之前 `done` 时按钮 disabled，
+        // 玩家看到"药品已集齐"灰按钮不知道已自动救活——改为"集齐·完成救治"enabled 按钮，
+        // 点击调 mateSubmitRescueMed（内部走 mateMedSubmit 救活+关闭），交互明确。
+        `<button class="menu-btn" data-act="submit" style="min-width:0;${done ? 'color:#39d98a;font-weight:bold;' : ''}">${done ? '集齐·完成救治' : (hasMed || herbs > 0 ? '提交药品' : '无药品')}</button>` +
+        // 2026-08-11 v2.97 界面一致（用户要求：两次救助界面统一）：队友救助补上与主控 renderRescue
+        // 相同的"背起/放下"按钮（背起倒地队友跟随玩家，updateDownedMembersTimeout 同步坐标）。
+        (sv._carryMateId === m.id
+            ? '<button class="menu-btn" data-act="putdown" style="min-width:0;">放下</button>'
+            : '<button class="menu-btn" data-act="carrymate" style="min-width:0;">背起</button>') +
+        '<button class="menu-btn" data-act="close" style="min-width:0;grid-column:1/3;">关闭（不中止救治）</button>' +
         '</div>' +
-        '<div style="font-size:11px;color:#778;text-align:center;margin-top:10px;">提示：关闭界面不会导致成员死亡 · 需对症药/抗生素 或 草药救活</div></div>';
+        '<div style="font-size:11px;color:#778;text-align:center;margin-top:10px;">提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间</div></div>';
     rescueEl.querySelectorAll('[data-act]').forEach(el => el.addEventListener('click', () => {
-        if (el.dataset.act === 'close') { closeMateRescue(); return; }
+        const act = el.dataset.act;
+        if (act === 'close') { closeMateRescue(); return; }
+        if (act === 'carrymate') {
+            // 背起倒地队友（移动时队友坐标跟随玩家，与主控背起 _carryDowned 一致）
+            sv._carryMateId = m.id;
+            closeMateRescue();
+            log(`你背起了 ${m.name}，走到安全点放下（移速减慢）`, '#B8C4C8');
+            return;
+        }
+        if (act === 'putdown') {
+            sv._carryMateId = null;
+            closeMateRescue();
+            log(`你放下了 ${m.name}`, '#B8C4C8');
+            return;
+        }
         mateSubmitRescueMed();
     }));
 }
@@ -5193,9 +5676,29 @@ export function mateMedSubmit(sv, id, med, herb) {
         m.alive = true;
         m.hp = Math.max(1, Math.round(m.maxHp * 0.3));   // 30% 血
         // 状态保留：不清 infection/sick/attrs
+        // 2026-08-11 v2.99 修复"队友被救活后再次被击杀，全灭弹窗仍显示上次死因（被僵尸咬死）"：
+        // 救活 = 恢复健康，死因必须清空（与 downedMedSubmit 主控救活一致），下次死亡按新的
+        // 攻击来源重新记录——否则救活后 _deathReason 残留旧值，再死弹窗复用旧死因。
+        m._deathReason = null;
         if (Array.isArray(sv._downedMembers)) {
             sv._downedMembers = sv._downedMembers.filter(x => x !== m);
         }
+        // 2026-08-11 v2.97 修复"切队友视角救活幸存者后，当前主控头上残留濒死标志/倒计时"：
+        // 幸存者作为 sv._downed（主控倒地）被队友 F 救活走的是 mateMedSubmit——此前只清
+        // _downedMembers，**不清 sv._downed** → 残留的 _downed 让渲染层（drawPlayer 的
+        // drawDownedTimeBar）在【当前主控】头顶画救援倒计时，但人已救活、还能操控。
+        // 若救活的目标就是 sv._downed 对应角色 → 同步清 sv._downed（含相关状态）。
+        if (sv._downed) {
+            const dId = sv._downed.id;
+            const dName = sv._downed.name;
+            if ((dId != null && m.id === dId) || (dName && m.name === dName)) {
+                sv._downed = null;
+                sv._waitDowned = false;
+                sv._carryDowned = false;
+            }
+        }
+        // 2026-08-11 v2.97 界面一致：救活的若是正在被背起的队友 → 清 _carryMateId
+        if (sv._carryMateId === m.id) sv._carryMateId = null;
         if (sv.controllerId === m.id) {   // 若救活的是当前操控的成员 → 恢复主控血量
             sv.hp = m.hp; sv.maxHp = m.maxHp;
         }
@@ -5259,14 +5762,15 @@ function renderTrade() {
                 <span class="wsl-trade-price">${price} 金币</span></button>`;
         }).join('')
         : '<div class="wsl-trade-empty">背包没有可卖物品</div>';
-    tradeEl.innerHTML = '<div class="wsl-trade-panel">' +
+    tradeEl.innerHTML = '<div class="wsl-trade-panel" style="position:relative;">' +
+        // 2026-08-11 v2.99 用户要求：关闭用叉号（右上角），不显示 ESC 文字按钮
+        '<button class="wsl-trade-btn" data-act="close" style="position:absolute;top:8px;right:12px;width:auto;margin:0;background:none;border:none;color:#8a9aa2;font-size:18px;line-height:1;padding:2px;" title="关闭 (F)">✕</button>' +
         `<div class="wsl-trade-head">◇ 与 ${npc.name} 交易 ◇</div>` +
         `<div class="wsl-trade-balance">你的金币 <b style="color:#FFD700;">${countCoins(sv)}</b> · ${npc.name} 金币 <b style="color:#FFD700;">${npc.coins || 0}</b>　·　买入价 ×${Math.round(B.TRADE_MARKUP * 100)}% · 卖出价 ×${Math.round(B.TRADE_DISCOUNT * 100)}%${devInf ? ' · 开发者免费' : ''}</div>` +
         '<div class="wsl-trade-cols">' +
         '<div class="wsl-trade-col"><div class="wsl-trade-coltitle buy">— 购买（NPC 的商品）—</div>' + buyHtml + '</div>' +
         '<div class="wsl-trade-col"><div class="wsl-trade-coltitle sell">— 出售（卖给 NPC）—</div>' + sellHtml + '</div>' +
         '</div>' +
-        '<button class="wsl-trade-btn" data-act="close">关闭 (ESC)</button>' +
         '</div>';
     tradeEl.querySelectorAll('.wsl-trade-btn, .wsl-trade-row').forEach(el => el.addEventListener('click', () => tradeAct(el.dataset.act, parseInt(el.dataset.i))));
 }
@@ -5351,14 +5855,14 @@ function openLootFromBag(i) {
     let contents;
     if (isLooted) {
         // 已搜袋：取其剩余内容，移除该袋（关闭时若有剩余再存回）
-        contents = (item.contents || []).map(it => ({ id: it.id, n: it.n }));
+        contents = (item.contents || []).map(it => ({ ...it, n: it.n }));   // 保留完整对象（含品级 grade）
         sv.inv[i] = null;
     } else {
         // 未开袋：只开一个（从 bags 取一袋，n--）
         if (item.bags && item.bags.length) {
-            contents = (item.bags.shift() || []).map(it => ({ id: it.id, n: it.n }));
+            contents = (item.bags.shift() || []).map(it => ({ ...it, n: it.n }));   // 保留完整对象（含品级 grade）
         } else {
-            contents = (item.contents || []).map(it => ({ id: it.id, n: it.n }));
+            contents = (item.contents || []).map(it => ({ ...it, n: it.n }));   // 保留完整对象（含品级 grade）
         }
         item.n -= 1;
         if (item.n <= 0) sv.inv[i] = null;
@@ -5410,7 +5914,12 @@ function initInput() {
             if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
             return;
         }
-        if (k === 'f1') { e.preventDefault(); TUT.show(); return; }   // 2026-08-10 新手教程（随时打开）
+        // 2026-08-11 v2.99 用户要求：F1 打开的教程再按 F1 关闭（对应键位返回）
+        if (k === 'f1') {
+            e.preventDefault();
+            if (TUT.isOpen()) TUT.close(); else TUT.show();
+            return;
+        }
         if (k === 'escape' && TUT.isOpen()) { e.preventDefault(); TUT.close(); return; }   // 2026-08-10 教程通用返回
         if (k === 'f9') { e.preventDefault(); WDEV.toggle(sv); return; }
         if (k === 'f11') { e.preventDefault(); toggleFullscreen(); return; }
@@ -5556,8 +6065,15 @@ function initInput() {
             WB.toggleBuild(sv);
             return;
         }
-        if (k === 'c') { openCharPanel(sv.controllerId); return; }   // 角色属性面板
-        if (k === 'h') { openNpcMgr(); return; }   // 2026-08-10 队伍管理界面（查看队员属性/背包 + 喂食/喝水/治病/减感染）
+        // 2026-08-11 v2.99 用户要求：任何用键盘键位打开的 UI，都能再次按对应键关闭
+        if (k === 'c') {
+            if (charPanelOpen()) { closeCharPanel(); return; }   // C 再按关闭属性面板
+            openCharPanel(sv.controllerId); return;
+        }
+        if (k === 'h') {
+            if (npcMgrOpen()) { closeNpcMgr(); return; }   // H 再按关闭队伍管理
+            openNpcMgr(); return;
+        }
         // 背起/放下倒地主角（2026-08-09）：靠近倒地主角时按 V 背起，背起后再按 V 放下
         if (k === 'v' && sv._downed) {
             if (sv._carryDowned) {
@@ -6314,14 +6830,18 @@ function startRun(opts) {
         }
     }
     WDEV.init(sv);
-    TUT.showIfFirst(sv);   // 首次进入：生存指南提示卡（本地标记，不打断老玩家）
-
+    // 2026-08-11 v2.99 新存档开场流程：先在荒野中醒来（睁眼动画），文字消失后再弹新手教程。
+    // 老存档（playT>0 或已看过教程）仍直接按原逻辑显示教程。
     if (sv._legacyNote) log('检测到旧版荒原存档（已备份），已为你开启全新无限荒原！');
-    else if (sv.playT > 0 || sv.day > 1) log(`欢迎回到荒原 · 第 ${sv.day} 天`);
-    else {
+    else if (sv.playT > 0 || sv.day > 1) {
+        log(`欢迎回到荒原 · 第 ${sv.day} 天`);
+        TUT.showIfFirst(sv);   // 老存档：直接显示（首次看教程场景）
+    } else {
         log('你醒来时，发现自己躺在一片荒原上……'); AudioSystem.playGameStart();
         // 2026-08-09 昏迷苏醒过渡：刚醒来黑灰眨眼几次，期间不能移动，像素氛围更有代入感
         sv._wake = { t: 0, dur: 2.4 };
+        // 2026-08-11 v2.99 新存档：教程等睁眼动画（文字消失，约 2.4s）结束后再弹出
+        TUT.showIfFirstAfterWake(sv, 2500);
     }
 
     sv.last = performance.now();
@@ -6596,7 +7116,7 @@ export function hostApplyGuestAttack(evt, gx, gy) {
             bn.hp -= evt.dmg || 10;
             bn.hurtT = 0.15;
             if (!evt.melee) sv.effects.push({ kind: 'hit', x: bn.x, y: bn.y, life: 0.15, maxLife: 0.15 });
-            if (bn.hp <= 0) WNPC.killNpc(sv, bn, '被队友击杀');
+            if (bn.hp <= 0) WNPC.killNpc(sv, bn, '被队友误伤致死');
         }
         return null;
     }
@@ -6751,7 +7271,11 @@ function togglePause(silent) {
             pauseEl.id = 'wsl-pause';
             pauseEl.style.cssText = 'position:absolute;inset:0;z-index:900;background:rgba(0,0,0,0.82);display:flex;align-items:center;justify-content:center;';
             pauseEl.innerHTML =
-                '<div class="wsl-scaler">' +
+                '<div class="wsl-scaler" style="position:relative;">' +
+                // 2026-08-11 v2.99 用户要求：所有弹窗都有叉号关闭按钮（右上角；关闭=继续游戏）
+                // v2.99 修正：top:-4px;right:-8px 负偏移会被容器裁剪（暂停界面被 wsl-scaler overflow-y:auto 截掉一半）
+                // 改为正偏移 + 与面板边界一致的内边距，确保完整显示
+                '<button id="wsl-p-close" style="position:absolute;top:6px;right:10px;background:none;border:none;color:#8a9aa2;font-size:20px;cursor:pointer;line-height:1;padding:2px;z-index:2;" title="继续游戏 (P)">✕</button>' +
                 '<div style="font-size:22px;color:#FFD700;margin-bottom:10px;letter-spacing:4px;">暂  停</div>' +
                 '<div style="color:#7fb39a;font-size:13px;margin-bottom:12px;letter-spacing:1px;">世界种子 <span id="wsl-seed-val" style="color:#39d98a;font-weight:bold;">' + (sv && sv.world ? sv.world.seed : '?') + '</span> · 角色 ' + (sv ? (sv.characterName || '幸存者') : '?') + '</div>' +
                 '<div class="wsl-vol">' +
@@ -6766,6 +7290,9 @@ function togglePause(silent) {
                 '</div>';
             document.getElementById('game-container').appendChild(pauseEl);
             pauseEl.querySelector('#wsl-p-resume').addEventListener('click', () => togglePause());
+            // 2026-08-11 v2.99 右上角叉号：关闭暂停 = 继续游戏
+            const pcBtn = pauseEl.querySelector('#wsl-p-close');
+            if (pcBtn) pcBtn.addEventListener('click', () => togglePause());
             pauseEl.querySelector('#wsl-p-full').addEventListener('click', () => toggleFullscreen());
             const tpBtn = pauseEl.querySelector('#wsl-p-tpcamp');
             if (tpBtn) tpBtn.addEventListener('click', () => { togglePause(); tpToCamp(); });

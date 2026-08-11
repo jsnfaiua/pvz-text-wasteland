@@ -357,7 +357,7 @@ function driveCommon(sv, dt) {
             o.x += Math.cos(a) * 10; o.y += Math.sin(a) * 10;
             sv.effects.push({ kind: 'hit', x: o.x, y: o.y, life: 0.2, maxLife: 0.2 });
             if (o.hp <= 0) {
-                try { killNpc(sv, o, '被碾压'); } catch (e) { o.alive = false; o.hp = 0; }
+                try { killNpc(sv, o, '被车辆碾压致死'); } catch (e) { o.alive = false; o.hp = 0; }
             }
         }
     }

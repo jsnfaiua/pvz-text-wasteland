@@ -13,6 +13,7 @@ import { getTile, setTile, isWalk, T } from './world.js';
 import { TS } from './wconst.js';
 import { hurtPlant } from './wplants.js';
 import { damageObstacle } from './wbuild.js';
+import { gradeMul, itemGrade } from './wgrade.js';   // 2026-08-11 v2.98 品级系统：武器伤害乘品级倍率
 import * as Panel from './panel.js';
 import * as B from './wbalance.js';
 import * as MSG from './wmsg.js';
@@ -61,6 +62,21 @@ export function zombieHitSound(sv, z) {
 export function equipped(sv, slot) {
     for (const s of sv.inv) if (s && s.eq === slot) return s.id.slice(4);
     return null;
+}
+
+// 2026-08-11 v2.98 品级系统：返回当前槽位装备的武器物品对象（含 grade 字段，用于品级倍率）
+export function equippedItem(sv, slot) {
+    for (const s of sv.inv) if (s && s.eq === slot) return s;
+    return null;
+}
+
+// 当前槽位武器的品级伤害倍率（Z=1.0，A≈1.625）；无装备/非武器 → 1
+export function gradeDmgMul(sv, slot) {
+    try {
+        const it = equippedItem(sv, slot);
+        if (!it) return 1;
+        return gradeMul(itemGrade(it)).damageMul;
+    } catch (e) { return 1; }
 }
 
 export function wpnDef(sv, slot) {
@@ -169,6 +185,8 @@ export function meleeAttack(sv) {
     if (wpn.cooldown > 0 || wpn.reloading > 0) return {};
     const k = equipped(sv, 'melee') || 'fist';
     const w = WEAPONS[k] || WEAPONS.fist;
+    // 2026-08-11 v2.98 品级系统：近战伤害乘当前装备武器品级倍率（Z=1，A≈1.625）
+    const gMul = k === 'fist' ? 1 : gradeDmgMul(sv, 'melee');
     // 武器耐久：损坏的近战不能使用
     const mdur = weaponDurInfo(sv, 'melee');
     if (mdur && mdur.broken) return { msg: '武器已损坏，需要修理（扳手+零件）' };
@@ -235,13 +253,13 @@ export function meleeAttack(sv) {
             // 联机 guest 室内：室内各自独立（host 不在同一空间无法权威判定）→ 走本地扣血
             if (sv.mp && sv.mp.role === 'guest' && !sv.interior) {
                 // 带上武器 key：host 按各武器真实判定范围（reach+8）裁决命中
-                (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'atk', x: sv.px, y: sv.py, melee: true, wkey: k, dmg: devDmg(sv, w.damage) * atkMul });
+                (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'atk', x: sv.px, y: sv.py, melee: true, wkey: k, dmg: devDmg(sv, w.damage) * gMul * atkMul });
                 hitAny = true;
                 zombieHitSound(sv, z);
                 continue;
             }
             const df = doorFront(z, Math.atan2(sv.py - z.y, sv.px - z.x));
-            z.hp -= devDmg(sv, w.damage) * df * atkMul;
+            z.hp -= devDmg(sv, w.damage) * gMul * df * atkMul;
             z.hurt = 0.12;
             hitAny = true;
             zombieHitSound(sv, z);
@@ -264,11 +282,11 @@ export function meleeAttack(sv) {
             })();
             if (npcHit) {
                 if (wallBlocked(sv.px, sv.py, n.x, n.y)) continue;   // 只有墙阻挡近战
-                n.hp -= devDmg(sv, w.damage) * atkMul;
+                n.hp -= devDmg(sv, w.damage) * gMul * atkMul;
                 n.hurtT = 0.12;
                 hitAny = true;
                 maybeWound(sv, n);
-                if (n.hp <= 0) killNpc(sv, n, '被击杀');
+                if (n.hp <= 0) killNpc(sv, n, '战斗中被击败');
             }
         }
     }
@@ -284,7 +302,7 @@ export function meleeAttack(sv) {
         const tx = pgx + dx, ty = pgy + dy;
         const tile = getTile(sv, tx, ty);
         if (tile === T.SPROUT || tile === T.PLOT) {
-            hurtPlant(sv, tx, ty, devDmg(sv, w.damage));
+            hurtPlant(sv, tx, ty, Math.round(devDmg(sv, w.damage) * gMul));
             hitAny = true;
         } else if (tile === T.WEED) {
             setTile(sv, tx, ty, T.GROUND);
@@ -313,6 +331,8 @@ export function tryFire(sv, charge = 1) {
     if (!k) return { msg: '没有装备远程武器（背包里点击武器装备）' };
     const w = WEAPONS[k];
     if (!w) return { msg: '武器数据缺失' };
+    // 2026-08-11 v2.98 品级系统：远程伤害乘当前装备武器品级倍率（Z=1，A≈1.625）
+    const gMul = gradeDmgMul(sv, 'ranged');
     // 武器耐久：损坏的远程武器无法射击
     const rdur = weaponDurInfo(sv, 'ranged');
     if (rdur && rdur.broken) return { msg: '武器已损坏，需要修理（扳手+零件）' };
@@ -335,7 +355,7 @@ export function tryFire(sv, charge = 1) {
             // 从手部高度发射（原 sv.py 为脚底，导致子弹从人物下方打出）
             x: sv.px + Math.cos(a) * 22, y: (sv.py - SHOT_ORIGIN_Y) + Math.sin(a) * 22,
             vx: Math.cos(a) * w.bulletSpeed * spdMul, vy: Math.sin(a) * w.bulletSpeed * spdMul,
-            damage: devDmg(sv, Math.round(w.damage * charge)),
+            damage: Math.round(devDmg(sv, Math.round(w.damage * charge)) * gMul),
             color: w.color, label: w.bulletLabel || '·',
             life: 1.2, range: w.range || 9999,
             pierce: w.pierce || 0, pierced: 0, hitList: null,
@@ -558,7 +578,7 @@ export function updateBullets(sv, dt) {
                 nhit.hp -= Math.max(1, Math.round(b.damage * fo * (sv._rngMul || 1)));
                 nhit.hurtT = 0.15;
                 sv.effects.push({ kind: 'hit', x: b.x, y: b.y, life: 0.15, maxLife: 0.15 });
-                if (nhit.hp <= 0) killNpc(sv, nhit, '被击杀');
+                if (nhit.hp <= 0) killNpc(sv, nhit, '战斗中被击败');
                 dead = true;
             }
         }

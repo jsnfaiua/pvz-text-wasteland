@@ -12,7 +12,7 @@
 
 ## 0. 规则优先级
 
-1. 本文件（AGENTS.md）> `docs/系统架构与设计文档.md` > `docs/统一开发文档/创意工坊-荒原模组统一开发文档-v2.97.md` > 代码注释。
+1. 本文件（AGENTS.md）> `docs/系统架构与设计文档.md` > `docs/统一开发文档/创意工坊-荒原模组统一开发文档-v2.98.md` > 代码注释。
 2. 硬性规则冲突时，**更严格的一方生效**；拿不准时先问，禁止自行猜测后大量返工。
 
 ---
@@ -185,6 +185,9 @@
 | 改 wstate.js / survival.js 存档读写路径 | `smoke-test.js`（198 断言）+ `full-run-test.mjs`（多 seed 存档往返） |
 | 改寻路（wpath.js / 僵尸 A* / NPC 寻路） | `astar-verify.mjs` |
 | 改车辆驾驶/代驾/停车兜底 | `car-pathfinding-test.js`（**237/237 全绿基线**） |
+| 改战斗死亡 / 倒地救助 / 切视角 / 全灭判定 | `combat-death-matrix.mjs`（**898 断言**：死亡分支 × 救助状态机 × 救援时间 × 药品救治 × 切视角 × 全灭弹窗）+ `smoke-test.js` 相关断言 |
+| 改任意系统模块（僵尸AI/感染/建造/植物/搜索/区域/字词/室内/行动/武器/背包/尸群/地图/HUD） | `module-matrix-test.mjs`（**380 断言**：14 模块源码断言 + 纯函数模拟） |
+| 改游玩流程（开局/死亡/救助/尸变/存读档/交易/建造/天气/营地/队员/战斗） | `playtest-matrix.mjs`（**408 断言**：测试玩家游玩模拟矩阵） |
 | 改渲染 / 主循环 / 存档路径 | `full-run-test.mjs` + 浏览器实测 |
 | 改渲染 / 主循环 / 联机 | 真实浏览器 CDP 双端实测：`dev-tools/_cdp-perf.mjs`（单机五场景 FPS）+ `dev-tools/_cdp-mp-real.mjs`（双实例真联机）；**双端 61fps、零长帧、零 `Runtime.exceptionThrown`** |
 | 联机 3+ 人 | `dev-tools/_cdp-mp3.mjs`（三 Chrome 实例） |

@@ -16,6 +16,7 @@ import * as Panel from './panel.js';
 import * as MSG from './wmsg.js';
 import * as B from './wbalance.js';
 import * as WW from './wwordcraft-rules.js';
+import * as WG from './wgrade.js';   // 2026-08-11 v2.98 品级系统：僵尸死亡掉落灵石
 import { infectionLevelFromRoll } from './winfection.js';
 import { interiorZombieCount } from './windoor.js';
 import { killNpc, maybeWound, maybeInfectNpc, inAnyCamp, npcApplyDownedHit } from './wnpc.js';
@@ -209,6 +210,7 @@ export function spawnPlayerZombie(sv, opts) {
     }
     sv.zombies.push(z);
     sv._zombiePathNeedsRebuild = true;
+    // 2026-08-12 v2.99 用户定稿：尸变丧尸攻击逻辑与正常僵尸一样（撤销留家限制，不再记录 home）。
     return z;
 }
 
@@ -283,7 +285,8 @@ function resolveLootItem(kind, quality) {
     if (kind === 'weapon') {
         const tier = quality === 'epic' ? (Math.random() < 0.5 ? 'rare' : 'epic') : (Math.random() < 0.6 ? 'common' : 'rare');
         const pool = B.LOOT_WEAPONS[tier];
-        return { id: 'wpn:' + pool[Math.floor(Math.random() * pool.length)], n: 1 };
+        // 2026-08-11 v2.98 品级系统：开箱武器随机赋品级（A 极稀有 → Z 最常见）
+        return WG.withRandomGrade({ id: 'wpn:' + pool[Math.floor(Math.random() * pool.length)], n: 1 });
     }
     if (kind === 'gem') return { id: 'gem', n: 1 };
     if (kind === 'flag') return { id: 'flag', n: 1 };   // 史诗战利品袋：领地旗帜
@@ -529,6 +532,12 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         if (z.lungeT > 0) z.lungeT -= dt;
         const pdx = sv.px - z.x, pdy = sv.py - z.y;
         const pdist = Math.hypot(pdx, pdy) || 1;
+        // 2026-08-12 v2.99 用户定稿：**任何生物尸变，原地生成的尸变丧尸攻击逻辑与正常僵尸一样**。
+        // 撤销 v2.99 之前"尸变僵尸留家不追玩家"的特殊处理——用户澄清"瞬移过来咬我"的真正根因是
+        // 生成位置错乱（已在 softRespawn 用 _lastDeathPos、updateCorpseRevive 场景过滤修复），
+        // 而非"会追玩家"本身。故尸变丧尸（_reviveFromCorpse / isPlayerZombie）回归普通僵尸完整逻辑：
+        // 主动追玩家、正常寻路、正常啃咬、参与联机 guest/NPC 追击，与普通僵尸完全一致。
+        // 仅保留 _reviveFromCorpse 标记用于"被击败掉尸变尸体"（物品守恒），不影响攻击逻辑。
         const playerAlerted = isInPlayerAlertRange(sv, z);
         const plant = nearestPlantTarget(sv, z, B.Z_PLANT_DETECT * TS);
         const contact = B.Z_CONTACT[z.type] || B.Z_CONTACT.normal;
@@ -601,7 +610,7 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
                         // NPC 被咬专属反馈：'咬' 特效（与玩家被咬 '击'、植物被啃 '啃' 区分）
                         sv.effects.push({ kind: 'hit', x: n.x, y: n.y, life: 0.2, maxLife: 0.2, label: '咬' });
                     }
-                    if (n.hp <= 0) killNpc(sv, n, '被僵尸咬死');
+                    if (n.hp <= 0) killNpc(sv, n, '被僵尸啃咬致死');
                     break;
                 }
             }
@@ -653,6 +662,7 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         const seekingPlant = !z.horde && plant && plant.dist < B.Z_PLANT_DETECT * TS && !playerAlerted;
         // 联机 host：远端队友更近时僵尸转向追队友（直线追击 + 滑动避障，绕过路径场——
         // 路径场是朝房主 BFS 的，追 guest 只能直线逼近；guest 被咬由 hostGuestBiteCheck 权威判定）
+        // 2026-08-12 v2.99 用户定稿：尸变丧尸攻击逻辑与正常僵尸一样，故参与 guest 追击（不再跳过）
         let gChase = null;
         if (guest && !z.horde && !seekingPlant) {
             const gdx = guest.tx - z.x, gdy = guest.ty - z.y;
@@ -662,6 +672,7 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         // NPC 成员追击（2026-08-09 用户要求：僵尸主动追踪/感应 NPC，与追踪玩家同逻辑）：
         // 感应范围与玩家一致（Z_CHASE_RANGE 警戒区），目标为最近的存活 party NPC 成员，
         // 比玩家更近时僵尸转向 NPC 直线追击（寻路/感应与追玩家同一套判定）。
+        // 2026-08-12 v2.99 用户定稿：尸变丧尸攻击逻辑与正常僵尸一样，故参与 NPC 追击（不再跳过）
         let npcChase = null;
         if (!z.horde && !seekingPlant && sv.npcs) {
             const half = B.Z_CHASE_RANGE * TS / 2;
@@ -703,6 +714,9 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
             const qd = Math.hypot(qx, qy) || 1;
             mvx = qx / qd; mvy = qy / qd; spd = z.speed * typeSpd * 0.8 * auraMul * nightMul;
         } else {
+            // 2026-08-12 v2.99 用户定稿：尸变丧尸攻击逻辑与正常僵尸一样。
+            // 移除 v2.99"尸变僵尸 wander 受 home 限制"的强制拉回——尸变丧尸与普通僵尸一样
+            // 自由随机游走（不再限制在死亡地点 ±6 格）。
             z.wt -= dt;
             if (z.wt <= 0 || z.wDir == null) {
                 z.wt = 1.5 + Math.random() * 2.5;
@@ -778,6 +792,33 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
             const quality = rollQualityLoot(z.type);
             const contents = rollLootContents(quality, z.type);
             if (contents.length) sv.drops.push({ x: z.x, y: z.y, id: 'loot:' + quality, n: 1, contents });
+        }
+        // 2026-08-11 v2.98 品级系统：僵尸死亡掉落灵石（基础 3.33%，越稀有掉率越高/数量越多）
+        // 灵石为品级强化材料，掉落为可拾取物品（drops 实体，走过去拾取入包）
+        try {
+            const lg = WG.lingDrop(z);
+            if (lg.drop && lg.count > 0) {
+                sv.drops.push({ x: z.x, y: z.y, id: WG.LING_STONE_ID, n: lg.count, contents: null });
+            }
+        } catch (e) { /* 灵石掉落失败不阻塞 */ }
+        // 2026-08-11 v2.98 尸变丧尸被击败 → 掉「XX（尸变）」尸体（物品 = 丧尸背包，守恒；搜索完彻底消失）
+        // 内联自 survival.reviveZombieToCorpse（避免 wzombie ↔ survival 循环依赖）
+        if (z._reviveFromCorpse) {
+            const _revContents = (z.inv || []).filter(s => s && s.n > 0).map(s => ({ ...s }));
+            const _revName = z._reviveCorpseName || (z.playerName || '幸存者') + B.CORPSE_REVIVE_TAG;
+            if (!Array.isArray(sv.npcs)) sv.npcs = [];
+            sv.npcs.push({
+                id: 'rev' + ((sv._revSeq = (sv._revSeq || 0) + 1)),
+                isPlayer: false, name: _revName, role: 'friendly', look: null,
+                x: z.x, y: z.y, hp: 0, maxHp: 100, alive: false,
+                _corpse: true, _corpseDay: sv.day,
+                _corpseAtReal: sv.now != null ? sv.now : 0,
+                _corpseContents: _revContents, _corpseSearched: false,
+                _revivedCorpse: true,   // 尸变尸体：不二次尸变，搜索完彻底消失
+                inInterior: false, interiorKey: null, interiorFloor: null,
+                atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
+            });
+            MSG.pushMsg(sv, `${_revName} 被击败，留下尸变的尸体（可搜索）……`, '#9fd6ff');
         }
         sv.effects.push({ kind: 'dead', x: z.x, y: z.y, life: 0.6, maxLife: 0.6, label: z.name });
         AudioSystem.playZombieDie();

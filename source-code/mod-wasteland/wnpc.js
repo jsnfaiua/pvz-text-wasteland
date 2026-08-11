@@ -517,9 +517,9 @@ function updateNeeds(sv, n, dt, canStand) {
     // 病：生命持续流失；有药/草药自动服药（痢疾需同时有水）
     if (n.sick) {
         n.hp -= B.sickDrainPerSec(n.sick.type) * dt;
-        if (!cureSick(sv, n, n.inv, n.water) && n.hp <= 0) { killNpc(sv, n, '病死'); return; }
+        if (!cureSick(sv, n, n.inv, n.water) && n.hp <= 0) { killNpc(sv, n, '疾病恶化致死'); return; }
     }
-    if (n.hp <= 0) { killNpc(sv, n, '病亡'); return; }
+    if (n.hp <= 0) { killNpc(sv, n, '疾病恶化致死'); return; }
     // 自动进食/喝水（用自己背包）
     if (n.food < 35) eatFromInv(n);
     if (n.water < 35) drinkFromInv(n);
@@ -546,13 +546,17 @@ function drinkFromInv(n) {
 
 // ================= 2026-08-11 v2.97 NPC 互助赠与系统（用户需求） =================
 // 队伍内 NPC 队友之间主动分享物品：在【保证自己生存底线】的前提下，把多余的
-// 物品匀给最需要的队友。覆盖所有可分享物品（弹药/水/食物/药品/燃料/工具等）。
+// 物品按需补足给最需要的队友。覆盖所有可分享物品（弹药/水/食物/药品/燃料/工具等）。
+// 2026-08-11 v2.99 用户定稿：**所有分享都是"按需非分一半"语义**——
+// 只补足队友缺失的额度（差多少给多少），绝不把自己的物资平均切开。
 // 规则：
-//   弹药  ：自己保留 20 发底线，队友弹药 < 5 且自己 ≥ 21 → 匀一半（向下取整至少 1）
-//   水    ：自己水分 > 60 且背包水 ≥ 2，队友水分 < 50 → 给 1 份
+//   弹药  ：队友对应武器弹药低于舒适值（20 发）→ 按需补足到 20（至多用自己超出底线的部分）
+//   水    ：自己水分 > 60 且背包水 ≥ 2，队友水分 < 50 → 给 1 份（补足缺口，非均分）
 //   食物  ：自己饱食 > 60 且背包食物 ≥ 2，队友饱食 < 50 → 给 1 份（给饱食最低的）
-//   药品  ：自己 ≥ 2 份，队友受伤（hp<60%）或生病 → 给 1 份
-//   燃料/材料/其他：自己 > 保留底线（默认 3），队友缺（数量为 0）→ 给 1 份
+//   药品  ：**优先治病**（队友生病/重伤 → 主动送对症药/抗生素/草药），**其次集中存放**
+//     （无人生病时同资源型物品，合并给持有者，不散开占格子；自己保留 1 份底线）
+//   燃料/材料/其他资源：**集中存放**——队友已持有则把自己的多余部分合并给持有者；
+//     无人持有则自己保留（不散开，避免同类资源占多个队友格子，影响全队背包空间）。
 // 节流：每个 NPC 每 2.5 秒最多分享一次（防刷屏/防一帧内连环送空）。
 function npcShareWithMates(sv, n) {
     if (!sv || !n || !n.party || !n.alive || n.downed) return;
@@ -577,19 +581,24 @@ function npcShareWithMates(sv, n) {
         log(sv, `${n.name} 把 ${label} 分享给了 ${tgt.name}`, '#8ad9ff');
         return true;
     };
-    // ① 弹药：自己保留底线，队友缺弹药
-    const ammoNeeds = mates.filter(m => npcAmmoNeed(m) < 5).sort((a, b) => npcAmmoNeed(a) - npcAmmoNeed(b));
-    if (ammoNeeds.length) {
-        for (const s of n.inv) {
-            if (!s || !String(s.id || '').startsWith('ammo:')) continue;
-            const myTotal = npcAmmoTotal(n, s.id);
-            if (myTotal <= B.DOWNED_SHARE_AMMO_KEEP) continue;   // 自己保留底线
-            const half = Math.max(1, Math.floor(myTotal / 2));
-            const tgt = ammoNeeds[0];
-            if (npcAmmoNeed(tgt) < 5 && half > 0) {
-                if (tryGive(n.inv.indexOf(s), half, tgt, '弹药' + s.id.slice(5))) return;
-            }
-        }
+    // ① 弹药：只赠予队友【对应武器类型】所需的弹药（2026-08-11 v2.99 用户要求：
+    // 弹药按队友装备的武器匹配 + "按需补足"语义——队友对应武器弹药低于舒适值（20 发）
+    // 时，按需补足到 20；自己该类型保留底线（20 发），只给超出底线的部分。
+    // 不是"匀一半"：队友差多少给多少，绝不切开自己存量。
+    const ammoNeeds = mates.filter(m => npcAmmoNeed(m) < B.DOWNED_SHARE_AMMO_KEEP)
+        .sort((a, b) => npcAmmoNeed(a) - npcAmmoNeed(b));
+    for (const tgt of ammoNeeds) {
+        const w = tgt.wpnKey && WEAPONS[tgt.wpnKey];
+        if (!w || w.kind !== 'ranged' || !w.ammoType) continue;   // 队友无远程武器/无弹药定义 → 不需要
+        const ammoId = 'ammo:' + w.ammoType;
+        const myTotal = npcAmmoTotal(n, ammoId);
+        if (myTotal <= B.DOWNED_SHARE_AMMO_KEEP) continue;   // 自己该类型不超保留底线 → 不给
+        // 按需：队友缺多少补到舒适值；至多给"自己超出底线的部分"
+        const need = Math.max(0, B.DOWNED_SHARE_AMMO_KEEP - npcAmmoNeed(tgt));
+        const give = Math.min(need, myTotal - B.DOWNED_SHARE_AMMO_KEEP);
+        if (give <= 0) continue;
+        const idx = n.inv.findIndex(s => s && s.id === ammoId);
+        if (idx >= 0 && tryGive(idx, give, tgt, '弹药' + w.ammoType)) return;
     }
     // ② 水：自己水分 > 60 且背包水 ≥ 2，队友缺水
     if ((n.water || 0) > B.DOWNED_SHARE_WATER_AT) {
@@ -610,26 +619,72 @@ function npcShareWithMates(sv, n) {
             }
         }
     }
-    // ④ 药品：自己 ≥ 2 份，队友受伤（hp<60%）或生病
-    const hurtMates = mates.filter(m => (m.hp != null && m.hp < m.maxHp * 0.6) || m.sick);
-    if (hurtMates.length) {
-        const meds = n.inv.filter(s => s && String(s.id || '').startsWith('med:'));
-        if (meds.length >= B.DOWNED_SHARE_MED_KEEP) {
-            for (const m of hurtMates) {
-                if (tryGive(n.inv.indexOf(meds[0]), 1, m, meds[0].id.slice(4))) return;
-            }
+    // ④ 药品：**优先治病，其次集中存放**（2026-08-11 v2.99 用户要求：
+    // 药品也集中放一块；但队伍中有人得病时，主动送对症药过去帮忙治病）。
+    // 4a) 治病优先：队友生病（或重伤 hp<60%）时，自己有多余药（保留 1 份底线）→ 送对症药/抗生素/草药
+    const sickMate = mates.find(m => m.sick);
+    const hurtMate = !sickMate ? mates.find(m => m.hp != null && m.hp < m.maxHp * 0.6) : null;
+    const patient = sickMate || hurtMate;
+    if (patient) {
+        // 对症药优先，其次抗生素（可治任意），最后草药
+        let medIdx = -1, medId = '';
+        if (patient.sick) {
+            const needMed = B.SICK_MED[patient.sick.type];
+            if (needMed) medIdx = n.inv.findIndex(s => s && s.id === needMed);
+            if (medIdx < 0) medIdx = n.inv.findIndex(s => s && s.id === 'med:pan');
+        } else {
+            medIdx = n.inv.findIndex(s => s && String(s.id || '').startsWith('med:'));
+        }
+        if (medIdx >= 0) {
+            medId = n.inv[medIdx].id;
+            // 保留 1 份底线：只有超过底线才送（避免自己断药）
+            const totalMed = n.inv.reduce((a, s) => a + (s && String(s.id || '').startsWith('med:') ? s.n : 0), 0);
+            if (totalMed > 1 && tryGive(medIdx, 1, patient, medId.slice(4))) return;
+        } else {
+            // 无药品：送草药（队友生病且自己有多余草药 → 给 1 份）
+            const herbIdx = n.inv.findIndex(s => s && s.id === 'herb');
+            if (herbIdx >= 0 && n.inv[herbIdx].n > 1 && tryGive(herbIdx, 1, patient, '草药')) return;
         }
     }
-    // ⑤ 燃料/材料/其他：自己 > 保留底线（3），队友完全没有（数量 0）→ 给 1 份
+    // 4b) 集中存放：无人生病/重伤需要药时，药品同资源型物品——合并给持有者，不散开占格子。
+    //     保留 1 份底线（自己随身一粒防意外），超出部分给持有最多药品的队友。
+    for (const s of n.inv) {
+        if (!s || !String(s.id || '').startsWith('med:')) continue;
+        if (s.n <= 1) continue;   // 自己保留底线
+        let holder = null, holderAmt = 0;
+        for (const m of mates) {
+            const cur = (m.inv || []).find(x => x && x.id === s.id);
+            const amt = cur ? cur.n : 0;
+            if (amt > holderAmt) { holderAmt = amt; holder = m; }
+        }
+        if (!holder) continue;   // 无人持有：自己保留（成为持有者）
+        const give = s.n - 1;
+        if (give <= 0) continue;
+        if (tryGive(n.inv.indexOf(s), give, holder, s.id.slice(4))) return;
+    }
+    // ⑤ 资源型物品（燃料/材料/工具等可堆叠资源）：**集中存放，不散开占格子**
+    // 2026-08-11 v2.99 用户要求："资源尽量放在一块，不会分来分去占队友格子，影响全队背包空间"。
+    // 规则：若队伍中已有人持有该资源 → 自己超出保留底线（3）的部分【合并给持有者】，
+    //       把资源集中到同一名队员身上（同类不占多个格子）；若无人持有 → 自己保留（成为持有者），
+    //       不主动散给空手队友（避免重复占格）。武器/药品/弹药/水/食物已在上方处理，不参与。
     for (const s of n.inv) {
         if (!s || !String(s.id || '')) continue;
         const id = s.id;
         if (String(id).startsWith('wpn:') || String(id).startsWith('loot:')) continue;   // 武器/战利品袋不分享
         if (String(id).startsWith('med:') || String(id).startsWith('ammo:')) continue;    // 已在上方处理
         if (id === 'water' || isFoodItem(id)) continue;                                   // 已在上方处理
-        if (s.n <= 3) continue;   // 自己保留底线
-        const tgt = mates.find(m => !(m.inv || []).some(x => x && x.id === id));
-        if (tgt && tryGive(n.inv.indexOf(s), 1, tgt, id)) return;
+        if (s.n <= 3) continue;   // 自己保留底线（随身少量，防全队断供）
+        // 找已持有该资源的队友（优先持有量最多的，作为资源集中点）
+        let holder = null, holderAmt = 0;
+        for (const m of mates) {
+            const cur = (m.inv || []).find(x => x && x.id === id);
+            const amt = cur ? cur.n : 0;
+            if (amt > holderAmt) { holderAmt = amt; holder = m; }
+        }
+        if (!holder) continue;   // 无人持有：自己保留（成为持有者），不散开
+        const give = s.n - 3;    // 合并超出保留底线的部分给持有者
+        if (give <= 0) continue;
+        if (tryGive(n.inv.indexOf(s), give, holder, id)) return;
     }
 }
 // 弹药需要量（对装备远程武器的队友：至少 5 发；否则 0）
@@ -649,13 +704,27 @@ function isFoodItem(id) {
     return id === 'food' || id === 'herb' || id === 'carrot' || id === 'corn' || id === 'potato';
 }
 
-// ---------- 自主捡地面掉落物（2026-08-10 用户需求） ----------
-// 就近原则：找 NPC 周围 RANGE 内、且玩家不在其脚下拾取范围内的普通掉落（跳过 loot: 战利品袋与 coin）。
-// 同物品优先：背包已有该 id → 优先拾取（同类堆叠，与玩家 addToArr 规则一致）。
+// ---------- 自主捡地面掉落物（2026-08-10 用户需求 / 2026-08-11 v2.99 完善） ----------
+// 就近原则：找 NPC 周围 RANGE（= 警戒范围 6 格）内、且玩家不在其脚下拾取范围内的普通掉落
+// （跳过 loot: 战利品袋与 coin——留给玩家）。
+// 同物品优先：背包已有该 id → 优先拾取（同类堆叠，与玩家规则一致）。
+// 2026-08-11 v2.99 修复"多个 NPC 抢同一掉落抽搐"：
+//   · 认领机制：每个掉落只能被一个存活 NPC 认领（_claimId），其他 NPC 看到已认领就跳过，
+//     不再多个队友同时奔向同一件物品互相推挤/反复改目标。
+//   · 认领超时释放：认领者死亡/走不到时，3 秒后释放供其他 NPC 接手。
+//   · 拾取用 addItemObj 保留完整对象（品级/耐久/自定义字段），不用 addToArr（丢属性）。
 // 返回 true = 本帧用于"走向掉落物去捡"，跳过正常跟随/游荡。
 function npcScavengeDrops(sv, n, dt, canStand) {
     if (!Array.isArray(sv.drops) || !Array.isArray(n.inv)) return false;
-    const RANGE = 3.5 * TS;          // 拾取探测半径（格）
+    const RANGE = 6 * TS;          // 拾取探测半径 = 与警戒范围一致（followAI selfRange=6 格）
+    const now = sv.now != null ? sv.now : 0;
+    // 认领超时清理（节流 1s 扫一次，防每帧全量遍历）：认领超过 3 秒未拾取 → 释放
+    if (sv._dropClaimClearT == null || now - sv._dropClaimClearT > 1) {
+        sv._dropClaimClearT = now;
+        for (const d of sv.drops) {
+            if (d && d._claimId && now - (d._claimT || 0) > 3) { d._claimId = null; d._claimT = 0; }
+        }
+    }
     // 背包已持有的物品 id 集合（同物品优先）
     const have = new Set();
     for (const s of n.inv) if (s && typeof s.id === 'string') have.add(s.id);
@@ -668,25 +737,39 @@ function npcScavengeDrops(sv, n, dt, canStand) {
         if (dist > RANGE) continue;
         // 玩家正在该掉落脚下（玩家拾取半径内）→ 留给玩家
         if (Math.hypot(d.x - sv.px, d.y - sv.py) < B.PICKUP_RADIUS) continue;
+        // 认领：已被其他存活 NPC 认领且未超时 → 跳过（防多个 NPC 抢同一件抽搐）
+        if (d._claimId && d._claimId !== n.id) {
+            const claimer = sv.npcs && sv.npcs.find(m => m && m.id === d._claimId && m.alive && !m.downed);
+            if (claimer) continue;
+            // 认领者已死亡/倒地 → 释放认领
+            d._claimId = null; d._claimT = 0;
+        }
         const owned = have.has(d.id);
         // 优先"背包已有同类"（owned 权重 0），其次按距离；越近分越低
         const score = (owned ? 0 : 1) * 1000 + dist;
         if (score < bestScore) { bestScore = score; best = d; }
     }
     if (!best) return false;
+    // 认领目标（防其他 NPC 抢同一件；认领者本人每帧刷新，保持锁定）
+    if (best._claimId !== n.id) { best._claimId = n.id; best._claimT = now; }
     const dist = Math.hypot(best.x - n.x, best.y - n.y);
     if (dist < B.PICKUP_RADIUS) {
-        // 已到脚下：拾取（同类堆叠；装不下则保留在地，不强制）
+        // 已到脚下：拾取（保留完整对象属性——品级/耐久，剔除坐标/认领临时字段）
         const used = n.inv.filter(s => s).length;
         const canStack = n.inv.some(s => s && s.id === best.id);
         if (used < Panel.BAG_SIZE || canStack) {
-            const left = Panel.addToArr(n.inv, best.id, best.n || 1);
+            const clean = { id: best.id, n: best.n || 1 };
+            for (const k in best) {
+                if (k === 'id' || k === 'n' || k === 'x' || k === 'y' || k === '_claimId' || k === '_claimT' || k === 'contents') continue;
+                clean[k] = best[k];
+            }
+            const left = Panel.addItemObj(n.inv, clean);
             if (left < (best.n || 1)) {
                 const idx = sv.drops.indexOf(best);
                 if (idx >= 0) sv.drops.splice(idx, 1);
             }
         }
-        return false;   // 拾取完成，回到正常跟随
+        return false;   // 拾取完成（或装不下），回到正常跟随
     }
     // 没到脚下：跑过去捡（同玩家跑动速度；近处小跑，远处奔跑）
     const spd = dist > 3 * TS ? 1.65 : 1.15;
@@ -764,6 +847,16 @@ function rollNpcLoot() {
 // ---------- 移动（A* 寻路：目标格路径场缓存 0.4s，跨墙绕行；近距直线兜底） ----------
 export function moveToward(sv, n, tx, ty, dt, canStand, speedMul) {
     const dist = Math.hypot(tx - n.x, ty - n.y);
+    // 2026-08-11 v2.97 修复"NPC 跟随/游荡时抽搐"：目标点已极近（<0.15 格）时站定——
+    // 此前即使贴近目标，mvx/mvy 残差极小也置 _moving=true + 微移 → 走路动画在几乎不动的
+    // 位置高频抖动（玩家移动时跟随 NPC 贴着玩家 / 游荡到目标点即出现）；闪避拉开距离后
+    // 目标变远、残差大 → 动画正常，故"闪避时抽搐减少"。仅当真实位移足够大才驱动走路动画。
+    // 阈值取 0.15 格（≈5.4px）：只吸收"贴脸微移"的残差，不影响低血近战 hit-and-run 逼近到
+    // 攻击距离（reach*0.92 通常 ≥22px > 阈值）出刀。
+    if (dist < TS * 0.15) {
+        n._moving = false;
+        return;
+    }
     let mvx = tx - n.x, mvy = ty - n.y;
     if (dist > TS * 1.2) {
         // 走 BFS 路径场（寻路机制与怪物一致）
@@ -848,7 +941,10 @@ export function moveToward(sv, n, tx, ty, dt, canStand, speedMul) {
 function getNpcFollowField(sv, canStand) {
     const pk = gridKey(Math.floor(sv.px / TS), Math.floor(sv.py / TS));
     const f = sv._npcFollowField;
-    if (f && f.pk === pk && sv.now - f.t < 0.5) return f;
+    // 2026-08-11 v2.99 性能（掉帧排查）：重建间隔 0.5s → 1.0s。
+    // 流场只是"朝玩家移动的路径参考"，1s 缓存对队伍跟随无感（队友移动速度远慢于玩家换格），
+    // 但大幅降低全量 A* 重建频率（大量 party NPC 聚集时，0.5s 一次 3~300ms 重建 = 周期尖峰）。
+    if (f && f.pk === pk && sv.now - f.t < 1.0) return f;
     const targets = new Set();
     for (const n of sv.npcs || []) {
         if (n.alive && !n.riding) targets.add(gridKey(Math.floor(n.x / TS), Math.floor(n.y / TS)));
@@ -857,14 +953,16 @@ function getNpcFollowField(sv, canStand) {
     // 长距离寻路节点上限不足——传送后队友距玩家几十~几百格，旧 maxNodes=12000（约 110×110 格）
     // 展开不到起点 → A* 返回空路径 → moveToward 退化为直线走、遇障碍卡住 → 每 0.4s 重试失败。
     // 距离自适应：以最远队友到玩家的距离估算所需节点（A* 平地最坏 ≈ 距离²），
-    // 上限 = clamp(距离² × 1.5, 12000, 120000)。仍有 0.5s 缓存保证性能（缓存期内不重算）。
+    // 上限 = clamp(距离² × 1.5, 8000, 80000)。仍有 1.0s 缓存保证性能（缓存期内不重算）。
+    // 上限从 120000 降到 80000：超长距离（几百格）几乎只在"传送后"出现一次，足够覆盖；
+    // 常态跟随（<60 格）用 8000~20000 节点，避免上限过高时最坏情况单次重建过久。
     let maxDist = 0;
     for (const n of sv.npcs || []) {
         if (!n.alive || n.riding) continue;
         const d = Math.hypot(Math.floor(n.x / TS) - Math.floor(sv.px / TS), Math.floor(n.y / TS) - Math.floor(sv.py / TS));
         if (d > maxDist) maxDist = d;
     }
-    const need = maxDist > 0 ? Math.min(120000, Math.max(12000, Math.ceil(maxDist * maxDist * 1.5))) : 12000;
+    const need = maxDist > 0 ? Math.min(80000, Math.max(8000, Math.ceil(maxDist * maxDist * 1.5))) : 8000;
     sv._npcFollowField = astarField(Math.floor(sv.px / TS), Math.floor(sv.py / TS), targets, {
         canStand: (x, y) => canStand(x, y),
         ts: TS,
@@ -1038,7 +1136,16 @@ function followAI(sv, n, dt, canStand) {
             n._wpX = sv.px + Math.cos(n.wanderDir) * r * TS;
             n._wpY = sv.py + Math.sin(n.wanderDir) * r * TS;
         }
-        moveToward(sv, n, n._wpX, n._wpY, dt, canStand, 0.5);
+        // 2026-08-11 v2.97 修复"NPC 在玩家周围游荡动画抽搐"：
+        // ① 到达游荡目标点（<0.15 格）→ 站定休息（不再每帧微移——此前 moveToward 在目标点附近
+        //    仍每帧微小位移 + 方向抖动 → 走路动画抽搐）；② 游荡速度 0.5 → 0.35（更慢更自然，
+        //    上下/左右移动不过快，减少来回抽动）。阈值与 moveToward 内部站定（TS*0.15）一致。
+        const wpDist = Math.hypot(n._wpX - n.x, n._wpY - n.y);
+        if (wpDist < TS * 0.15) {
+            n._moving = false;   // 站定：停走动动画
+        } else {
+            moveToward(sv, n, n._wpX, n._wpY, dt, canStand, 0.35);
+        }
     }
 }
 
@@ -1094,7 +1201,13 @@ function wallBetween(sv, x0, y0, x1, y1) {
 // 战斗/躲避：返回 true 表示正在交战（不执行跟随/游荡）
 // hostileMode=true：恶意 NPC 模式，威胁 = 玩家 + 非恶意 NPC，并带玩家受击逻辑
 export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostileMode) {
-    // 性能：威胁搜索结果缓存 0.12s（多 NPC × 多僵尸时避免每帧全量扫描）
+    // 性能：威胁搜索结果缓存（v2.99 掉帧排查）——
+    //   恶意/交战 NPC：0.3s 缓存（战斗响应够快）；
+    //   游荡/营地 NPC（无战斗职责）：0.6s 缓存（大量营地 NPC 聚集时避免每 0.3s 集体
+    //   全量扫僵尸+NPC = 周期性帧尖峰；游荡 NPC 被僵尸近身 0.6s 内仍会正确警戒）。
+    //   扫描相位抖动：初始 _threatT 用随机小数，防止大量 NPC 同帧集体过期 → 集体全量扫描。
+    const threatCadence = (!hostileMode && n.state !== 'fight' && n.state !== 'follow') ? 0.6 : 0.3;
+    if (n._threatT == null) n._threatT = Math.random() * 0.3;   // 相位抖动：错开集体扫描
     n._threatT = (n._threatT || 0) - dt;
     let threat;
     if (n._threatT <= 0) {
@@ -1108,7 +1221,7 @@ export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostil
             const newD = Math.hypot(threat.x - n.x, threat.y - n.y);
             if (oldAlive && oldD < newD * 1.5) threat = old;
         }
-        n._threatT = 0.12;
+        n._threatT = threatCadence;
         n._threat = threat;
     } else {
         threat = n._threat;
@@ -1156,7 +1269,8 @@ export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostil
         }
         // 低血近战：hit-and-run——接近出刀，出刀后立即撤退走位
         const wDef2 = w && w.kind === 'melee' ? w : null;
-        const reach2 = wDef2 ? (wDef2.reach || 40) + 8 : 48;
+        // 2026-08-11 v2.97 与主近战判定一致：去掉 +8（判定 = 特效长度，防"隔空打死"）
+        const reach2 = wDef2 ? (wDef2.reach || 40) : 40;
         // 2026-08-10 围攻站位角度（低血逼近同样不冲脸）：每个 NPC 沿自己的角度绕圈贴近
         if (n._jitter == null) n._jitter = (Math.random() - 0.5) * 0.5;
         const angL = Math.atan2(n.y - threat.y, n.x - threat.x) + n._jitter;
@@ -1281,19 +1395,24 @@ export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostil
     const wDef = w && w.kind === 'melee' ? w : null;
     const style = wDef ? (wDef.attackStyle || 'slash') : 'punch';
     const arc = wDef ? (wDef.arc || Math.PI) : Math.PI * 0.55;
-    const meleeReach = wDef ? (wDef.reach || 40) + 8 : 48;
     const tdx = threat.x - n.x, tdy = threat.y - n.y;
     const tdist = Math.hypot(tdx, tdy) || 1;
     const ang2 = Math.atan2(tdy, tdx);
     let canHit = false;
+    // 2026-08-11 v2.97 攻击判定与武器特效对应（用户要求）：判定范围必须 ≤ 特效显示范围，
+    // 杜绝"隔着空就被近战打死"。特效 drawSwingEffect 长度 = w.reach（不 +8）、扇形弧宽 = w.arc。
+    // 因此：判定距离用 w.reach（不含 +8，避免判定比特效长）；扇形角度用 arc/2（与特效弧宽一致）。
+    const hitReach = wDef ? (wDef.reach || 40) : 40;   // 判定 = 特效长度（去掉 +8 冗余）
     if (style === 'thrust') {
-        // 长矛突刺：沿攻击方向线，垂距窄条内可刺中（与玩家 wgear 判定一致）
+        // 长矛突刺：沿攻击方向线，垂距窄条内可刺中（与特效直线对应；垂距收紧到 16 匹配特效宽度）
         const along = tdx * Math.cos(ang2) + tdy * Math.sin(ang2);
         const perp = Math.abs(-tdx * Math.sin(ang2) + tdy * Math.cos(ang2));
-        canHit = along >= 0 && along <= meleeReach && perp < 24;
+        canHit = along >= 0 && along <= hitReach && perp < 16;
     } else {
-        // 挥砍/直刺/重劈：扇形距离判定（弧宽由武器 arc 决定，与玩家一致）
-        canHit = tdist <= meleeReach;
+        // 挥砍/直刺/重劈：扇形判定（弧宽 = w.arc，与特效扇形一致）
+        canHit = tdist <= hitReach;
+        // 目标必须在攻击方向的扇形内（弧宽 arc/2，与特效一致）——但攻击方向=朝目标，
+        // 角度恒 0，天然在扇形内；真正防"隔空"靠距离约束 hitReach（= 特效长度）。
     }
     // 2026-08-10 只有墙阻挡近战：NPC 与目标之间隔墙则打不到（继续走位接近）
     if (canHit && n.atkCd <= 0 && !wallBetween(sv, n.x, n.y, threat.x, threat.y)) {
@@ -1334,6 +1453,10 @@ export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostil
             if (c) { maybeWound(sv, c); addAct(sv, c, 'hit'); }
             addAct(sv, n, 'melee');
             if (sv._lastNpcHit !== n.id) { log(sv, `${n.name} 攻击了你！`, '#FF6644'); sv._lastNpcHit = n.id; }
+            // 2026-08-11 v2.98 击杀明细：记录最后攻击者（名字 + 武器），死亡弹窗显示"被大壮用狙击枪击杀了"
+            const _wpnKey = n.wpnKey || (n.wpn && n.wpn.key);
+            const _wpnName = (_wpnKey && WEAPONS[_wpnKey] && WEAPONS[_wpnKey].name) || null;
+            sv._lastHitBy = { name: n.name || '恶意分子', weapon: _wpnName, via: '近战' };
             }
         } else if (threat.npc) {
             // 恶意 NPC 打非恶意 NPC：真实扣血，可致死（含队员）；
@@ -1347,7 +1470,12 @@ export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostil
         wearNpcWeapon(sv, n, wpnItem);   // 2026-08-10 磨损当前使用的武器（动态选择）
         if (threat.npc) {
             threat.npc.hurtT = 0.3;
-            if (threat.npc.hp <= 0) killNpc(sv, threat.npc, '被击杀');
+            if (threat.npc.hp <= 0) {
+                // 2026-08-11 v2.99 用户需求："被恶意 NPC 用战斧打死了"——近战击杀明细带武器名
+                const _mw = n.wpnKey || (n.wpn && n.wpn.key);
+                const _mwn = (_mw && WEAPONS[_mw] && WEAPONS[_mw].name) || null;
+                killNpc(sv, threat.npc, _mwn ? `被${n.name}用${_mwn}击杀致死` : `被${n.name}击杀致死`);
+            }
         }
         // 与玩家一致的近战视觉：挥击轨迹（按武器 attackStyle 差异化绘制）+ 命中点火花
         n.swingT = 0.22;
@@ -1386,7 +1514,7 @@ export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostil
         n._faceX = tdx / tdist; n._faceY = tdy / tdist;
         return true;   // 站定锁期间：站定面向目标
     }
-    if (n.atkCd <= 0 && tdist <= meleeReach) {
+    if (n.atkCd <= 0 && tdist <= hitReach) {
         // 冷却结束且目标在攻击距离内 → 继续站定出刀（自然进入下一次挥击）
         n._standT = 0.13;
         n._faceX = tdx / tdist; n._faceY = tdy / tdist;
@@ -1398,7 +1526,7 @@ export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostil
     // 冷却结束自然回到出刀分支——真正"边打边绕"，不再站撸挨打。
     if (n._jitter == null) n._jitter = (Math.random() - 0.5) * 0.5;
     const ang = Math.atan2(n.y - threat.y, n.x - threat.x) + n._jitter + (sv.now || 0) * 1.2;
-    moveToward(sv, n, threat.x + Math.cos(ang) * meleeReach * 0.92, threat.y + Math.sin(ang) * meleeReach * 0.92, dt, canStand, 1.05);
+    moveToward(sv, n, threat.x + Math.cos(ang) * hitReach * 0.92, threat.y + Math.sin(ang) * hitReach * 0.92, dt, canStand, 1.05);
     return true;
 }
 // 躲避：远离威胁方向移动
@@ -1437,7 +1565,12 @@ function brokenWeaponRegroup(sv, n, threat, d, dt, canStand) {
                     zombieHitSound(sv, threat.z);
                 } else if (threat.npc) {
                     threat.npc.hp -= 8;
-                    if (threat.npc.hp <= 0) killNpc(sv, threat.npc, '被击杀');
+                    if (threat.npc.hp <= 0) {
+                        // 2026-08-11 v2.99 近战击杀明细带武器名（与恶意 NPC 近战一致）
+                        const _mw2 = n.wpnKey || (n.wpn && n.wpn.key);
+                        const _mwn2 = (_mw2 && WEAPONS[_mw2] && WEAPONS[_mw2].name) || null;
+                        killNpc(sv, threat.npc, _mwn2 ? `被${n.name}用${_mwn2}击杀致死` : `被${n.name}击杀致死`);
+                    }
                 } else {
                     threat.hp -= 8;
                 }
@@ -1575,8 +1708,13 @@ function fireNpcBullet(sv, n, threat, pick) {
     else AudioSystem.playWeaponShot(key, iv);
     mpSfx(sv, 'shot', { w: key, iv, bow: key === 'bow' });
     // NPC 同样以"手部高度"为原点（n.y 是脚底，角色高 48，手部约 26）
+    // 2026-08-11 v2.97 索敌精度优化：瞄准用目标**实时坐标**（threat.z/threat.npc 本体），
+    // 替代 0.12s 缓存快照 threat.x/y——玩家靠近吸引仇恨后僵尸/恶意 NPC 持续移动，
+    // 若用旧快照瞄准会持续描边打空气（用户反馈"索敌准但命中差"）。
     const shootY = n.y - 26;
-    const ang = Math.atan2(threat.y - shootY, threat.x - n.x);
+    const aimTx = threat.z ? threat.z.x : (threat.npc ? threat.npc.x : threat.x);
+    const aimTy = threat.z ? threat.z.y : (threat.npc ? threat.npc.y : threat.y);
+    const ang = Math.atan2(aimTy - shootY, aimTx - n.x);
     if (!sv.npcBullets) sv.npcBullets = [];
     // 与玩家 tryFire 相同的弹丸分布：pellets 多弹丸 + spread 散射
     const pellets = w.pellets || 1;
@@ -1590,6 +1728,7 @@ function fireNpcBullet(sv, n, threat, pick) {
             color: w.color, label: w.bulletLabel || '·', life: 0.9, traveled: 0,
             range: w.range || 9999, pierce: w.pierce || 0, pierced: 0, hitList: null,
             hostile: n.role === 'hostile', src: n.id, srcName: n.name,
+            srcWpn: key,   // 2026-08-11 v2.98 击杀明细：子弹携带武器键，命中玩家时记录武器名（"用狙击枪击杀了"）
         });
     }
     npcTakeAmmo(n, w.ammoType, 1);
@@ -1618,7 +1757,10 @@ export function updateNpcBullets(sv, dt) {
             if (getTile(sv, gx, gy) === T.WALL) dead = true;   // 室外建筑墙阻挡
         }
         if (!dead) {
-            let hit = null, best = 14;
+            // 2026-08-11 v2.97 修复"善意 NPC 打移动目标描边打空气"：
+            // NPC 子弹命中半径 14 < 玩家子弹 18——玩家靠近吸引敌对仇恨后，僵尸/恶意 NPC 移动
+            // 方向改变（朝玩家走），14px 命中框跟不上移动目标 → 子弹描边。提到 18 与玩家一致。
+            let hit = null, best = 18;
             for (const z of sv.zombies) {
                 if (z.hp <= 0) continue;
                 if (b.hitList && b.hitList.some(h => h === z)) continue;
@@ -1670,6 +1812,9 @@ export function updateNpcBullets(sv, dt) {
                     const c = controlledNpc(sv);
                     if (c) { maybeWound(sv, c); addAct(sv, c, 'hit'); }
                     if (sv._lastNpcHit !== (b.src || '?')) { log(sv, `${b.srcName || '恶意分子'} 向你射击！`, '#FF6644'); sv._lastNpcHit = b.src || '?'; }
+                    // 2026-08-11 v2.98 击杀明细：记录最后攻击者（名字 + 武器），死亡弹窗显示"被大壮用狙击枪击杀了"
+                    const _bw = (b.srcWpn && WEAPONS[b.srcWpn] && WEAPONS[b.srcWpn].name) || null;
+                    sv._lastHitBy = { name: b.srcName || '恶意分子', weapon: _bw, via: '远程' };
                     dead = true;
                 } else if (hit.npc) {
                     // 2026-08-10 用户要求"在车上被敌对生物攻击，优先掉汽车耐久"：
@@ -1685,7 +1830,12 @@ export function updateNpcBullets(sv, dt) {
                     } else {
                         hit.npc.hp -= dmg;
                         hit.npc.hurtT = 0.15;
-                        if (hit.npc.hp <= 0) killNpc(sv, hit.npc, '被击杀');
+                        // 2026-08-11 v2.98 修复 n 未定义（updateNpcBullets 无攻击者 n）：
+                        // 用子弹对象自带的 srcName/srcWpn 记录击杀者（"被XXX击杀致死"/"被XXX用YYY击杀致死"）。
+                        if (hit.npc.hp <= 0) {
+                            const _bw = (b.srcWpn && WEAPONS[b.srcWpn] && WEAPONS[b.srcWpn].name) || null;
+                            killNpc(sv, hit.npc, _bw ? `被${b.srcName || '恶意分子'}用${_bw}击杀致死` : `被${b.srcName || '恶意分子'}击杀致死`);
+                        }
                     }
                 }
                 else {
@@ -1733,7 +1883,13 @@ function wanderMove(sv, n, dt, canStand) {
         n.idleT = 2 + Math.random() * 3;
         n.wanderDir = Math.random() * Math.PI * 2;
     }
-    moveToward(sv, n, n.x + Math.cos(n.wanderDir) * 60, n.y + Math.sin(n.wanderDir) * 60, dt, canStand, 0.5);
+    // 2026-08-11 v2.99 性能（掉帧排查）：游荡是"随意闲逛"，目标只有 ~1.7 格远——
+    // 此前 moveToward(dist>1.2格) 对每个游荡 NPC 触发单点 A*（60 NPC × 每 0.4s 缓存过期
+    // 集体重算 = 周期性大尖峰，营地聚集/大量 NPC 时卡顿）。游荡改走"本格内小步直线"：
+    // 目标 = 当前位置 + 半格方向（dist≈0.5格 < 1.2 寻路阈值 → 直线移动，不触发 A*），
+    // 撞到障碍由 moveToward 的随机偏转兜底换向。距离远的目标（如跟随/战斗）不受影响。
+    const wd = n.wanderDir || 0;
+    moveToward(sv, n, n.x + Math.cos(wd) * TS * 0.5, n.y + Math.sin(wd) * TS * 0.5, dt, canStand, 0.5);
 }
 
 function nearestHostile(sv, n, range) {
@@ -1793,7 +1949,12 @@ function campTask(sv, n, dt, canStand, camp) {
                 host.hp -= n.dmg;
                 host.hurtT = 0.3;
                 wearNpcWeapon(sv, n);
-                if (host.hp <= 0) killNpc(sv, host, '被击杀');
+                if (host.hp <= 0) {
+                    // 2026-08-11 v2.99 守卫击杀明细带武器名（与恶意 NPC 近战一致）
+                    const _mw3 = n.wpnKey || (n.wpn && n.wpn.key);
+                    const _mwn3 = (_mw3 && WEAPONS[_mw3] && WEAPONS[_mw3].name) || null;
+                    killNpc(sv, host, _mwn3 ? `被${n.name}用${_mwn3}击杀致死` : `被${n.name}击杀致死`);
+                }
                 }
             }
         } else {
@@ -1945,7 +2106,7 @@ export function ageNpcs(sv) {
         }
         // 死：自然死亡概率随年龄（60 岁起；主角亦有寿限，有队友则切换视角）
         if (Math.random() < B.ageDeathChance(age)) {
-            killNpc(sv, n, '寿终正寝');
+            killNpc(sv, n, '自然老死');
             continue;
         }
         // 商人日常：金币缓慢补充（上限）
@@ -2049,9 +2210,11 @@ export function npcApplyDownedHit(sv, n, dmg) {
     if (spent >= B.DOWNED_LIMIT_SECONDS) {
         // 救援时间被扣完 → 彻底死亡（生尸体，保持可搜索遗物）
         n.downed = false; n.alive = false; n.hp = 0;
-        n._deathReason = n._deathReason || '被攻击致死（救援超时）';
+        n._deathReason = n._deathReason || '救援时间耗尽致死';
         n._corpse = true;
         n._corpseDay = sv.day;
+        // 2026-08-11 v2.98 尸体尸变系统：记录尸体生成现实时刻
+        n._corpseAtReal = sv.now != null ? sv.now : 0;
         n._corpseContents = [];
         for (const s of n.inv || []) { if (s) n._corpseContents.push({ ...s, n: s.n || 1 }); }
         n._corpseSearched = false;
@@ -2081,7 +2244,12 @@ export function killNpc(sv, n, reason) {
     // 不直接死亡——队友/玩家可搜集药品救助（与主控倒地同机制，由 updateDowned 管理超时与全灭）。
     // 非战斗死亡（病/寿终正寝）与硬核难度：保持直接死亡。
     const dk = B.DIFF_TABLE && B.DIFF_TABLE[sv.diffKey];
-    const combatDeath = reason && (reason.indexOf('被僵尸咬死') >= 0 || reason.indexOf('被击杀') >= 0);
+    // 2026-08-11 v2.98 reason 字符串升级为详细自然语言（含"被XXX击杀致死"/"被僵尸啃咬致死"等）。
+    // 兼容旧字符串（'被僵尸咬死'/'被击杀'）+ 新字符串（'被僵尸啃咬致死'/'被...击杀致死'/'战斗中被击败'），
+    // 任何含"僵尸"或"击杀"/"击败"的 reason 都视为战斗死亡 → 软核倒地路径。
+    const combatDeath = reason && (
+        reason.indexOf('僵尸') >= 0 || reason.indexOf('击杀') >= 0 || reason.indexOf('击败') >= 0
+    );
     if (dk && dk.soft && n.party && !n.downed && combatDeath) {
         // 2026-08-10 修复"操控的队友被杀后血量归零、不死不亡、无濒死提示"：
         // 当前主控（sv.controllerId 指向）被战斗致死时不能转倒地锁死——applyControlled 每帧
@@ -2100,6 +2268,11 @@ export function killNpc(sv, n, reason) {
             // 2026-08-11 v2.97 现实时间救援倒计时：记录倒地时刻（sv.now 现实秒）
             n._downedAtReal = sv.now != null ? sv.now : 0;
             n._penaltySec = 0;
+            // 2026-08-12 v2.101 用户定稿：**每个人救助时间单独算，按自己的濒死次数，非队伍累计**。
+            // 原用 sv._downedCount（队伍累计）→ 队友首次濒死受别的主控死亡次数影响。改为 n._downedCount
+            //（该队友自己独立的濒死次数）：第 n 次 → 20分钟/2^(n-1)，最低 60 秒。
+            n._downedCount = (n._downedCount || 0) + 1;
+            n.limitSec = Math.max(60, Math.round((B.DOWNED_LIMIT_SECONDS || 1200) / Math.pow(2, Math.max(0, (n._downedCount || 1) - 1))));
             if (!Array.isArray(sv._downedMembers)) sv._downedMembers = [];
             if (!sv._downedMembers.some(m => m && m.id === n.id)) sv._downedMembers.push(n);
             // 自动切到下一个可行动队友（排除已倒地的 n：switchControl 拒切 downed）。
@@ -2133,6 +2306,12 @@ export function killNpc(sv, n, reason) {
         // 2026-08-11 v2.97 现实时间救援倒计时：记录倒地时刻
         n._downedAtReal = sv.now != null ? sv.now : 0;
         n._penaltySec = 0;
+        // 2026-08-12 v2.102 用户定稿：**每个人救助时间单独算，按自己的濒死次数，非队伍累计**。
+        // 修复"普通队友被击杀（非主控分支）未设置 limitSec/_downedCount"——此前此分支漏加，
+        // 队友每次倒下都回退默认 20 分钟（第二次倒下也 20 分钟，应 10 分钟）。
+        // 本分支 = 普通 party 队友被战斗致死：n._downedCount++ 并算 limitSec（第 n 次 → 20分钟/2^(n-1)）。
+        n._downedCount = (n._downedCount || 0) + 1;
+        n.limitSec = Math.max(60, Math.round((B.DOWNED_LIMIT_SECONDS || 1200) / Math.pow(2, Math.max(0, (n._downedCount || 1) - 1))));
         // 记录倒地成员（供 updateDowned 管理超时/背人/救助；不覆盖已有的倒地主控 _downed）
         if (!Array.isArray(sv._downedMembers)) sv._downedMembers = [];
         if (!sv._downedMembers.some(m => m && m.id === n.id)) sv._downedMembers.push(n);
@@ -2168,6 +2347,8 @@ export function killNpc(sv, n, reason) {
         //（含成员背包全部物品）。尸体无碰撞可穿过；搜索由 updatePrompt/doInteract 处理。
         n._corpse = true;
         n._corpseDay = sv.day;   // 记录死亡天数（超期腐烂清理用）
+        // 2026-08-11 v2.98 尸体尸变系统：记录尸体生成现实时刻（尸变倒计时起点）
+        n._corpseAtReal = sv.now != null ? sv.now : 0;
         n._corpseContents = [];
         for (const s of n.inv || []) {
             if (!s) continue;
@@ -2560,6 +2741,13 @@ export function switchControl(sv, id, force) {
             // 2026-08-11 v2.97 现实时间救援倒计时：濒死切视角入 _downedMembers 时记录倒地时刻
             if (cur._downedAtReal == null) cur._downedAtReal = (sv.now != null ? sv.now : 0);
             if (cur._penaltySec == null) cur._penaltySec = 0;
+            // 2026-08-12 v2.101 用户定稿：**每个人救助时间单独算，按自己的濒死次数，非队伍累计**。
+            // 若已由 survival.onDeath（当前主控濒死）计过数（cur.limitSec 已设）则不重复 +1；
+            // 否则（本路径先触发）用 cur._downedCount 自己独立的次数：第 n 次 → 20分钟/2^(n-1)，最低 60 秒。
+            if (cur.limitSec == null) {
+                cur._downedCount = (cur._downedCount || 0) + 1;
+                cur.limitSec = Math.max(60, Math.round((B.DOWNED_LIMIT_SECONDS || 1200) / Math.pow(2, Math.max(0, (cur._downedCount || 1) - 1))));
+            }
             if (!Array.isArray(sv._downedMembers)) sv._downedMembers = [];
             if (!sv._downedMembers.some(m => m && m.id === cur.id)) sv._downedMembers.push(cur);
             log(sv, `${cur.name} 濒临死亡，倒地等待救治……`, '#FFB347');
@@ -2650,10 +2838,18 @@ export function serializeNpcs(sv) {
             _corpseSearched: !!n._corpseSearched,
             _corpseDay: n._corpseDay || null,   // 尸体死亡天数（超期腐烂清理用）
             _corpseSearchedDay: n._corpseSearchedDay || null,   // 尸体搜索完成天数（超期清理起算）
+            // 2026-08-11 v2.98 尸体尸变系统：记录尸体生成现实时刻（读档保持，防"读档瞬间立即尸变"）
+            _corpseAtReal: n._corpseAtReal != null ? n._corpseAtReal : null,
+            // 2026-08-11 v2.98 尸变标记：_revived=已尸变（防读档后重复尸变）、_revivedCorpse=尸变尸体（不二次尸变）
+            _revived: !!n._revived,
+            _revivedCorpse: !!n._revivedCorpse,
             // 2026-08-11 v2.97 现实时间救援倒计时：倒地标记 + 倒地时刻 + 累计被攻击扣时（存档跨会话保持）
             downed: !!n.downed,
             _downedAtReal: n._downedAtReal != null ? n._downedAtReal : null,
             _penaltySec: n._penaltySec || 0,
+            // 2026-08-12 v2.101 每人独立濒死次数 + 本次救援限时（存档跨会话保持，避免读档后 limitSec 丢失回退 20 分钟）
+            _downedCount: n._downedCount || 0,
+            limitSec: n.limitSec != null ? n.limitSec : null,
         })),
         controllerId: sv.controllerId || null,
         camp: sv.camp || null,
@@ -2691,6 +2887,8 @@ export function restoreNpcs(sv, data) {
         for (const m of sv._downedMembers) {
             if (m._downedAtReal == null) m._downedAtReal = (sv.now != null ? sv.now : 0);
             if (m._penaltySec == null) m._penaltySec = 0;
+            // 2026-08-12 v2.101 旧档无 limitSec：按该角色自己的濒死次数补算（_downedCount=0 → 20 分钟）
+            if (m.limitSec == null) m.limitSec = Math.max(60, Math.round((B.DOWNED_LIMIT_SECONDS || 1200) / Math.pow(2, Math.max(0, (m._downedCount || 1) - 1))));
         }
     }
 }
