@@ -55,9 +55,8 @@ const STAGES = [
     { name: '成长', max: 66,  sizeMul: 1.0, dmgMul: 1.0, hpMul: 1.0 },
     { name: '成熟', max: 100, sizeMul: 1.3, dmgMul: 1.5, hpMul: 1.4 },
 ];
-const GROWTH_RATE = 0.8;      // growth/秒（约 2 分钟长满）
-const TAME_BASE = 0.7;        // 驯服基础成功率（幼苗）
-const TAME_STAGE_PENALTY = 0.2; // 每升一阶成功率下降
+// 2026-08-12 修复#5（§13.1 数值唯一收口）：删除本地数值副本，统一引用 wbalance.js 收口值
+// （TAME_BASE / TAME_STAGE_PENALTY / PLANT_GROW），消除双源冲突。
 const ACTIVATE_RADIUS = 9;    // 玩家周围多少格内的植物会被"激活"参与战斗
 
 export function stageOf(growth) {
@@ -127,7 +126,7 @@ function reportPlantChange(sv, key) {
 function grow(p, dt) {
     if (p.growth >= 100) return;
     const oldMax = p.maxHp;
-    p.growth = Math.min(100, p.growth + GROWTH_RATE * dt);
+    p.growth = Math.min(100, p.growth + B.PLANT_GROW * dt);
     const newMax = plantMaxHp(p.species, p.growth, p.type);
     if (newMax > oldMax) {
         p.hp += (newMax - oldMax);
@@ -346,7 +345,7 @@ export function tryTame(sv, gx, gy, countItem, takeItem) {
     const p = ensurePlant(sv, gx, gy, 'neutral', species, growth);
     if (p.type !== 'neutral') return 'not-neutral';
     if (countItem('food') < 1) return 'need:food';
-    const chance = Math.max(0.1, TAME_BASE - stageOf(p.growth) * TAME_STAGE_PENALTY);
+    const chance = Math.max(0.1, B.TAME_BASE - stageOf(p.growth) * B.TAME_STAGE_PENALTY);
     takeItem('food', 1);
     if (Math.random() < chance) {
         p.type = 'tamed';

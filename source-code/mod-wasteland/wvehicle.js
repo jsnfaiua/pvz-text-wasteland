@@ -40,7 +40,9 @@ function ownerName(sv, driverId) {
 
 // 修理消耗
 export const REPAIR_PARTS = 3;         // 零件数
-export const CAR_MAX_HP = 3000;        // 车辆耐久（驾驶用）（2026-08-11 用户要求提升至 3000）
+// 2026-08-12 修复#6（§13.1 数值唯一收口）：车辆耐久统一引用 wbalance.CAR_HP，
+// 消除本地 3000 与 wbalance.CAR_HP 的双源（值不变，仅收敛到单一真相源）。
+export const CAR_MAX_HP = B.CAR_HP;    // 车辆耐久（驾驶用）＝ wbalance.CAR_HP
 export const CAR_DRIVE_SPEED = 260;    // 驾驶移动速度（px/s）
 export const CAR_TURN = 6;             // 转向速率
 export const CAR_CRUSH_DMG = 60;       // 碾压僵尸伤害
@@ -95,9 +97,12 @@ export function carData(sv, key) {
     // 完好车（自然生成或开发者刷出）：只初始化一次，修复/驾驶后不回满
     if (m.cond === 'intact' && m.repaired == null) { m.repaired = true; m.hp = CAR_MAX_HP; }
     if (m.hp == null) m.hp = B.CAR_HP;
-    // 车辆自带油量随机（20%~75%），首次接触确定后随车持久
+    // 车辆自带油量（20%~75%），首次接触确定后随车持久
+    // 2026-08-12 修复#19（§13.2 随机确定性）：油量是随世界档持久化的字段，改用 seed 派生
+    // （hash2 同品相/朝向），保证同一世界同一辆车重进油量一致，不再用 Math.random。
     if (m.fuel == null) {
-        m.fuel = (B.FUEL_RANDOM_MIN + Math.random() * (B.FUEL_RANDOM_MAX - B.FUEL_RANDOM_MIN)) / 100 * B.FUEL_MAX;
+        const fr = hash2(sv.world.seed ^ 0xCA2 ^ 0xF00, gx, gy);
+        m.fuel = (B.FUEL_RANDOM_MIN + fr * (B.FUEL_RANDOM_MAX - B.FUEL_RANDOM_MIN)) / 100 * B.FUEL_MAX;
     }
     return m;
 }

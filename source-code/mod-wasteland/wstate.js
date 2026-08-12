@@ -431,12 +431,17 @@ export function applyWorld(run, data, deps) {
             }
         }
         // 软核倒地救治状态恢复（旧档无则 null）
+        // 2026-08-12 修复#16：补全 downedAtReal/_penaltySec/limitSec，与 buildRun（201-210）字段集一致，
+        // 否则世界档路径读档后救援限时/时间戳被重置（与角色档路径、联机快照行为不一致）。
         if (data.downed && typeof data.downed === 'object') {
             run._downed = {
                 name: data.downed.name || null,
                 px: data.downed.px || 0, py: data.downed.py || 0,
                 dayDead: data.downed.dayDead || 0,
                 med: data.downed.med || 0, herb: data.downed.herb || 0,
+                downedAtReal: data.downed.downedAtReal != null ? data.downed.downedAtReal : (run.now != null ? run.now : 0),
+                _penaltySec: data.downed._penaltySec || 0,
+                limitSec: data.downed.limitSec != null ? data.downed.limitSec : null,
             };
         }
         out.loaded = true;

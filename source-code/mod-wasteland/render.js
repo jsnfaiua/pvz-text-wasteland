@@ -445,7 +445,10 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
     // 尸化玩家精英：肤色混入缓存 key（否则不同肤色共用缓存 → 颜色串用）
     const pal = zombiePalette(z.type);
     const skinHash = z.skin ? ((parseInt(z.skin.slice(1), 16) || 0) & 0x3FF) : 0;
-    const cacheKey = (z.type.charCodeAt(0) * 1000 + lvQ * 10 + skinState + skinHash * 64) | 0;
+    // 2026-08-12 修复#3：外衣状态色（windup橙/slowT蓝/stun灰/hurt红）纳入缓存 key——
+    // 否则不同状态的僵尸共用同一缓存 → 蓄力/减速/受击提示色丢失或错乱（§13.8 维度缺失）。
+    const coatHash = color ? ((parseInt(color.slice(1), 16) || 0) & 0xFFFF) : 0;
+    const cacheKey = (z.type.charCodeAt(0) * 1000 + lvQ * 10 + skinState + skinHash * 64 + coatHash * 1024) | 0;
     let cached = cacheGet(_zombieCache, cacheKey);
     if (!cached) {
         cached = makeOffscreen(width, height);
@@ -2605,15 +2608,17 @@ function drawWorld(ctx, sv, camX, camY, W, H) {
     const bdx = Math.round(t0x * TS - camX);
     const bdy = Math.round(t0y * TS - camY);
     // ① 地面层（不透明背景：BIOME_BG + 所有格地面）
+    // 2026-08-12 修复#4：季节（sv._season）纳入缓存 key——草地背景色随季节变化（wgrass 按
+    // SEASONS[season] 渲染），缺维度会让换季后地面草地不刷新，与动态草层不一致（§13.8）。
     let g = _worldGroundCache;
-    if (!g || g.rev !== rev || g.seed !== sv.world.seed ||
+    if (!g || g.rev !== rev || g.seed !== sv.world.seed || g.season !== sv._season ||
         g.t0x !== t0x || g.t0y !== t0y || g.t1x !== t1x || g.t1y !== t1y) {
         if (!g) { g = _worldGroundCache = {}; }
         if (!g.canvas || g.canvas.width !== cw || g.canvas.height !== chh) {
             g.canvas = makeOffscreen(cw, chh);
             g.bctx = g.canvas.getContext('2d');
         }
-        g.rev = rev; g.seed = sv.world.seed;
+        g.rev = rev; g.seed = sv.world.seed; g.season = sv._season;
         g.t0x = t0x; g.t0y = t0y; g.t1x = t1x; g.t1y = t1y;
         drawWorldGroundStatic(g.bctx, sv, t0x * TS, t0y * TS, cw, chh);
     }

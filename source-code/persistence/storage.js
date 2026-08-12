@@ -54,6 +54,18 @@ export function getStorage(key, def = null, useNamespace = true) {
     return safeParse(localStorage.getItem(fullKey), def);
 }
 
+// 删除命名空间后的键（#13：删除存档统一走此接口，避免各调用方硬编码 `u:<user>:` 前缀）
+export function removeStorage(key, useNamespace = true) {
+    const fullKey = useNamespace ? getNamespacedKey(key) : key;
+    try {
+        localStorage.removeItem(fullKey);
+        return true;
+    } catch (e) {
+        console.warn('[storage] 删除失败:', key, e && e.name);
+        return false;
+    }
+}
+
 // ============================================================
 // 碎片 & 升级
 // ============================================================

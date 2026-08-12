@@ -63,8 +63,12 @@ assert(M.wbuild.includes('T.CARWRECK'), 'build: 汽车变残骸');
 // ============ 4. wplants 植物 ============
 assert(M.wplants.includes('export function stageOf(growth)'), 'plant: stageOf');
 assert(M.wplants.includes('export function speciesAt(seed, gx, gy)'), 'plant: speciesAt');
-assert(M.wplants.includes('const GROWTH_RATE = 0.8'), 'plant: 生长速率');
-assert(M.wplants.includes('const TAME_BASE = 0.7'), 'plant: 驯服基础');
+// 2026-08-12 修复#5（§13.1 数值唯一收口）：wplants 不再本地定义数值副本，统一引用 wbalance 收口值。
+// 断言同步改为验证收口后的结构（引用 B.PLANT_GROW/B.TAME_BASE）与 wbalance 单真相源值。
+assert(M.wplants.includes('B.PLANT_GROW'), 'plant: 生长速率引用收口(B.PLANT_GROW)');
+assert(M.wplants.includes('B.TAME_BASE'), 'plant: 驯服基础引用收口(B.TAME_BASE)');
+assert(M.bal.includes('export const PLANT_GROW = 0.8'), 'plant: wbalance 生长速率收口=0.8');
+assert(M.bal.includes('export const TAME_BASE = 0.7'), 'plant: wbalance 驯服基础收口=0.7');
 assert(M.wplants.includes('const ACTIVATE_RADIUS = 9'), 'plant: 激活半径');
 assert(M.wplants.includes('sunProduce: true'), 'plant: 向日葵');
 assert(M.wplants.includes('melee: true'), 'plant: 食人花');

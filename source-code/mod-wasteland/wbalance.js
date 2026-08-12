@@ -542,9 +542,11 @@ export const CAMP_SPEED_MUL = 1.05;    // 领地内移速倍率
 export const CAMP_SPAWN_SKIP = 1;      // 领地内敌对生物生成直接跳过（减少生成）
 
 // ---------- 植物生长 / 驯服（M6） ----------
-export const PLANT_GROW = 2.0;          // 生长速度：growth/秒（上限100）
-export const TAME_BASE = 0.9;           // 驯服基础成功率（幼苗）
-export const TAME_STAGE_PENALTY = 0.25; // 每升一阶成功率降低
+// 2026-08-12 修复#5（§13.1 数值唯一收口）：wplants 已改为引用本表；本表为唯一真相源。
+// 值对齐实际生效（wplants 原本地副本 0.8/0.7/0.2，行为不变，仅消除双源冲突）。
+export const PLANT_GROW = 0.8;          // 生长速度：growth/秒（上限100，约 2 分钟长满）
+export const TAME_BASE = 0.7;           // 驯服基础成功率（幼苗）
+export const TAME_STAGE_PENALTY = 0.2;  // 每升一阶成功率降低
 
 // ---------- 尸潮奖励 ----------
 export const REWARD_WEAPON_DAY = 3;

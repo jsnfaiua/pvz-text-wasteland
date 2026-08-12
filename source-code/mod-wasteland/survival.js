@@ -4,7 +4,7 @@
 // ============================================================
 
 import { ZOMBIES, AMMO_INFO, WEAPONS, ACTION } from '../core/constants.js';
-import { getStorage, setStorage, writeSave, getSession } from '../persistence/storage.js';
+import { getStorage, setStorage, removeStorage, writeSave, getSession } from '../persistence/storage.js';
 import { saveData } from '../core/state.js';
 import { showScreen } from '../ui/screens.js';
 import AudioSystem from '../systems/audio.js';
@@ -204,15 +204,19 @@ function migrateLegacySave() {
 // saveNow 只标记待存（_saveQueued 幂等合并），实际落盘在 setTimeout(0) 帧间执行；
 // 退出/切后台时 flushSave 同步兜底（防丢最后进度）。
 let saveFlushTimer = null;
+// 2026-08-12 修复"死亡节点不落盘"（#2）：原 `sv.dead` 直接 return 会丢弃濒死/倒地/救活/重生
+// 关键节点的存档请求。软核倒地救治（_downed）、救活、重生都依赖持久化恢复；仅「硬核游戏结束
+// 已删档」（dead 且无倒地记录）才真正无需落盘。故放宽：dead 时仍允许落盘，但硬核删档后
+// 不再调用 saveNow（exitWasteland 已退出），此处仅兜底防重复写。
 function saveNow() {
-    if (!sv || !sv.world || sv.dead) return;
+    if (!sv || !sv.world) return;
     if (sv._saveQueued) return;
     sv._saveQueued = true;
     if (saveFlushTimer == null) saveFlushTimer = setTimeout(flushSave, 0);
 }
 function flushSave() {
     if (saveFlushTimer != null) { clearTimeout(saveFlushTimer); saveFlushTimer = null; }
-    if (!sv || !sv.world || sv.dead) { if (sv) sv._saveQueued = false; return; }
+    if (!sv || !sv.world) { if (sv) sv._saveQueued = false; return; }
     sv._saveQueued = false;
     const name = sv.characterName || '幸存者';
     setStorage(charKey(name), serializeCharacter(sv, STATE_DEPS));
@@ -504,15 +508,21 @@ function loop(now) {
     carBodyCache = null;   // 帧级车体占位缓存：每帧失效（地形可能被改动）
     // 搜索界面打开时游戏不暂停：世界（僵尸/昼夜/饱食）继续运行；
     // 背包打开也不暂停世界（边整理边警戒）；储物柜/暂停/拼字台仍暂停世界。搜索进度由下方单独推进。
-    if (!Panel.isChestOpen() && !pauseOpen && !WW.isOpen() && !sv.dead) update(dt);
-    else if (!sv.dead) {
-        sv.now += dt * (sv._devTimeScale || 1);
-        if (WW.isOpen()) WW.update(dt);
+    // 主循环防崩溃（AGENTS.md §7）：update/draw 内任何异常都必须捕获，保证下一帧仍注册，
+    // 禁止未捕获异常让 requestAnimationFrame 停摆导致游戏永久冻结白屏。
+    try {
+        if (!Panel.isChestOpen() && !pauseOpen && !WW.isOpen() && !sv.dead) update(dt);
+        else if (!sv.dead) {
+            sv.now += dt * (sv._devTimeScale || 1);
+            if (WW.isOpen()) WW.update(dt);
+        }
+        if (WSearch.isOpen() && !sv.dead) WSearch.updateSearch(sv, dt);
+        if (sv.ctx) fitCanvasBacking(sv.ctx, sv._devGfx === 0 ? 0.75 : 1);   // 低画质：内部分辨率 0.75x
+        draw(sv.ctx, sv);
+        HUD.update(sv, now);   // 调试 HUD（默认关闭；每帧轻量计数，DOM 500ms 节流）
+    } catch (e) {
+        console.error('[主循环] update/draw 异常被捕获（已跳过本帧）:', e);
     }
-    if (WSearch.isOpen() && !sv.dead) WSearch.updateSearch(sv, dt);
-    if (sv.ctx) fitCanvasBacking(sv.ctx, sv._devGfx === 0 ? 0.75 : 1);   // 低画质：内部分辨率 0.75x
-    draw(sv.ctx, sv);
-    HUD.update(sv, now);   // 调试 HUD（默认关闭；每帧轻量计数，DOM 500ms 节流）
     sv.raf = requestAnimationFrame(loop);
 }
 
@@ -694,7 +704,7 @@ function update(dt) {
     }
     // 特效数量上限（战斗特效堆积 → 序列化/渲染卡顿；防堆积；画质档 B：低20/中35/高50）
     const maxEff = sv._devGfx === 0 ? 20 : sv._devGfx === 1 ? 35 : 50;
-    while (sv.effects.length > maxEff) sv.effects.shift();
+    if (sv.effects.length > maxEff) sv.effects.splice(0, sv.effects.length - maxEff);
     // 地面掉落物上限（长时间战斗掉落堆积 → 快照/渲染卡顿）
     if (sv.drops.length > 150) sv.drops.splice(0, sv.drops.length - 150);
     if (sv.swingT > 0) sv.swingT -= dt;
@@ -934,13 +944,12 @@ function update(dt) {
             if (!sv.isJumping) {
                 const onGrass = ft === T.WEED || ft === T.CROP || ft === T.HERB || ft === T.FLOWER;
                 const run = sv.sprinting && (mx || my);
-                // side 走路（东/西向）步频更短、animFrame 只在 0/1 循环，与 front/back 视觉帧频一致（survival.js §P3 升级）
-                const isSide = Math.abs(sv.faceX || 0) > 0.7;
+                // side 走路（东/西向）步频更短，与 front/back 视觉帧频一致（survival.js §P3 升级）
                 sv.stepT = (sv.stepT || 0) - dt;
                 if (sv.stepT <= 0) {
                     sv.stepT = run ? 0.24 : (sv.faceY > 0 && Math.abs(sv.faceY) >= Math.abs(sv.faceX) ? 0.432 : (Math.abs(sv.faceX) > 0.7 ? 0.24 : 0.36));   // 朝南步频慢 20%(0.36×1.2);东西向(含向西)步频提高 50%(0.36→0.24,测试值,过快可回调 0.28/0.30);其余 0.36   // 走路周期统一 1.44s（0.36s×4 帧），跑步 0.96s（0.24s×4）——2026-08-08 用户要求 + 2026-08-09 用户测试
                     sv.stepSide = !sv.stepSide;
-                    sv.animFrame = ((sv.animFrame || 0) + 1) % (isSide ? 4 : 4);   // 动画换帧与脚步同频；side 2 帧循环、front/back 4 帧
+                    sv.animFrame = ((sv.animFrame || 0) + 1) % 4;   // 动画换帧与脚步同频；统一 4 帧循环（原 `isSide ? 4 : 4` 恒等死代码，见#11）
                     if (onGrass) AudioSystem.playWalkGrass();
                     else if (run) AudioSystem.playRunStep(sv.stepSide);
                     else AudioSystem.playWalkStep(sv.stepSide);
@@ -1021,7 +1030,7 @@ function update(dt) {
     for (let i = sv.drops.length - 1; i >= 0; i--) {
         const d = sv.drops[i];
         if (Math.hypot(d.x - sv.px, d.y - sv.py) < B.PICKUP_RADIUS) {
-            if (d.id.startsWith('loot:')) {
+            if (d && d.id && d.id.startsWith('loot:')) {
                 // 战利品直接拾取进背包（2026-08-09 用户要求）：不再自动打开搜索界面，
                 // 拾取后到背包点击战利品袋再搜索；搜索中途强关 → 物品直接入包。
                 // 2026-08-10 修复"背包满拾取战利品袋消失"：装不进背包则掉落保留在地（不 splice）。
@@ -1189,12 +1198,11 @@ function updateGuest(dt) {
             if (!sv.isJumping) {
                 const onGrass = ft === T.WEED || ft === T.CROP || ft === T.HERB || ft === T.FLOWER;
                 const run = sv.sprinting && (mx || my);
-                const isSide = Math.abs(sv.faceX || 0) > 0.7;
                 sv.stepT = (sv.stepT || 0) - dt;
                 if (sv.stepT <= 0) {
                     sv.stepT = run ? 0.24 : (sv.faceY > 0 && Math.abs(sv.faceY) >= Math.abs(sv.faceX) ? 0.432 : (Math.abs(sv.faceX) > 0.7 ? 0.24 : 0.36));   // 朝南步频慢 20%(0.36×1.2);东西向(含向西)步频提高 50%(0.36→0.24,测试值,过快可回调 0.28/0.30);其余 0.36
                     sv.stepSide = !sv.stepSide;
-                    sv.animFrame = ((sv.animFrame || 0) + 1) % (isSide ? 4 : 4);
+                    sv.animFrame = ((sv.animFrame || 0) + 1) % 4;   // 统一 4 帧（原恒等死代码，见#11）
                     if (onGrass) AudioSystem.playWalkGrass();
                     else if (run) AudioSystem.playRunStep(sv.stepSide);
                     else AudioSystem.playWalkStep(sv.stepSide);
@@ -1242,7 +1250,7 @@ function updateGuest(dt) {
     for (let i = sv.drops.length - 1; i >= 0; i--) {
         const d = sv.drops[i];
         if (Math.hypot(d.x - sv.px, d.y - sv.py) < B.PICKUP_RADIUS) {
-            if (d.id.startsWith('loot:')) {
+            if (d && d.id && d.id.startsWith('loot:')) {
                 // 战利品直接拾取进背包（2026-08-09 用户要求）：不再自动打开搜索界面，
                 // 拾取后到背包点击战利品袋再搜索；搜索中途强关 → 物品直接入包。
                 // 2026-08-10 修复"背包满拾取战利品袋消失"：装不进背包则掉落保留（不 splice、不上报移除）。
@@ -2190,12 +2198,11 @@ function updateInteriorMode(dt) {
                 const run = sv.sprinting && (mx || my);
                 // 与室外同款动画：室内也要推进 animFrame（否则走动时动画帧冻结，
                 // 脚步音效在放但小人停在原地，室内外动画不同步）
-                const isSide = Math.abs(sv.faceX || 0) > 0.7;
                 sv.stepT = (sv.stepT || 0) - dt;
                 if (sv.stepT <= 0) {
                     sv.stepT = run ? 0.24 : (sv.faceY > 0 && Math.abs(sv.faceY) >= Math.abs(sv.faceX) ? 0.432 : (Math.abs(sv.faceX) > 0.7 ? 0.24 : 0.36));   // 朝南步频慢 20%(0.36×1.2);东西向(含向西)步频提高 50%(0.36→0.24,测试值,过快可回调 0.28/0.30);其余 0.36
                     sv.stepSide = !sv.stepSide;
-                    sv.animFrame = ((sv.animFrame || 0) + 1) % (isSide ? 4 : 4);
+                    sv.animFrame = ((sv.animFrame || 0) + 1) % 4;   // 统一 4 帧（原恒等死代码，见#11）
                     if (run) AudioSystem.playRunStep(sv.stepSide);
                     else AudioSystem.playWalkStep(sv.stepSide);
                 }
@@ -3696,9 +3703,10 @@ function onDeath() {
             const aSame = !!a.inInterior === !!sv.interior;
             const bSame = !!b.inInterior === !!sv.interior;
             if (aSame !== bSame) return aSame ? -1 : 1;   // 同位置的优先
-            // 同位置时按距离（主控在室内用室内坐标，室外用世界坐标）
-            const ax = sv.interior ? a.x : a.x, ay = sv.interior ? a.y : a.y;
-            const bx = sv.interior ? b.x : b.x, by = sv.interior ? b.y : b.y;
+            // 同位置时按距离：aSame/bSame 已保证与主控同空间，a.x/a.y 即该空间坐标（与 sv.px/py 对应），
+            // 无需再按 sv.interior 分支（此前 `sv.interior ? a.x : a.x` 为恒等死代码，见#10）。
+            const ax = a.x, ay = a.y;
+            const bx = b.x, by = b.y;
             const da = Math.hypot(ax - sv.px, ay - sv.py);
             const db = Math.hypot(bx - sv.px, by - sv.py);
             return da - db;
@@ -3807,8 +3815,11 @@ function onDeath() {
     const cur = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);
     const playerAlive = (sv.npcs || []).some(n => n.isPlayer && n.alive && !n.downed);
     const controllerAlive = !!(cur && cur.alive && !cur.downed);
+    // 2026-08-12 修复#12：联机 guest 队友存活用 host 权威 hp（_hostHp 优先，回退 hp）判定，
+    // 而非「不在室内」——已死亡的 guest 若 inInterior=false 会被误判存活，导致不触发全灭。
+    const guestAlive = p => (p._hostHp != null ? p._hostHp : (p.hp || 0)) > 0;
     const anyAliveMate = mates.length >= 1 || controllerAlive || playerAlive
-        || (sv.p2 && !sv.p2.inInterior) || (sv.p2s && Object.values(sv.p2s).some(p => !p.inInterior));
+        || (sv.p2 && guestAlive(sv.p2)) || (sv.p2s && Object.values(sv.p2s).some(guestAlive));
         // 2026-08-10 修复"正常模式独狼被杀直接退出"：先判断是否【从头就有过 party 队友】——
         // 软核（正常）模式下，即使原本有队友但已全部阵亡/倒地（无人能救），也应【软核重生】而非
         // 直接结束游戏——重生后成员列表清空（原主角/成员都已死亡，重生的是新主角，孤身继续）。
@@ -3872,13 +3883,11 @@ function onDeath() {
         // 不再直接退出/卡顿/原地生成）。主角尸化留世（spawnPlayerZombie 已做），删档（不可重进）。
         const seed = sv.world.seed;
         const charName = sv.characterName;
-        if (typeof localStorage !== 'undefined') {
-            try {
-                if (seed != null) localStorage.removeItem('u:' + ((getSession && getSession() && getSession().username) || '__guest__') + ':wasteland_world_' + seed);
-                if (charName) localStorage.removeItem('u:' + ((getSession && getSession() && getSession().username) || '__guest__') + ':wasteland_character_' + charName);
-                localStorage.removeItem('u:' + ((getSession && getSession() && getSession().username) || '__guest__') + ':wasteland_profile');
-            } catch (e) { /* 清理失败不阻塞退出 */ }
-        }
+        // 2026-08-12 修复硬核删档硬编码（#13）：复用 charKey/worldKey/PROFILE_KEY 统一键名
+        // + removeStorage 统一命名空间删除，不再硬编码 `u:<user>:` 前缀（与 storage 层解耦）。
+        if (seed != null) removeStorage(worldKey(seed));
+        if (charName) removeStorage(charKey(charName));
+        removeStorage(PROFILE_KEY);
         // 弹"游戏结束"界面（复用死亡弹窗），点按钮才返回主菜单（避免直接退出的卡顿/原地重生感）
         Panel.showDeathChoices(
             '<div class="wsl-death-title">游 戏 结 束</div>' +
@@ -4134,8 +4143,10 @@ function updateDowned(sv, dt, canStand) {
     // controllerId 角色活着 / isPlayer 角色活着 / 联机队友存活 任一即 anyMateAlive=true。
     const _udc = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);
     const _udp = (sv.npcs || []).some(n => n.isPlayer && n.alive && !n.downed);
+    // 2026-08-12 修复#12：联机 guest 队友存活用 host 权威 hp 判定（同上，见 onDeath anyAliveMate）。
+    const _guestAlive = p => (p._hostHp != null ? p._hostHp : (p.hp || 0)) > 0;
     const anyMateAlive = mates.length >= 1 || !!(_udc && _udc.alive && !_udc.downed) || _udp
-        || (sv.p2 && !sv.p2.inInterior) || (sv.p2s && Object.values(sv.p2s).some(p => !p.inInterior));
+        || (sv.p2 && _guestAlive(sv.p2)) || (sv.p2s && Object.values(sv.p2s).some(_guestAlive));
     if (!anyMateAlive) {
         // 2026-08-11 全灭弹窗（用户需求）：倒地主控 + 全部队友阵亡/倒地（无人能救）→
         // 弹「重生」+「返回主菜单」UI（含每人击败详情），点"重生"才 softRespawn。

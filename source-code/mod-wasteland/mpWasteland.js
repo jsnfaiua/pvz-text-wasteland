@@ -665,6 +665,9 @@ function onPeerLeft(data) {
         delete guestPeers[pid];
         if (gid) {
             clearRemotePlayerById(gid);   // host 本地移除该队友槽
+            // 2026-08-12 修复#8：掉线超时清理时同步清 guestPos（host 记的 guest 最近位置），
+            // 否则残留旧 guest 位置 → 新 guest 重连后攻击/咬伤定位串位。
+            if (guestPos && guestPos.guestId === gid) guestPos = null;
             if (net) net.send('wevt', { type: 'leave', guestId: gid, from: 'host' });   // 其他客人同步移除
         }
     }, 45000);

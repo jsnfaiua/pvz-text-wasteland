@@ -846,6 +846,10 @@ function sendInput() {
             mode: state._mpAttackEvent.mode, charge: state._mpAttackEvent.charge, aim: state._mpAttackEvent.aim });
         state._mpAttackEvent = null;
     }
+    if (state._mpReloadEvent) {
+        events.push({ type: 'reload', wkey: dave.currentWeapon });
+        state._mpReloadEvent = false;
+    }
     if (state._mpNextWaveEvent) {
         events.push({ type: 'nextwave' });
         state._mpNextWaveEvent = null;
@@ -910,6 +914,12 @@ function handleGuestInput(data) {
             if (evt.type === 'nextwave') {
                 // 客人申请手动召唤下一波（房主权威执行并广播）
                 callMpNextWave(true);
+            } else if (evt.type === 'reload') {
+                // 2026-08-12 修复#7（§6 host 权威弹匣）：guest 换弹 → host 重置 dave2.magAmmo 为满弹，
+                // 使 host 端 guest 弹匣状态权威可控，防双端分裂。
+                const _rw = WEAPONS[dave2.currentWeapon];
+                if (_rw && _rw.kind === 'ranged' && _rw.magSize) dave2.magAmmo = _rw.magSize;
+                dave2.reloading = false;
             } else if (evt.type === 'attack') {
                 const wkey = allowedWeapons.includes(evt.wkey) ? evt.wkey : dave2.currentWeapon;
                 if (!wkey || !WEAPONS[wkey] || wkey !== dave2.currentWeapon) continue;
@@ -924,6 +934,12 @@ function handleGuestInput(data) {
                     const gCharge = w.chargeable && Number.isFinite(requestedCharge)
                         ? Math.max(0.4, Math.min(1.5, requestedCharge)) : 1;
                     if (w.kind === 'ranged') {
+                        // 2026-08-12 修复#7（§6 host 权威弹匣）：host 端为 guest 维护弹匣——
+                        // 首次远程攻击按武器 magSize 初始化；打空后 host 权威拦截（guest 本地同样拦截，
+                        // 双端一致防分裂）；每次攻击扣减弹匣。备弹量属账号私有，host 无法验证，
+                        // 由 guest 本地校验，host 只权威管理弹匣内数量。
+                        if (dave2.magAmmo == null && w.magSize) dave2.magAmmo = w.magSize;
+                        if (dave2.magAmmo != null && dave2.magAmmo <= 0) continue;   // 弹匣空：忽略本次攻击
                         // 弓箭蓄力与狙击开镜随事件回放（与单机一致的伤害/弹速/散射）
                         const gSpdMul = w.chargeable ? (0.7 + 0.5 * gCharge) : 1;
                         const pellets = w.pellets || 1;
@@ -942,6 +958,7 @@ function handleGuestInput(data) {
                                 owner: 'guest',
                             });
                         }
+                        if (dave2.magAmmo != null) dave2.magAmmo = Math.max(0, dave2.magAmmo - 1);
                     } else {
                         // 铲子优先挖植物（与单机一致：附近无僵尸时铲除植物返还阳光）
                         if (w.canDigPlant) {
@@ -1672,6 +1689,9 @@ function mpTryReload() {
     if (r.ok) {
         log('换弹中...');
         AudioSystem.playWeaponReload(dave.currentWeapon);
+        // 2026-08-12 修复#7（§6 host 权威弹匣）：guest 换弹上报 host，host 同步重置 dave2.magAmmo，
+        // 使 host 端 guest 弹匣状态与 guest 本地一致（防弹匣打空后 host 仍放弹的双端分裂）。
+        state._mpReloadEvent = true;
     } else if (r.msg) {
         log(r.msg);
     }

@@ -1739,6 +1739,9 @@ function fireNpcBullet(sv, n, threat, pick) {
 // 2026-08-10 导出：室内模式 updateInteriorMode 同样需要驱动 NPC 子弹（否则室内子弹不动/不消失）
 export function updateNpcBullets(sv, dt) {
     if (!sv.npcBullets || !sv.npcBullets.length) return;
+    // 2026-08-12 修复#18（§7 实体硬上限）：npcBullets 此前无上限会随战斗堆积（与玩家 sv.bullets
+    // 80 上限不对称，防序列化/渲染卡顿）。沿用 wgear.js 对 sv.bullets 的同一裁剪口径。
+    if (sv.npcBullets.length > 80) sv.npcBullets.splice(0, sv.npcBullets.length - 80);
     for (let i = sv.npcBullets.length - 1; i >= 0; i--) {
         const b = sv.npcBullets[i];
         b.x += b.vx * dt; b.y += b.vy * dt;
