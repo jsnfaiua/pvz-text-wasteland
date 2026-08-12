@@ -1,6 +1,6 @@
 # NPC 生态 · Agent 记忆
 
-> 所属记忆库：`docs/记忆库/`｜主索引：[`../../README.md`](../../README.md)
+> 所属记忆库：`docs/记忆库/`｜主索引：[`../../AGENTS.md §14`](../../AGENTS.md)
 > 相关模块：`mod-wasteland/wnpc.js`（全项目最大模块，173KB）
 
 ---

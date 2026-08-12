@@ -3,7 +3,7 @@ import { join, resolve, dirname as d } from 'path';
 
 const root = 'd:/Project/pvz-text-wasteland';
 const memDir = join(root, 'docs', '记忆库');
-const files = ['README.md', ...readdirSync(memDir).map(f => join('docs', '记忆库', f))];
+const files = ['AGENTS.md', 'README.md', ...readdirSync(memDir).map(f => join('docs', '记忆库', f))];
 const links = new Set();
 const bad = [];
 
