@@ -308,7 +308,8 @@ export function serializeWorld(sv, deps) {
         homeBed: sv.homeBed || null,
         lastRestDay: sv.lastRestDay,
         // v4.13 最近登录时间（进世界时更新，存档管理界面显示）
-        lastLoginTime: sv._lastLoginTime || null,
+        // v4.16 修复：保存时用 lastLoginTime，读取也应一致（原 _lastLoginTime 永远为 undefined）
+        lastLoginTime: sv.lastLoginTime || null,
         horde: sv.horde ? { phase: sv.horde.phase, pending: sv.horde.pending || 0, total: sv.horde.total || 0, batchT: sv.horde.batchT || 0 } : null,
         zombies: sv.zombies.map(z => ({
             id: z.id,   // 运行时 id（'zNNN'）：联机 wsync 按 id 合并；无 id 的旧档僵尸由 apply 端补
@@ -361,6 +362,8 @@ export function applyWorld(run, data, deps) {
         run.diffKey = (data.difficulty === 'hardcore' || data.difficulty === 'normal') ? data.difficulty : 'normal';
         // 世界绑定的角色名（旧档无则 null；开始游戏时若选了世界会带出该角色）
         if (typeof data.characterName === 'string' && data.characterName) run.worldCharName = data.characterName;
+        // v4.16 恢复最近登录时间（serializeWorld 读取 sv.lastLoginTime，加载时必须回填）
+        if (typeof data.lastLoginTime === 'number') run.lastLoginTime = data.lastLoginTime;
         if (data.horde) {
             // L7：进行中的尸潮进度恢复（pending/total/batchT），旧布尔档兼容
             run.horde = typeof data.horde === 'object'

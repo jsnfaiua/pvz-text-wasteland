@@ -17,7 +17,7 @@
 //   wrejoin guest→host ×1  {}                                        客人断线重连后请求状态重同步
 // ============================================================
 
-import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, updateLootDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName, debugGetSv, downedMedSubmit, applyExplore, applyRecipeUnlock } from './survival.js?v=4.14';
+import { enterWasteland, exitWasteland, setMpCleanupHook, getLocalPlayerState, setRemotePlayerState, clearRemotePlayer, clearRemotePlayerById, applyMpSnapshot, playMpEvent, getMpSnapshot, takeMpOutbox, removeZombieById, hostApplyGuestAttack, applyWorldDiff, applyWorldMods, getWorldMods, removeDrop, addDrop, updateLootDrop, applyChestSync, applyBoxLootSync, applyPlantSync, applyFxEvent, applyDevFlags, applyHireEvent, applyNpcCtl, applyNpcInvSync, getMpControlledNpc, showCreateCharacter, loadCharacterData, saveCharacterData, currentCharacterName, debugGetSv, downedMedSubmit, applyExplore, applyRecipeUnlock } from './survival.js?v=4.15';
 import * as WZ from './wzombie.js';   // 2026-08-12 v3.9 错乱僵尸：guest 上报 → host 权威生成
 import AudioSystem from '../systems/audio.js';
 import * as WDEV from './wdev.js';

@@ -1,0 +1,83 @@
+(node:46620) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///c:/Users/24601/Desktop/%E6%96%87%E5%AD%97%E6%A4%8D%E7%89%A9%E5%A4%A7%E6%88%98%E5%83%B5%E5%B0%B8-%E4%BC%98%E5%8C%96%E7%89%88(1)(1)/%E6%96%87%E5%AD%97%E6%A4%8D%E7%89%A9%E5%A4%A7%E6%88%98%E5%83%B5%E5%B0%B8-%E4%BC%98%E5%8C%96%E7%89%88(1)/dev-tools/smoke-test.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to c:\Users\24601\Desktop\文字植物大战僵尸-优化版(1)(1)\文字植物大战僵尸-优化版(1)\package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+=== 荒原模组冒烟测试 ===
+
+  FAIL: wmap: applySnapshot backfills explored {}
+  FAIL: wstate-legacyDrop: old save contents migrate to corpse
+  FAIL: hostileAtk: 恶意 NPC 不攻击倒地主控玩家（防反复鞭尸）
+  FAIL: hostileAtk: 恶意 NPC 不攻击倒地队友（防反复鞭尸/掉遗物）
+  FAIL: hostileAtk: 开火后进入站定瞄准锁
+  FAIL: weaponRule: 弓弩第1帧蓄力不放箭
+  FAIL: weaponRule: 弓弩第1帧开始蓄力
+  FAIL: weaponRule: 软核成员被僵尸咬死 → 倒地可救助
+  FAIL: weaponRule: 倒地成员记录在 _downedMembers
+  FAIL: npcAuto: 捡到 food (n=1)
+  FAIL: npcAuto: 离玩家远(8格)时奔跑 (_running=undefined)
+  FAIL: npcAuto: 靠近(1格)后恢复步行 (_running=true)
+  FAIL: npcAuto: 卡碰撞体后传送至可站格
+  FAIL: meleeStandoff[lowHp]: 应正常出刀 (atkFrames=0)
+  FAIL: meleeStandoff[lowHp]: 攻击时距离应 >30px 不贴脸 (实际 -px)
+  FAIL: downedScene: 室外倒地记录进入室内后 inInterior=true
+  FAIL: downedScene: 倒地记录 interiorKey 同步
+  FAIL: downedScene: 倒地记录坐标为室内格
+  FAIL: downedScene: 退出室内后倒地记录 inInterior=false
+  FAIL: npcBullets: bullet stopped by interior wall
+  FAIL: wnpc: updateNpcs guards dangling controllerId
+  FAIL: wnpc: killNpc exempts current controlled npc from downed lock
+  FAIL: wnpc: killNpc current-controller death enters downed-rescue (v2.90)
+  FAIL: wnpc: killNpc current-controller death auto-switches to next mate (not hard respawn)
+  FAIL: wnpc: killNpc only zeroes hp when no mate to switch (true respawn)
+  FAIL: wnpc: controlled-mate death leaves searchable corpse (v2.85)
+  FAIL: wnpc: searched corpse auto-removed after keep days (perf)
+  FAIL: wnpc: corpse cleanup also clears matching death guide (v2.86)
+  FAIL: wnpc: 补刀每点伤害扣 10 秒
+  FAIL: wnpc: killNpc 对 downed 走补刀分支
+  FAIL: wnpc: 恶意 NPC 近战补刀倒地角色扣时间
+  FAIL: wnpc: 恶意 NPC 补刀倒地主控扣时间
+  FAIL: wnpc: npcShareWithMates 赠予函数
+  FAIL: wnpc: updateNeeds 调用赠予
+  FAIL: wnpc: 分享节流 2.5 秒
+  FAIL: wnpc: 弹药按队友武器 ammoType 匹配
+  FAIL: wnpc: 无远程武器队友跳过弹药分享
+  FAIL: wnpc: 弹药按需补足（差多少给多少）
+  FAIL: wnpc: 只给超出保留底线的部分
+  FAIL: wnpc: 水分享
+  FAIL: wnpc: 食物分享
+  FAIL: wstate: _downed 恢复含 downedAtReal
+  FAIL: wnpc: serializeNpcs 序列化 downed
+  FAIL: wnpc: serializeNpcs 序列化 _downedAtReal
+  FAIL: wnpc: restoreNpcs 重建 _downedMembers
+  FAIL: wnpc: 子弹命中倒地角色走扣时分支
+  FAIL: wnpc: 子弹命中倒地角色调 npcApplyDownedHit
+  FAIL: windoor: import npc 受击函数（室内外一致）
+  FAIL: windoor: 室内僵尸 NPC 咬扫（与室外同款）
+  FAIL: windoor: 室内僵尸咬倒地角色扣救援时间
+  FAIL: windoor: 室内僵尸咬 NPC 致死走 killNpc（软核倒地分支）
+  FAIL: wnpc: 近战命中倒地主控扣救援时间
+  FAIL: wnpc: 近战命中倒地 NPC 走 npcApplyDownedHit
+  FAIL: wnpc: 流场 maxNodes 距离自适应（clamp 8000~80000）
+  FAIL: wnpc: 单点 A* maxNodes 距离自适应
+  FAIL: wnpc: 流场缓存 1.0s 保留（性能）
+  FAIL: wnpc: 描边修复注释
+  FAIL: wnpc: NPC 子弹命中半径 14→18（与玩家一致，跟得上移动目标）
+  FAIL: wnpc: 近战判定距离 = w.reach（与特效长度一致，防隔空打死）
+  FAIL: wnpc: 长矛 thrust 垂距收紧到 16（匹配特效宽度）
+  FAIL: wnpc: 删除 meleeReach(+8) 定义（判定不再比特效长）
+  FAIL: wnpc: 子弹瞄准用目标实时坐标（防描边打空气）
+  FAIL: wnpc: 低血近战判定 = w.reach（去掉 +8，与主近战判定一致）
+  FAIL: wnpc: 游荡目标点距离判定
+  FAIL: wnpc: 游荡到达目标点 → 站定停动画（防抽搐）
+  FAIL: wnpc: 游荡速度 0.5→0.35（移动不过快）
+  FAIL: wnpc: moveToward 目标极近站定（吸收贴脸微移，防跟随抽搐）
+  FAIL: wnpc: serializeNpcs 序列化 _corpseAtReal（防读档立即尸变）
+  FAIL: wnpc: 序列化 _revived/_revivedCorpse（防重复尸变）
+  FAIL: wstate: 序列化尸变丧尸标记（读档保持掉尸变尸体）
+  FAIL: wstate: 旧档遗留尸体给 _corpseAtReal（读档尸变倒计时）
+  FAIL: windoor: 室内尸变丧尸被击败掉尸变尸体
+  FAIL: wnpc: hostile bullets hit friendly/party npc (fix invincible teammates)
+  FAIL: wnpc: riding npc shot prefers car durability
+  FAIL: wnpc: switchControl converts near-death old controller to downed (no instant respawn)
+
+=== 结果: 552 通过, 75 失败 ===

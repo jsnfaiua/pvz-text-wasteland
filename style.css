@@ -2416,11 +2416,13 @@ body {
 .wsl-trade-empty { color: #778; font-size: 12px; padding: 6px; }
 .wsl-trade-btn { width: 100%; margin-top: 12px; padding: 8px; background: #232c34; border: 1px solid #4a5a66; color: #ccd; border-radius: 6px; cursor: pointer; font-family: inherit; }
 .wsl-trade-btn:hover { border-color: #8a9aa2; }
-.wsl-save-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid #1d2d1d; background: #0e180e; border-radius: 4px; margin: 3px 2px; }
+.wsl-save-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid #1d2d1d; background: #0e180e; border-radius: 4px; margin: 3px 2px; }
 /* 2026-08-09：绿色"当前"高亮已移除（未选择存档时不应有任何高亮）；
    手动选择高亮 .selected 也不再由工坊列表渲染（选择存档已移到开始游戏弹窗）。 */
-.wsl-save-meta { display: flex; flex-direction: column; min-width: 0; }
+.wsl-save-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .wsl-save-name { color: #cfe8cf; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wsl-world-label { display: inline-block; min-width: 120px; }
+.wsl-save-name .wsl-sep { color: #5a6a62; margin: 0 6px; }
 .wsl-save-sub { color: #7d9a7d; font-size: 11px; }
 .wsl-save-btns { display: flex; gap: 6px; flex-shrink: 0; }
 .wsl-save-btn { padding: 4px 10px; font-size: 12px; background: #12241a; color: #8fd08f; border: 1px solid #2d5c2d; border-radius: 4px; cursor: pointer; letter-spacing: 1px; }

@@ -7227,8 +7227,19 @@ function updateStartPreview() {
         name = (wd && wd.characterName) ? wd.characterName : null;
     }
     if (charBox) {
-        if (name) { charBox.textContent = name; charBox.style.color = '#cfe8cf'; }
-        else { charBox.textContent = '—（未绑定角色）'; charBox.style.color = '#8a5a5a'; }
+        if (name) {
+            // 最近游戏时间拼在角色名右侧，用 · 隔开
+            const wd = getStorage(worldKey(seed), null);
+            let timeText = '暂未登录';
+            if (wd && wd.lastLoginTime) {
+                const dt = new Date(wd.lastLoginTime);
+                timeText = `${dt.getFullYear()}年${String(dt.getMonth()+1).padStart(2,'0')}月${String(dt.getDate()).padStart(2,'0')}日${String(dt.getHours()).padStart(2,'0')}时${String(dt.getMinutes()).padStart(2,'0')}分`;
+            }
+            charBox.innerHTML = `<span style="color:#cfe8cf">${escHtml(name)}</span><span style="color:#5a6a62;margin-left:6px;">· ${timeText}</span>`;
+        } else {
+            charBox.textContent = '—（未绑定角色）';
+            charBox.style.color = '#8a5a5a';
+        }
     }
     if (charNewBtn) {
         // 已选世界且未绑定角色 → 可创建；否则（未选世界或已绑定）禁用
@@ -7395,8 +7406,8 @@ function renderStartDialog() {
         if (!ws || !ws.value) hint.textContent = '请先选择世界';
         else if (!hasChar) hint.textContent = '此世界尚未绑定角色 —— 点击「创建绑定角色」完成绑定';
         else hint.textContent = mode === 'continue'
-            ? '继续游戏 = 直接进入该角色与该世界的现有进度（不再弹单机/联机选择）'
-            : '开始游戏 = 选择单人 / 多人联机后进入（新世界 / 新角色从第一天开始）';
+            ? '此世界已创建绑定角色 —— 点击继续游戏继续征程'
+            : '此世界已创建绑定角色 —— 点击开始游戏开启征程';
     }
     // 2026-08-09：左侧角色预览随世界选择实时刷新（角色由世界绑定唯一决定）
     updateStartPreview();

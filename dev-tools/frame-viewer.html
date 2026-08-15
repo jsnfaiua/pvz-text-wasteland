@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>角色帧查看器 - 带坐标轴</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #eee; font-family: 'Consolas', monospace; padding: 16px; }
+  h1 { font-size: 18px; margin-bottom: 12px; color: #e94560; }
+  .controls { margin-bottom: 16px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .controls label { font-size: 13px; color: #aaa; }
+  .controls select, .controls input { background: #16213e; color: #eee; border: 1px solid #0f3460; padding: 4px 8px; font-size: 13px; border-radius: 4px; }
+  .controls button { background: #e94560; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .controls button:hover { background: #c73e54; }
+  .controls button.active { background: #0f3460; }
+  .grid-container { display: flex; flex-wrap: wrap; gap: 24px; }
+  .frame-card { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 12px; }
+  .frame-card h3 { font-size: 13px; color: #e94560; margin-bottom: 8px; text-align: center; }
+  .frame-canvas-wrap { position: relative; display: inline-block; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+  .coord-info { font-size: 11px; color: #888; margin-top: 6px; text-align: center; }
+  .tooltip { position: fixed; background: rgba(0,0,0,0.85); color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px; pointer-events: none; z-index: 999; display: none; }
+  .zoom-label { font-size: 12px; color: #aaa; }
+</style>
+</head>
+<body>
+
+<h1>角色帧查看器 - 带坐标轴（点击像素查看 RGB + 部位判定）</h1>
+
+<div class="controls">
+  <label>缩放倍数：</label>
+  <select id="zoomSelect">
+    <option value="4">4x</option>
+    <option value="6">6x</option>
+    <option value="8" selected>8x</option>
+    <option value="10">10x</option>
+    <option value="12">12x</option>
+    <option value="16">16x</option>
+    <option value="20">20x</option>
+  </select>
+  <label>显示网格：</label>
+  <input type="checkbox" id="gridCheck" checked>
+  <label>显示坐标轴：</label>
+  <input type="checkbox" id="axisCheck" checked>
+  <label>显示 ny/nx：</label>
+  <input type="checkbox" id="nyCheck">
+  <button id="btnAll">全部帧</button>
+  <button id="btnFront">正面</button>
+  <button id="btnSide">侧面</button>
+  <button id="btnBack">背面</button>
+  <button id="btnIdle">待机</button>
+  <button id="btnWalk">走路</button>
+  <span class="zoom-label" id="zoomLabel">8x</span>
+</div>
+
+<div class="grid-container" id="gridContainer"></div>
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const SPRITES_DIR = '../source-code/mod-wasteland/sprites/';
+
+const FRAMES = {
+  '正面-待机': ['sprite-front-idle0.png', 'sprite-front-idle1.png', 'sprite-front-idle2.png', 'sprite-front-idle3.png'],
+  '正面-走路': ['walk-front-f0.png', 'walk-front-f1.png', 'walk-front-f2.png', 'walk-front-f3.png'],
+  '侧面-待机': ['sprite-side-idle0.png', 'sprite-side-idle1.png', 'sprite-side-idle2.png', 'sprite-side-idle3.png'],
+  '侧面-走路': ['walk-side-f0.png', 'walk-side-f1.png', 'walk-side-f2.png', 'walk-side-f3.png'],
+  '背面-待机': ['sprite-back-idle0.png', 'sprite-back-idle1.png', 'sprite-back-idle2.png', 'sprite-back-idle3.png'],
+  '背面-走路': ['walk-back-f0.png', 'walk-back-f1.png', 'walk-back-f2.png', 'walk-back-f3.png'],
+  '正面-单图': ['sprite-front.png'],
+  '侧面-单图': ['sprite-side.png'],
+  '背面-单图': ['sprite-back.png'],
+};
+
+const MC_PAL = {
+    skin:  [[247, 205, 155], [200, 160, 120], [216, 176, 136], [117, 75, 50], [120, 78, 53]],
+    hair:  [[55, 36, 21], [74, 46, 22], [100, 66, 31], [56, 40, 24]],
+    shirt: [[18, 43, 26], [20, 45, 24], [24, 56, 24], [40, 80, 40]],
+    pants: [[28, 48, 66], [41, 62, 81], [48, 64, 88], [16, 32, 48]],
+    shoes: [[109, 66, 32], [39, 25, 15], [120, 67, 25], [136, 88, 48], [72, 43, 22]],
+    eyes:  [[28, 24, 20], [50, 35, 25], [45, 30, 22]],
+};
+const MC_KEYS = Object.keys(MC_PAL);
+
+function nearestPart(r, g, b, ny, nx, face) {
+    let best = null, bestD = 1e9;
+    for (const k of MC_KEYS) {
+        for (const p of MC_PAL[k]) {
+            const d = (p[0]-r)*(p[0]-r)+(p[1]-g)*(p[1]-g)+(p[2]-b)*(p[2]-b);
+            if (d < bestD) { bestD = d; best = k; }
+        }
+    }
+    if (face !== 'back' && ny < 0.30) {
+        const inZone = face === 'side'
+            ? (nx > 0.70 && nx < 0.92 && ny >= 0.14 && ny <= 0.27)
+            : (nx >= 0.36 && nx <= 0.64 && ny >= 0.13 && ny <= 0.22);
+        if (inZone) {
+            let eyeD = 1e9;
+            for (const p of MC_PAL.eyes) {
+                const d = (p[0]-r)*(p[0]-r)+(p[1]-g)*(p[1]-g)+(p[2]-b)*(p[2]-b);
+                if (d < eyeD) eyeD = d;
+            }
+            if (eyeD < 500) return 'eyes';
+        }
+    }
+    if (ny < 0.22 && r > g && g > b && r >= 55 && r <= 170 && g >= 38 && g <= 115 && b >= 8 && b <= 70) return 'hair';
+    if (best === 'shoes' && ny < 0.25) return 'hair';
+    if (ny >= 0.78 && r > g && g > b && r >= 8 && r <= 180 && g >= 4 && g <= 120 && b >= 1 && b <= 80) return 'shoes';
+    if (ny >= 0.78 && r >= 60 && r <= 230 && g >= 55 && g <= 235 && b >= 50 && b <= 230) {
+        if (Math.abs(r-g)<=25 && Math.abs(g-b)<=25 && Math.abs(r-b)<=25) return 'shoes';
+    }
+    if (bestD >= 12000) return null;
+    if (best === 'shoes' && ny < 0.78) return null;
+    if (best === 'hair' && ny > 0.80) return 'shoes';
+    if (best === 'hair' && ny >= 0.30 && ny <= 0.80) return null;
+    if (best === 'pants' && ny >= 0.28 && ny < 0.55) return 'shirt';
+    if (best === 'eyes') {
+        if (ny < 0.30) return 'hair';
+        if (ny >= 0.30 && ny < 0.55) return 'skin';
+        if (ny >= 0.55 && ny < 0.78) return 'shirt';
+        if (ny >= 0.78 && ny <= 0.95) return 'pants';
+        return null;
+    }
+    return best;
+}
+
+function getBBox(imgData, w, h) {
+    const d = imgData.data;
+    let mnx=1e9,mny=1e9,mxx=-1,mxy=-1;
+    for (let y=0;y<h;y++) for (let x=0;x<w;x++) {
+        if (d[(y*w+x)*4+3] > 40) {
+            if (x<mnx) mnx=x; if (x>mxx) mxx=x;
+            if (y<mny) mny=y; if (y>mxy) mxy=y;
+        }
+    }
+    if (mnx===1e9) return {x:0,y:0,w,h};
+    return {x:mnx,y:mny,w:mxx-mnx+1,h:mxy-mny+1};
+}
+
+let currentZoom = 8;
+let showGrid = true;
+let showAxis = true;
+let showNy = false;
+let activeFilter = 'all';
+
+const tooltip = document.getElementById('tooltip');
+const container = document.getElementById('gridContainer');
+
+function hex2(v) { return v.toString(16).padStart(2,'0'); }
+
+async function loadAndRender(groupName, filenames) {
+    for (const fn of filenames) {
+        const card = document.createElement('div');
+        card.className = 'frame-card';
+        card.dataset.group = groupName;
+
+        const h3 = document.createElement('h3');
+        h3.textContent = `${groupName} / ${fn}`;
+        card.appendChild(h3);
+
+        const wrap = document.createElement('div');
+        wrap.className = 'frame-canvas-wrap';
+
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.src = SPRITES_DIR + fn;
+
+        await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = reject;
+        });
+
+        const w = img.width, h = img.height;
+        const zoom = currentZoom;
+        const cw = w * zoom, ch = h * zoom;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = cw;
+        canvas.height = ch;
+        canvas.style.width = cw + 'px';
+        canvas.style.height = ch + 'px';
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+
+        // 绘制放大后的 sprite
+        ctx.drawImage(img, 0, 0, cw, ch);
+
+        // 获取像素数据用于坐标和部位判定
+        const tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width = w; tmpCanvas.height = h;
+        const tmpCtx = tmpCanvas.getContext('2d');
+        tmpCtx.drawImage(img, 0, 0);
+        const imgData = tmpCtx.getImageData(0, 0, w, h);
+        const bbox = getBBox(imgData, w, h);
+        const bbH = Math.max(1, bbox.h);
+        const bbW = Math.max(1, bbox.w);
+        const face = /side/.test(fn) ? 'side' : (/back/.test(fn) ? 'back' : 'front');
+
+        // 绘制网格
+        function drawOverlay() {
+            ctx.clearRect(0, 0, cw, ch);
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(img, 0, 0, cw, ch);
+
+            if (showGrid) {
+                ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+                ctx.lineWidth = 0.5;
+                for (let x = 0; x <= w; x++) {
+                    ctx.beginPath(); ctx.moveTo(x*zoom, 0); ctx.lineTo(x*zoom, ch); ctx.stroke();
+                }
+                for (let y = 0; y <= h; y++) {
+                    ctx.beginPath(); ctx.moveTo(0, y*zoom); ctx.lineTo(cw, y*zoom); ctx.stroke();
+                }
+            }
+
+            if (showAxis) {
+                // X 轴标签（每 5 像素）
+                ctx.fillStyle = 'rgba(255,200,100,0.9)';
+                ctx.font = `${Math.max(8, Math.min(10, zoom))}px Consolas`;
+                ctx.textAlign = 'center';
+                for (let x = 0; x < w; x += 5) {
+                    ctx.fillText(x, x*zoom + zoom/2, 10);
+                }
+                // Y 轴标签
+                ctx.textAlign = 'left';
+                for (let y = 0; y < h; y += 5) {
+                    ctx.fillText(y, 2, y*zoom + zoom/2 + 3);
+                }
+                // bbox 边框
+                ctx.strokeStyle = 'rgba(255,100,100,0.5)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(bbox.x*zoom, bbox.y*zoom, bbox.w*zoom, bbox.h*zoom);
+            }
+
+            if (showNy) {
+                ctx.fillStyle = 'rgba(100,255,100,0.7)';
+                ctx.font = `${Math.max(7, Math.min(9, zoom*0.8))}px Consolas`;
+                ctx.textAlign = 'left';
+                for (let ny = 0; ny <= 1; ny += 0.1) {
+                    const py = bbox.y + ny * bbH;
+                    ctx.fillText(`ny=${ny.toFixed(1)}`, 2, py*zoom + zoom/2);
+                    ctx.strokeStyle = 'rgba(100,255,100,0.2)';
+                    ctx.lineWidth = 0.5;
+                    ctx.beginPath(); ctx.moveTo(0, py*zoom); ctx.lineTo(cw, py*zoom); ctx.stroke();
+                }
+            }
+        }
+
+        drawOverlay();
+
+        // 鼠标悬停显示像素信息
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            const px = Math.floor(mx / zoom);
+            const py = Math.floor(my / zoom);
+            if (px < 0 || px >= w || py < 0 || py >= h) { tooltip.style.display = 'none'; return; }
+
+            const idx = (py * w + px) * 4;
+            const r = imgData.data[idx], g = imgData.data[idx+1], b = imgData.data[idx+2], a = imgData.data[idx+3];
+            const ny = ((py - bbox.y) / bbH);
+            const nx = ((px - bbox.x) / bbW);
+            const part = nearestPart(r, g, b, ny, nx, face);
+            const hex = '#' + hex2(r) + hex2(g) + hex2(b);
+
+            tooltip.style.display = 'block';
+            tooltip.style.left = (e.clientX + 12) + 'px';
+            tooltip.style.top = (e.clientY + 12) + 'px';
+            tooltip.innerHTML = `
+                <b>像素 (${px}, ${py})</b><br>
+                RGB: (${r}, ${g}, ${b}) ${hex}<br>
+                Alpha: ${a}<br>
+                ny: ${ny.toFixed(3)}  nx: ${nx.toFixed(3)}<br>
+                部位: <b style="color:${part ? '#e94560' : '#888'}">${part || 'null(不染色)'}</b><br>
+                bbox: (${bbox.x},${bbox.y}) ${bbox.w}×${bbox.h}
+            `;
+        });
+        canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+        wrap.appendChild(canvas);
+        card.appendChild(wrap);
+
+        const info = document.createElement('div');
+        info.className = 'coord-info';
+        info.textContent = `原图 ${w}×${h} | bbox ${bbox.w}×${bbox.h} @(${bbox.x},${bbox.y}) | 方向: ${face}`;
+        card.appendChild(info);
+
+        container.appendChild(card);
+    }
+}
+
+function clearContainer() { container.innerHTML = ''; }
+
+async function showFrames(filter) {
+    clearContainer();
+    activeFilter = filter;
+    const groups = Object.entries(FRAMES);
+    for (const [name, files] of groups) {
+        if (filter === 'all') { await loadAndRender(name, files); }
+        else if (filter === 'front' && name.includes('正面')) { await loadAndRender(name, files); }
+        else if (filter === 'side' && name.includes('侧面')) { await loadAndRender(name, files); }
+        else if (filter === 'back' && name.includes('背面')) { await loadAndRender(name, files); }
+        else if (filter === 'idle' && name.includes('待机')) { await loadAndRender(name, files); }
+        else if (filter === 'walk' && name.includes('走路')) { await loadAndRender(name, files); }
+    }
+}
+
+document.getElementById('zoomSelect').addEventListener('change', (e) => {
+    currentZoom = parseInt(e.target.value);
+    document.getElementById('zoomLabel').textContent = currentZoom + 'x';
+    showFrames(activeFilter);
+});
+document.getElementById('gridCheck').addEventListener('change', (e) => { showGrid = e.target.checked; showFrames(activeFilter); });
+document.getElementById('axisCheck').addEventListener('change', (e) => { showAxis = e.target.checked; showFrames(activeFilter); });
+document.getElementById('nyCheck').addEventListener('change', (e) => { showNy = e.target.checked; showFrames(activeFilter); });
+
+document.getElementById('btnAll').addEventListener('click', () => showFrames('all'));
+document.getElementById('btnFront').addEventListener('click', () => showFrames('front'));
+document.getElementById('btnSide').addEventListener('click', () => showFrames('side'));
+document.getElementById('btnBack').addEventListener('click', () => showFrames('back'));
+document.getElementById('btnIdle').addEventListener('click', () => showFrames('idle'));
+document.getElementById('btnWalk').addEventListener('click', () => showFrames('walk'));
+
+// 默认显示正面走路帧
+showFrames('front');
+</script>
+</body>
+</html>

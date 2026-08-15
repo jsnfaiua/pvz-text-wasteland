@@ -166,7 +166,7 @@ function renderDetail() {
     // 2026-08-11 v2.97 加 ?v= 版本号强制 cache-busting：用户浏览器 ESM 缓存会复用旧版 survival.js，
     // 导致 showAllDeadChoices 找不到 → ReferenceError 循环僵死。版本号变更必须同步。
     // v4.10 升级缓存号（v4.9 后进位 v4.10：V一键切武器全自动/半自动 + 横幅键位凝练 + 横幅版本号同步 + 缓存链强制刷新）
-    const _WSL_VER = '4.14';
+    const _WSL_VER = '4.15';
     const launchWasteland = (opts) => {
         import('../mod-wasteland/survival.js?v=' + _WSL_VER).then(m => {
             m.enterWasteland(opts);
@@ -219,7 +219,7 @@ function renderDetail() {
     // 联机启动：动态加载联机层（供开始界面「多人联机」调用）
     const onLaunchMP = (role, opts) => {
         // v3.80 加 ?v= cache-busting（与 _WSL_VER 同步，防止加载缓存的旧 mpWasteland.js → 旧 survival.js）
-        import('../mod-wasteland/mpWasteland.js?v=4.14').then(m => {
+        import('../mod-wasteland/mpWasteland.js?v=4.15').then(m => {
             m.startWastelandMP(role, opts || getModState(mod.id).opts);
         }).catch(err => {
             console.error('[wasteland-mp] 启动失败', err);
@@ -392,19 +392,17 @@ function renderSaveList(mod) {
     const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     // v4.10 世界列表：已绑定世界 → 展示绑定角色名，操作引导到「开始游戏」弹窗（无删除）；
     // 未绑定世界 → 保留 checkbox + 删除按钮。
+    // v4.16 移除锁图标，统一布局：左勾选 | 中数据 | 右删除
     const worldHtml = worlds.map(w => `
         <div class="wsl-save-item${w.isCur ? ' cur' : ''}">
             <input type="checkbox" class="wsl-save-check" data-kind="world" data-seed="${esc(w.seed)}" title="选择删除"${w.hasChar ? ' data-bound="1"' : ''}>
-            ${w.hasChar ? '<span class="wsl-save-lock" title="已绑定角色">🔒</span>' : ''}
             <div class="wsl-save-meta">
-                <span class="wsl-save-name">世界 #${esc(w.seed)}${w.lastLoginText ? ' · 最近登录 ' + w.lastLoginText : ''}</span>
+                <span class="wsl-save-name"><span class="wsl-world-label">世界 #${esc(w.seed)}</span><span class="wsl-sep">·</span>最近游戏：${w.lastLoginText || '暂未登录'}</span>
                 <span class="wsl-save-sub">第 ${w.day} 天 · 存活 ${w.mins} 分钟${w.zN ? ` · 尸化的自己 ×${w.zN}` : ''}</span>
                 <span class="wsl-save-sub">绑定角色：${w.hasChar ? esc(w.charName) : '<span style="color:#8a5a5a">（未绑定）</span>'}</span>
             </div>
             <div class="wsl-save-btns">
-                ${!w.hasChar
-                    ? '<button class="menu-btn wsl-save-btn danger" data-act="del" data-kind="world" data-seed="' + esc(w.seed) + '">删除</button>'
-                    : ''}
+                <button class="menu-btn wsl-save-btn danger" data-act="del" data-kind="world" data-seed="${esc(w.seed)}">删除</button>
             </div>
         </div>`).join('');
     const selbar = `
