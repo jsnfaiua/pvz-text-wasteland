@@ -32,6 +32,7 @@ export const BULLET_TIME_SCALE = 0.2;      // 子弹时间倍速（0.2 = 5 倍�
 // 移动输入（WASD + 方向键，与单机一致）
 export function moveInput(sv) {
     // 2026-08-09 昏迷苏醒状态：刚进入荒野时不能移动（黑灰眨眼过渡，等待醒来的感觉）
+    // 2026-08-12 v3.58 苏醒期间全锁（走路/闪避/跳跃都锁，用户定稿"彻底静止"），满时长 2.4s 解锁
     if (sv._wake && sv._wake.t < sv._wake.dur) return { mx: 0, my: 0 };
     let mx = 0, my = 0;
     if (sv.keys['a'] || sv.keys['arrowleft'])  mx -= 1;
@@ -63,6 +64,8 @@ export function spendStamina(sv, cost) {
 // 完美闪避（闪避开始后 0.25s 内被攻击）→ 1.2s 子弹时间（全局 0.2 倍慢动作）
 export function startDash(sv) {
     if (sv.dashCooldown > 0 || sv.dashing) return false;
+    // 2026-08-12 v3.58 苏醒期间闪避也锁（与走路一致，彻底静止）
+    if (sv._wake && sv._wake.t < sv._wake.dur) return false;
     if (!spendStamina(sv, DASH_COST)) return false;
     sv.dashing = true;
     sv.dashTimer = DODGE_DURATION;
@@ -102,6 +105,8 @@ export function inPerfectGuard(sv) {
 // ---------- 跳跃（空格）：滞空期间免疫啃咬，移植单机 tryJump ----------
 export function tryJump(sv) {
     if (sv.isJumping || sv.jumpCooldown > 0) return false;
+    // 2026-08-12 v3.58 苏醒期间跳跃也锁（与走路/闪避一致，彻底静止）
+    if (sv._wake && sv._wake.t < sv._wake.dur) return false;
     sv.vy = JUMP_VELOCITY;
     sv.isJumping = true;
     sv.jumpCooldown = JUMP_CD;
@@ -271,7 +276,7 @@ export function resolvePlayerHit(sv, z, dmg, canStand) {
     sv.hp = Math.max(0, sv.hp - dmg);   // 下限 0：HUD 不闪负值（死亡判定在 update 末尾统一处理）
     sv._zombieHitF = true;   // 本帧被僵尸咬伤标记：搜索界面打开时据此自动关闭（饥饿掉血不打断）
     sv.hurtT = 0.3;
-    sv._combatT = 4;   // 玩家被咬 → 进入交战状态，队友支援
+    sv._combatT = 2;   // v3.63 战斗脱战冷却：4→2 秒，玩家被咬 → 进入交战状态，队友支援
     // 后天培养：挨打练体质
     if (sv.npcs) {
         const c = sv.npcs.find(n => n.id === sv.controllerId);
@@ -398,11 +403,14 @@ export function resolvePlayerBiteTick(sv, z, dps, dt, canStand) {
         sv.hp = Math.max(0, sv.hp - dps * B.Z_BITE_INTERVAL);
         // 2026-08-11 v2.98 击杀明细：记录最后攻击者（僵尸名），死亡弹窗显示"被僵尸啃咬致死"
         sv._lastHitBy = { name: z.name || '僵尸', weapon: '啃咬', via: '僵尸' };
+        // 2026-08-12 v3.9 错乱僵尸噬血：记录本次啃咬伤害/攻击者（resolveTextAbility lifesteal 用）
+        sv._lastZombieDmg = dps * B.Z_BITE_INTERVAL;
+        sv._lastZombieDmgZ = z;
     }
     // 2026-08-09 修复"血量卡在 1 血站着不死"：
     // ① _combatT 每帧刷新（战斗暂停回血），② _biting 每帧标记（回血块硬性跳过）。
     // 双保险确保被啃咬期间自然回血/营地回血完全失效，hp 稳定持续下降直到归零。
-    sv._combatT = 4;
+    sv._combatT = 2;   // v3.63 战斗脱战冷却：4→2 秒
     sv._biting = true;   // 本帧正被啃咬 → 回血块禁用（survival.js 检查）
     if (!tick) return;
     // ---- 节拍反馈（0.3s/次）----
@@ -448,6 +456,35 @@ export function resolvePlayerBiteTick(sv, z, dps, dt, canStand) {
 }
 
 function resolveTextAbility(sv, ability) {
+    // 错乱僵尸能力（2026-08-12 v3.9）：部分能力不需要字块（毒/病/火/冰/雷/噬血/吞噬），
+    // 直接对玩家生效；文字系能力（scatter/delete/corrupt）仍需操作背包字块。
+    if (ability === 'poison' || ability === 'sicken' || ability === 'ignite' || ability === 'frost' || ability === 'shock'
+        || ability === 'lifesteal' || ability === 'devour') {
+        if (ability === 'poison') {
+            // 中毒：持续掉血 4 秒（每 0.5s 跳 2 点）
+            sv._poisonT = 4; sv._poisonTic = 0;
+            sv.effects.push({ kind: 'text', x: sv.px, y: sv.py, life: 1.2, maxLife: 1.2, label: '中 毒！' });
+        } else if (ability === 'sicken') {
+            const [lo, hi] = PLAYER_INFECTION.zombieHitAmount;
+            sv.infection = addPlayerInfection(sv.infection || 0, lo + Math.floor(Math.random() * (hi - lo + 1)) + 3);
+            sv.effects.push({ kind: 'text', x: sv.px, y: sv.py, life: 1.2, maxLife: 1.2, label: '感 染！' });
+        } else if (ability === 'ignite') {
+            sv._burnT = 4; sv._burnTic = 0;
+            sv.effects.push({ kind: 'text', x: sv.px, y: sv.py, life: 1.2, maxLife: 1.2, label: '灼 烧！' });
+        } else if (ability === 'frost') {
+            applyAtkSlow(sv, 2.5);
+            sv.effects.push({ kind: 'text', x: sv.px, y: sv.py, life: 1.2, maxLife: 1.2, label: '冰 冻！' });
+        } else if (ability === 'shock') {
+            applyAtkSlow(sv, 1.8);
+            sv.effects.push({ kind: 'text', x: sv.px, y: sv.py, life: 1.2, maxLife: 1.2, label: '麻 痹！' });
+        } else if (ability === 'lifesteal' || ability === 'devour') {
+            // 噬血/吞噬：咬伤后回复自身生命
+            const he = Math.max(8, Math.round((sv._lastZombieDmg || 0) * 0.5));
+            if (sv._lastZombieDmgZ) sv._lastZombieDmgZ.hp = Math.min(sv._lastZombieDmgZ.maxHp, sv._lastZombieDmgZ.hp + he);
+            sv.effects.push({ kind: 'text', x: sv.px, y: sv.py, life: 1.2, maxLife: 1.2, label: '噬 血！' });
+        }
+        return;
+    }
     const glyphs = [];
     for (let i = 0; i < sv.inv.length; i++) {
         const s = sv.inv[i];

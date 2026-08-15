@@ -194,7 +194,12 @@ const httpServer = http.createServer(async (req, res) => {
             res.end('404 Not Found: ' + p);
             return;
         }
-        res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' });
+        // v3.79 开发期禁用缓存：修复"改了代码但浏览器一直跑旧版"（ESM/HTML 都被缓存）。
+        res.writeHead(200, {
+            'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma': 'no-cache',
+        });
         res.end(data);
     });
 });

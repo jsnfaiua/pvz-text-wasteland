@@ -25,10 +25,10 @@ export const DISTRICTS = {
     ruins:  { name: '废墟', biome: 2, resMul: 1.2, zombieMul: 1.4, buildDensity: 0.5, danger: 3, crops: false },
 };
 
-// ---------- 难度（两档：正常 / 硬核·一条命） ----------
+// ---------- 难度（两档：软核 / 硬核·一条命，v3.62 正常→软核改名） ----------
 // normal：软死亡（丢部分背包重生）；hardcore：一条命（死亡即永久，怪物属性更高）
 export const DIFF_TABLE = {
-    normal:   { name: '正常', mul: 1.0,  soft: true },
+    normal:   { name: '软核', mul: 1.0,  soft: true },
     hardcore: { name: '硬核', mul: 1.5,  soft: false },
 };
 
@@ -81,7 +81,7 @@ export const DOWNED_SHARE_WATER_AT = 60;   // 赠予系统：自己水分高于�
 export const CORPSE_REVIVE_SECONDS = 180;      // 尸体未搜完 → 尸变倒计时（现实 3 分钟，2026-08-11 v2.98 用户缩短：15 分钟→3 分钟）
 export const CORPSE_REVIVE_TAG = '（尸变）';    // 尸变丧尸 / 尸变尸体名字后缀
 export const DOWNED_RESPAWN_PZ_SECONDS = 180;   // 软核重生点刷"玩家名"僵尸延迟（现实 3 分钟，与尸变时间同步缩短）
-export const INFECTION_AUTO_GROW_PER_SEC = 0.8; // 感染自动恶化速率（感染值>0 且无抑制药时，每秒自动增加；无药约 2 分钟从 0 到满）
+export const INFECTION_AUTO_GROW_PER_SEC = 0.4; // v3.63 感染时间 +100%（v3.62 前 0.8 / 现实秒 = 约 2 分钟从 0 到满；v3.63 改为 0.4 / 秒 = 约 4 分钟——用户要求"感染时间可以稍微长一点，增加100%"）
 export const DOWNED_SHARE_AMMO_KEEP = 20;  // 赠予系统：弹药保留底线（低于此值不分享；高于则匀一半给缺弹药的队友）
 export const DOWNED_SHARE_MED_KEEP = 2;    // 赠予系统：药品保留底线（自己 ≥ 此值且队友受伤/生病才给）
 export const Z_DAY_SCALE = 0.05;
@@ -323,18 +323,39 @@ export const ZOMBIE_BAG_RESULT_TABLES = {
     rare:   { base: 0.28, glyph: 0.40, wedge: 0.15, lightFragment: 0.10, severeFragment: 0.06, complete: 0.01 },
     epic:   { base: 0.14, glyph: 0.34, wedge: 0.25, lightFragment: 0.14, severeFragment: 0.09, complete: 0.04 },
 };
-// 各品质内容池 [物品种类, 权重]；种类更丰富
-export const LOOT_CONTENTS = {
-    common: { count: [1, 2], pool: [
-        ['herb', 0.20], ['food', 0.25], ['wood', 0.20], ['water', 0.15], ['fert', 0.15], ['sun', 0.10],
-    ] },
-    rare: { count: [2, 3], pool: [
-        ['ammo', 0.26], ['part', 0.18], ['food', 0.12], ['herb', 0.12], ['stone', 0.12], ['wood', 0.10], ['tool', 0.10],
-    ] },
-    epic: { count: [2, 3], pool: [
-        ['ammo', 0.28], ['weapon', 0.22], ['tool', 0.18], ['part', 0.18], ['gem', 0.16], ['flag', 0.08],
-    ] },
+// ---------- v3.19 物资全局掉落权重（用户定稿：物资稀有度全局一致；容器分池；池内按全局权重归一化） ----------
+// 权重为相对值（越大越常见）；**同一物品在任何容器/僵尸袋中的相对概率一致**。
+// 容器只决定"能出哪些物资"（分池集合）；抽取时按本表权重归一化 → 全局每个物品概率一致，不因容器改变。
+export const LOOT_ITEM_WEIGHTS = {
+    // 生活基础
+    wood: 20, stone: 16, water: 14, food: 8, fert: 7, sun: 5,
+    carrot: 5, corn: 5, potato: 5, bread: 4, apple: 4, melon: 4,
+    // 回血药
+    herb: 10, 'heal:bandage': 6, 'heal:tonic': 3, 'heal:kit': 2,
+    // 疾病药
+    'med:cold': 4, 'med:wound': 4, 'med:poison': 3, 'med:dysentery': 3, 'med:heat': 3, 'med:pan': 2,
+    // 材料 / 货币 / 杂物
+    part: 12, coin: 6, fuel: 5, gem: 1, tpgem: 1, flag: 2,
+    // 工具
+    'tool:hoe': 3, 'tool:chopper': 3, 'tool:pick': 3, 'tool:wrench': 3,
+    // 武器（常见 → 史诗）
+    'wpn:pistol': 3, 'wpn:dagger': 3, 'wpn:knife': 3, 'wpn:shovel': 2,
+    'wpn:sword': 1.5, 'wpn:spear': 1.5, 'wpn:bow': 1.5, 'wpn:shotgun': 1.5,
+    'wpn:axe': 1, 'wpn:smg': 1, 'wpn:rifle': 1, 'wpn:sniper': 0.5,
+    // 弹药
+    'ammo:pistolAmmo': 7, 'ammo:smgAmmo': 6, 'ammo:rifleAmmo': 5, 'ammo:shellAmmo': 5, 'ammo:arrowAmmo': 5, 'ammo:knifeAmmo': 4, 'ammo:sniperAmmo': 2,
 };
+// 每物品掉落数量 [min,max]（全局一致；缺省 = 1；ammo:* 前缀走弹药规则）
+export const LOOT_ITEM_QTY = {
+    wood: [2, 4], stone: [1, 3], water: [1, 2],
+    food: [1, 2], carrot: [1, 2], corn: [1, 2], potato: [1, 2], bread: [1, 2], apple: [1, 2], melon: [1, 2],
+    herb: [1, 2], 'heal:bandage': [1, 2], 'heal:tonic': [1, 2], 'heal:kit': [1, 2],
+    part: [1, 2], coin: [5, 12], fuel: [1, 2],
+};
+// 僵尸战利品袋物资全池（base 部分）：出所有物资，按全局权重（品质只影响件数）
+export const ZOMBIE_LOOT_ALL = Object.keys(LOOT_ITEM_WEIGHTS);
+// 字楔全局权重（v3.19 用户定稿：字楔稀有度全局一致，不再按容器差异）
+export const WEDGE_GLOBAL_WEIGHTS = { rough: 0.62, stable: 0.33, clean: 0.05 };
 
 // ---------- 僵尸攻击（蓄力预警 → 单次挥击，可躲避） ----------
 export const Z_ATK_RANGE = 1.7;      // 格：进入此距离开始蓄力
@@ -359,6 +380,9 @@ export const Z_DOOR_FRONT_ANGLE = Math.PI / 3; // 正面判定夹角（±60°）
 // ---------- 文字僵尸（P2，稀有精英级） ----------
 export const Z_TEXT_UNLOCK_DAY = 7;
 export const Z_TEXT_SPAWN_CHANCE = 0.06;
+// 2026-08-12 v3.8 配方掉落概率（配方物品：搜索容器 / 僵尸袋低概率获得）
+export const RECIPE_DROP_CHANCE_BOX = 0.12;      // 普通箱子开出配方的概率（物资/武器/医疗/建材箱）
+export const RECIPE_DROP_CHANCE_ZOMBIE = 0.05;   // 普通僵尸袋掉配方的概率（文字僵尸/巨字尸必掉）
 export const TEXT_ZOMBIE_TYPES = {
     remnant: { name: '残名尸', char: '残', hp: 280, speed: 19, damage: 18, color: '#7a6b8a', ability: 'scatter', desc: '保留部分旧名，命中时震散玩家背包中的字块' },
     deleter: { name: '删字尸', char: '删', hp: 320, speed: 18, damage: 22, color: '#5a3030', ability: 'delete', desc: '命中时删除玩家正在追踪的一个字块' },
@@ -371,6 +395,148 @@ export const TEXT_ZOMBIE_TYPES = {
 export const Z_TEXT_ABILITY_CHANCE = 0.35;
 export const Z_GIANT_UNLOCK_DAY = 3;        // 巨字尸（尸潮首领）最早出现天数
 export const Z_GIANT_HORDE_CHANCE = 0.25;   // 每次尸潮刷首领概率
+
+// ---------- 错乱字效果（2026-08-12 v3.9 用户需求：拼错词生成文字僵尸，特殊字有特殊效果） ----------
+// 拼字台"琢磨"模式自由拼词：组合的词不匹配任何配方 → 文字错乱，生成错乱僵尸。
+// 错乱僵尸的基础属性 = 普通文字僵尸基准(残名尸) × 组成字各自的效果叠加。
+// 每个字可携带：hpMul 血量倍率 / dmgMul 伤害倍率 / spdMul 移速倍率 / armor 护甲(0~1) /
+// ability 特殊能力 / extraName 追加称号。ability 复用现有文字僵尸能力 + 新增几种。
+export const CORRUPT_BASE = {
+    hp: 280, speed: 19, damage: 18, armor: 0.15, color: '#6a2a3a',
+};
+export const TEXT_GLYPH_EFFECTS = {
+    // ===== 力量/体型 → 高血高伤 =====
+    '巨': { hpMul: 2.0, dmgMul: 1.6, extraName: '巨', desc: '体型庞大：生命与伤害大幅提升' },
+    '大': { hpMul: 1.5, extraName: '大', desc: '壮硕：生命提升' },
+    '力': { dmgMul: 1.5, extraName: '力', desc: '蛮力：伤害提升' },
+    '强': { dmgMul: 1.8, hpMul: 1.2, extraName: '强', desc: '凶悍：伤害与生命提升' },
+    '暴': { dmgMul: 2.0, spdMul: 1.3, extraName: '暴', desc: '狂暴：伤害与移速大幅提升' },
+    '战': { hpMul: 1.3, dmgMul: 1.3, extraName: '战', desc: '好战：生命与伤害提升' },
+    '兵': { dmgMul: 1.2, extraName: '兵', desc: '兵卒：伤害提升' },
+    // ===== 速度/敏捷 =====
+    '速': { spdMul: 1.5, extraName: '速', desc: '急速：移速大幅提升' },
+    '快': { spdMul: 1.3, extraName: '快', desc: '迅捷：移速提升' },
+    '冲': { spdMul: 1.4, extraName: '冲', desc: '冲锋：移速提升' },
+    '飞': { spdMul: 1.6, dmgMul: 0.8, extraName: '飞', desc: '飞行：极速但伤害降低' },
+    '步': { spdMul: 1.3, extraName: '步', desc: '快步：移速提升' },
+    '鞋': { spdMul: 1.2, extraName: '鞋', desc: '快靴：移速提升' },
+    '急': { spdMul: 1.2, extraName: '急', desc: '急行：移速提升' },
+    '短': { spdMul: 1.2, dmgMul: 0.9, extraName: '短', desc: '短刃：移速提升' },
+    '组': { spdMul: 1.2, extraName: '组', desc: '成群：移速提升' },
+    '光': { spdMul: 1.1, extraName: '光', desc: '光速：移速小幅提升' },
+    '萝': { spdMul: 1.1, extraName: '萝', desc: '萝卜：移速小幅提升' },
+    '子': { spdMul: 1.1, extraName: '子', desc: '弹子：移速小幅提升' },
+    '净': { spdMul: 1.1, extraName: '净', desc: '洁净：移速小幅提升' },
+    '零': { spdMul: 1.15, extraName: '零', desc: '零件：移速小幅提升' },
+    // ===== 防御/坚硬 =====
+    '铁': { hpMul: 1.4, armor: 0.35, extraName: '铁', desc: '铁皮：生命与护甲提升' },
+    '甲': { armor: 0.45, hpMul: 1.2, extraName: '甲', desc: '重甲：护甲大幅提升' },
+    '盾': { armor: 0.55, spdMul: 0.7, extraName: '盾', desc: '盾防：护甲极高但缓慢' },
+    '硬': { armor: 0.3, extraName: '硬', desc: '坚硬：护甲提升' },
+    '石': { hpMul: 1.5, armor: 0.2, extraName: '石', desc: '石化：生命与护甲提升' },
+    '门': { armor: 0.4, hpMul: 1.2, extraName: '门', desc: '门板：护甲与生命提升' },
+    '固': { armor: 0.35, extraName: '固', desc: '坚固：护甲提升' },
+    '骨': { armor: 0.15, extraName: '骨', desc: '骨甲：护甲提升' },
+    '材': { armor: 0.15, extraName: '材', desc: '板材：护甲提升' },
+    '块': { armor: 0.15, extraName: '块', desc: '石块：护甲提升' },
+    '布': { armor: 0.1, extraName: '布', desc: '布甲：护甲小幅提升' },
+    '带': { armor: 0.1, extraName: '带', desc: '腰带：护甲小幅提升' },
+    '面': { armor: 0.1, extraName: '面', desc: '面具：护甲小幅提升' },
+    '衣': { armor: 0.1, extraName: '衣', desc: '衣甲：护甲小幅提升' },
+    '护': { armor: 0.2, extraName: '护', desc: '守护：护甲提升' },
+    // ===== 毒/病/感染 =====
+    '毒': { ability: 'poison', extraName: '毒', desc: '剧毒：命中使玩家中毒持续掉血' },
+    '病': { ability: 'sicken', extraName: '病', desc: '疫病：命中使玩家感染上升' },
+    '菌': { ability: 'sicken', extraName: '菌', desc: '病菌：命中使玩家感染上升' },
+    '侵': { ability: 'sicken', extraName: '侵', desc: '侵蚀：命中使玩家感染上升' },
+    '污': { ability: 'corrupt', extraName: '污', desc: '污染：命中污染玩家一个不稳字块' },
+    // ===== 火/冰/雷/爆 =====
+    '火': { ability: 'ignite', dmgMul: 1.3, extraName: '火', desc: '烈焰：命中使玩家灼烧' },
+    '冰': { ability: 'frost', spdMul: 0.9, extraName: '冰', desc: '冰封：命中减速玩家' },
+    '雷': { ability: 'shock', dmgMul: 1.4, extraName: '雷', desc: '雷霆：命中麻痹玩家' },
+    '爆': { ability: 'explode', extraName: '爆', desc: '爆裂：死亡时爆炸伤及周围' },
+    '阳': { dmgMul: 1.1, extraName: '阳', desc: '阳炎：伤害小幅提升' },
+    // ===== 暗影/吞噬 =====
+    '影': { ability: 'blink', extraName: '影', desc: '影步：会瞬移到玩家身后' },
+    '暗': { ability: 'blink', extraName: '暗', desc: '黑暗：会瞬移突进' },
+    '食': { ability: 'devour', extraName: '食', desc: '吞噬：啃咬回复自身生命' },
+    '血': { ability: 'lifesteal', extraName: '血', desc: '嗜血：啃咬回复自身生命' },
+    '心': { hpMul: 1.1, ability: 'lifesteal', extraName: '心', desc: '心脏：啃咬回复生命' },
+    // ===== 远程/召唤 =====
+    '枪': { ability: 'gun', extraName: '枪', desc: '持枪：会远程射击' },
+    '弹': { ability: 'gun', extraName: '弹', desc: '弹药：会远程射击' },
+    '弓': { ability: 'gun', extraName: '弓', desc: '拉弓：会远程射击' },
+    '箭': { ability: 'gun', extraName: '箭', desc: '箭雨：会远程射击' },
+    '狙': { ability: 'gun', dmgMul: 1.5, extraName: '狙', desc: '狙击：远程高伤' },
+    '王': { ability: 'summon', hpMul: 1.5, extraName: '王', desc: '王者：会召唤小僵尸' },
+    '尸': { ability: 'summon', extraName: '尸', desc: '尸王：会召唤小僵尸' },
+    '令': { hpMul: 1.2, ability: 'rally', extraName: '令', desc: '号令：周围僵尸移速提升' },
+    // ===== 文字系 =====
+    '删': { ability: 'delete', extraName: '删', desc: '删字：命中删除玩家一个追踪字块' },
+    '换': { ability: 'corrupt', extraName: '换', desc: '换字：命中污染玩家一个不稳字块' },
+    '裂': { ability: 'scatter', extraName: '裂', desc: '裂字：命中震散玩家背包字块' },
+    '楔': { ability: 'scatter', extraName: '楔', desc: '楔击：命中震散玩家背包字块' },
+    '散': { ability: 'scatter', extraName: '散', desc: '散字：命中震散玩家背包字块' },
+    '缺': { ability: 'scatter', extraName: '缺', desc: '残缺：命中震散玩家背包字块' },
+    '字': { dmgMul: 1.1, ability: 'scatter', extraName: '字', desc: '错字：命中震散玩家背包字块' },
+    '名': { hpMul: 1.2, extraName: '名', desc: '名讳：生命提升' },
+    // ===== 机械/工具 =====
+    '机': { hpMul: 1.3, extraName: '机', desc: '机械：生命提升' },
+    '械': { dmgMul: 1.2, extraName: '械', desc: '兵器：伤害提升' },
+    '修': { hpMul: 1.2, armor: 0.1, extraName: '修', desc: '修理：生命与护甲小幅提升' },
+    '车': { hpMul: 1.4, spdMul: 1.2, extraName: '车', desc: '载具：生命与移速提升' },
+    '工': { dmgMul: 1.2, extraName: '工', desc: '工人：伤害提升' },
+    '厂': { hpMul: 1.3, extraName: '厂', desc: '工厂：生命提升' },
+    '镐': { dmgMul: 1.2, extraName: '镐', desc: '镐击：伤害提升' },
+    '锄': { dmgMul: 1.1, extraName: '锄', desc: '锄击：伤害小幅提升' },
+    '扳': { dmgMul: 1.2, extraName: '扳', desc: '扳击：伤害提升' },
+    '伐': { dmgMul: 1.2, extraName: '伐', desc: '伐木：伤害提升' },
+    '具': { dmgMul: 1.1, extraName: '具', desc: '工具：伤害小幅提升' },
+    '零': { spdMul: 1.15, extraName: '零', desc: '零件：移速小幅提升' },
+    '件': { hpMul: 1.15, extraName: '件', desc: '部件：生命小幅提升' },
+    '铲': { dmgMul: 1.1, extraName: '铲', desc: '铲击：伤害小幅提升' },
+    '斧': { dmgMul: 1.3, extraName: '斧', desc: '斧劈：伤害提升' },
+    '刀': { dmgMul: 1.3, spdMul: 1.1, extraName: '刀', desc: '刀锋：伤害与移速提升' },
+    '剑': { dmgMul: 1.4, extraName: '剑', desc: '剑刃：伤害提升' },
+    '矛': { dmgMul: 1.5, spdMul: 0.9, extraName: '矛', desc: '长矛：高伤但稍慢' },
+    '矢': { dmgMul: 1.2, extraName: '矢', desc: '箭矢：伤害提升' },
+    '锋': { dmgMul: 1.25, extraName: '锋', desc: '锋锐：伤害提升' },
+    '击': { dmgMul: 1.2, extraName: '击', desc: '击破：伤害提升' },
+    '长': { dmgMul: 1.3, spdMul: 0.9, extraName: '长', desc: '长兵：高伤但稍慢' },
+    '料': { hpMul: 1.1, extraName: '料', desc: '材料：生命小幅提升' },
+    '霰': { dmgMul: 1.4, spdMul: 0.8, extraName: '霰', desc: '霰弹：高伤但缓慢' },
+    // ===== 医疗 =====
+    '医': { hpMul: 1.3, ability: 'healaura', extraName: '医', desc: '医疗：周围僵尸缓慢回血' },
+    '药': { hpMul: 1.1, ability: 'healaura', extraName: '药', desc: '药瓶：周围僵尸缓慢回血' },
+    '草': { hpMul: 1.1, extraName: '草', desc: '草莽：生命小幅提升' },
+    '针': { dmgMul: 1.3, ability: 'shock', extraName: '针', desc: '针刺：命中麻痹玩家' },
+    // ===== 自然/食物/其他 =====
+    '水': { spdMul: 1.1, extraName: '水', desc: '水蚀：移速小幅提升' },
+    '木': { hpMul: 1.2, extraName: '木', desc: '木僵：生命提升' },
+    '土': { hpMul: 1.3, extraName: '土', desc: '土盾：生命提升' },
+    '物': { hpMul: 1.1, extraName: '物', desc: '物质：生命小幅提升' },
+    '米': { hpMul: 1.1, extraName: '米', desc: '米袋：生命小幅提升' },
+    '玉': { hpMul: 1.2, extraName: '玉', desc: '玉体：生命提升' },
+    '豆': { dmgMul: 1.1, extraName: '豆', desc: '豆弹：伤害小幅提升' },
+    '肥': { hpMul: 1.2, extraName: '肥', desc: '肥硕：生命提升' },
+    '胡': { dmgMul: 1.1, extraName: '胡', desc: '胡须：伤害小幅提升' },
+    '卜': { hpMul: 1.1, extraName: '卜', desc: '卜算：生命小幅提升' },
+    '宝': { hpMul: 1.2, extraName: '宝', desc: '宝体：生命提升' },
+    '包': { hpMul: 1.1, extraName: '包', desc: '包裹：生命小幅提升' },
+    '苹': { hpMul: 1.1, extraName: '苹', desc: '苹果：生命小幅提升' },
+    '果': { hpMul: 1.1, extraName: '果', desc: '果实：生命小幅提升' },
+    '西': { hpMul: 1.1, extraName: '西', desc: '西瓜：生命小幅提升' },
+    '瓜': { hpMul: 1.1, extraName: '瓜', desc: '瓜皮：生命小幅提升' },
+    '绷': { hpMul: 1.1, extraName: '绷', desc: '绷带：生命小幅提升' },
+    '救': { hpMul: 1.2, extraName: '救', desc: '救援：生命提升' },
+    '生': { hpMul: 1.2, extraName: '生', desc: '生机：生命提升' },
+    '家': { hpMul: 1.1, extraName: '家', desc: '守家：生命小幅提升' },
+    '人': { dmgMul: 1.1, extraName: '人', desc: '人形：伤害小幅提升' },
+    '手': { dmgMul: 1.1, extraName: '手', desc: '利爪：伤害小幅提升' },
+    '头': { hpMul: 1.2, extraName: '头', desc: '硬头：生命提升' },
+};
+// 词组映射（多字词在琢磨拼字时按整词判断；当前预留，走单字叠加）
+export const CORRUPT_WORD_FALLBACK = { desc: '错乱拼字：该词不匹配任何已知配方，文字崩坏化为错乱僵尸。' };
 
 // ---------- 僵尸碰撞属性（接触即伤害，各型差异化） ----------
 // dmg 接触伤害 / biteCd 咬击间隔秒 / speedMul 移速倍率 / armor 减伤比例(0~1)
@@ -385,6 +551,9 @@ export const Z_CONTACT = {
     remnant: { dmg: 14, biteCd: 1.1, speedMul: 0.9,  armor: 0.15, lunge: 0,  stunTime: 0,   knockback: 0 },
     deleter: { dmg: 16, biteCd: 1.3, speedMul: 0.8,  armor: 0.20, lunge: 0,  stunTime: 0,   knockback: 0 },
     swapper: { dmg: 12, biteCd: 0.8, speedMul: 1.3,  armor: 0.05, lunge: 35, stunTime: 0.3, knockback: 0 },
+    // 2026-08-12 v3.9 错乱僵尸：基础啃咬节奏用 normal，但伤害/护甲/移速由 z.damage/z.armor/z.speed 自身字段覆盖
+    // （生成时按组成字计算写入）；运行时对 type==='corrupt' 优先读 z 字段。
+    corrupt: { dmg: 0, biteCd: 1.0, speedMul: 1.0, armor: 0, lunge: 0, stunTime: 0, knockback: 0 },
 };
 export const Z_CONTACT_DIST = 30;
 // 持续啃咬触发距离（2026-08-09 修复"站着被咬血条完全不动"）：
@@ -533,6 +702,79 @@ export const WEAPON_DUR = {
     pistol: 200, shotgun: 120, smg: 250, rifle: 250, sniper: 80, bow: 150, knife: 160,
 };
 export const WEAPON_REPAIR_PARTS = 2;  // 修复损坏武器消耗零件
+// ---------- 2026-08-12 v3.10 文字手术刀（拆字工具） ----------
+export const SURGERY_DUR = 20;              // 手术刀耐久（每次拆解 -1，归零损坏）
+export const SURGERY_REPAIR_PARTS = 2;      // 修复损坏手术刀消耗零件
+// 2026-08-12 v3.18 手术刀掉落（用户定稿）：仅医疗箱 2% 掉落（唯一获取途径）；普通容器不再掉落
+export const SURGERY_MEDBOX_DROP_CHANCE = 0.02;   // 医疗箱掉手术刀概率
+// 拆解韧性：物品拆解消耗的"韧性格"（0 = 无法拆解；越高越难拆/越容易损坏）
+export const SURGERY_TOUGHNESS = {
+    default: 1,             // 普通物品默认韧性 1
+    'wpn:sword': 2, 'wpn:axe': 3, 'wpn:spear': 2, 'wpn:rifle': 3, 'wpn:sniper': 3,
+    'tool:chopper': 2, 'tool:pick': 2, 'tool:wrench': 2, 'tool:surgery': 0,   // 手术刀不可拆
+    'food': 1, 'carrot': 1, 'corn': 1, 'potato': 1, 'bread': 1, 'apple': 1, 'melon': 1,
+    'wood': 1, 'stone': 1, 'part': 2, 'fert': 1, 'sun': 1,
+};
+// 韧性条 UI：可拆次数（韧性-剩余韧性），拆解时韧性 -1，归零后物品损坏消失
+export function surgeryToughness(id) {
+    if (SURGERY_TOUGHNESS[id] != null) return SURGERY_TOUGHNESS[id];
+    if (String(id).startsWith('wpn:') || String(id).startsWith('tool:')) return 2;   // 武器/工具韧性 2
+    if (String(id).startsWith('glyph')) return 1;   // 字块韧性 1
+    return SURGERY_TOUGHNESS.default;
+}
+// 具象武器韧性更高（可拆回字块但更耐拆）：具象词条武器韧性 +1
+export const MANIFEST_TOUGHNESS_BONUS = 1;
+
+// ---------- 具象词条映射表（2026-08-12 v3.10 用户需求：按"字面本义"给词条） ----------
+// 文字具象化后物品能力显著提升：武器/工具按组成字获得词条（最多 2 条）。
+// id = 词条类型（命中结算用）；label 显示名；desc 说明；用于武器/弹药具现强化。
+export const MANIFEST_AFFIXES = {
+    // ===== 元素类词条（命中附加效果） =====
+    '火': { id: 'burn',    label: '灼烧',   desc: '命中使目标灼烧，持续掉血' },
+    '冰': { id: 'frost',   label: '冰封',   desc: '命中减速目标' },
+    '雷': { id: 'shock',   label: '麻痹',   desc: '命中麻痹目标（短暂僵直）' },
+    '毒': { id: 'poison',  label: '剧毒',   desc: '命中使目标中毒，持续掉血' },
+    '风': { id: 'swift',   label: '迅捷',   desc: '攻击速度提升' },
+    // ===== 伤害/攻速类词条 =====
+    '力': { id: 'power',   label: '蛮力',   desc: '伤害提升 20%' },
+    '暴': { id: 'crit',    label: '暴击',   desc: '暴击率提升' },
+    '强': { id: 'strong',  label: '强击',   desc: '伤害提升 15%' },
+    '战': { id: 'battle',  label: '战意',   desc: '伤害提升 15%' },
+    '速': { id: 'speed',   label: '急速',   desc: '攻击速度提升 20%' },
+    '快': { id: 'haste',   label: '迅捷',   desc: '攻击速度提升 15%' },
+    '锋': { id: 'sharp',   label: '锋锐',   desc: '伤害提升 12%，暴击率小幅提升' },
+    '刀': { id: 'blade',   label: '刀锋',   desc: '伤害提升 12%' },
+    '剑': { id: 'sword',   label: '剑刃',   desc: '伤害提升 15%' },
+    '矛': { id: 'lance',   label: '穿刺',   desc: '伤害提升 18%，射程小幅提升' },
+    '斧': { id: 'heavy',   label: '重击',   desc: '伤害提升 18%，攻速略降' },
+    '狙': { id: 'snipe',   label: '精准',   desc: '暴击率大幅提升' },
+    '散': { id: 'spread',  label: '扩散',   desc: '散射弹丸数量提升' },
+    // ===== 吸血/回复类词条 =====
+    '血': { id: 'leech',   label: '嗜血',   desc: '命中回复自身生命' },
+    '食': { id: 'feed',    label: '吞噬',   desc: '命中回复自身生命' },
+    '心': { id: 'heart',   label: '心脉',   desc: '命中回复少量生命' },
+    '医': { id: 'heal',    label: '治愈',   desc: '击杀目标回复生命' },
+    '药': { id: 'medic',   label: '药性',   desc: '击杀目标回复生命' },
+    // ===== 特殊功能词条 =====
+    '枪': { id: 'gun',     label: '枪械',   desc: '射程提升' },
+    '王': { id: 'royal',   label: '王权',   desc: '击杀目标有小概率召唤支援' },
+    '尸': { id: 'undead',  label: '亡灵',   desc: '击杀目标有小概率转化为仆从' },
+    '机': { id: 'machine', label: '机械',   desc: '耐久消耗降低 30%' },
+    '械': { id: 'mechanic',label: '械能',   desc: '耐久消耗降低 20%' },
+    '铁': { id: 'iron',    label: '铁质',   desc: '耐久上限提升 40%，伤害提升 10%' },
+    '骨': { id: 'bone',    label: '骨质',   desc: '耐久上限提升 25%' },
+    '硬': { id: 'hard',    label: '坚硬',   desc: '耐久上限提升 30%' },
+    '影': { id: 'shadow',  label: '暗影',   desc: '暴击率提升，命中减速' },
+    '暗': { id: 'dark',    label: '黑暗',   desc: '暴击率提升' },
+    '爆': { id: 'blast',   label: '爆裂',   desc: '攻击有小概率造成范围伤害' },
+    '碎': { id: 'shatter', label: '碎裂',   desc: '暴击时概率附加额外伤害' },
+    '弓': { id: 'archer',  label: '弓术',   desc: '射程与蓄力伤害提升' },
+    '箭': { id: 'arrow',   label: '箭雨',   desc: '射速提升' },
+    '弹': { id: 'bullet',  label: '弹量',   desc: '弹匣容量提升 25%' },
+    '手': { id: 'grip',    label: '握持',   desc: '换弹速度提升' },
+    '步': { id: 'steady',  label: '稳手',   desc: '后坐力降低，准度提升' },
+    '冲': { id: 'auto',    label: '连射',   desc: '全自动射击速度提升' },
+};
 
 // ---------- 领地旗帜（营地由旗帜确立；开局无营地） ----------
 export const CAMP_RADIUS = 8;          // 领地范围（格）
@@ -569,6 +811,9 @@ export const COIN_ID = 'coin';
 export const ITEM_VALUE = {
     food: 5, water: 5, herb: 8, wood: 3, stone: 4, part: 12, gem: 50, tpgem: 80,
     sun: 3, fert: 6, coin: 1, carrot: 6, corn: 6, potato: 6,
+    // 2026-08-12 v3.7 具体食物与回血药定价（价值按回血/饱食效果）
+    bread: 5, apple: 5, melon: 5,
+    'heal:bandage': 10, 'heal:tonic': 16, 'heal:kit': 22,
 };
 export function itemValue(id) {
     if (ITEM_VALUE[id] != null) return ITEM_VALUE[id];
@@ -580,6 +825,7 @@ export function itemValue(id) {
     if (id.startsWith('ammo:')) return 4;
     if (id.startsWith('seed:')) return 15;
     if (id.startsWith('loot:')) return 20;
+    if (id.startsWith('heal:')) return 10;   // 兜底：回血药至少 10
     return 2;   // 兜底
 }
 export const TRADE_MARKUP = 1.3;     // NPC 卖价倍率（玩家买入价）
@@ -632,7 +878,8 @@ export function nearSpawnScreen(spawn, x, y) {
     if (!spawn) return false;
     const gx = Math.floor(x / SCREEN_TS), gy = Math.floor(y / SCREEN_TS);
     const dx = gx - spawn.x, dy = gy - spawn.y;
-    return Math.abs(dx) <= 15 && Math.abs(dy) <= 9;   // 半屏宽 15 格 / 半屏高 9 格
+    // v3.100 安全区扩大到约 1.5 屏宽（原 15×9 半屏）→ 进局周边无刷怪，玩家有反应时间
+    return Math.abs(dx) <= 22 && Math.abs(dy) <= 14;
 }
 
 // ---------- 生病系统 ----------

@@ -7,11 +7,24 @@
 // ============================================================
 
 import AudioSystem from '../systems/audio.js';
-import { tintSprite } from './render.js';
+import { tintSprite, attachParticleBg, showToast } from './render.js';
 import { getStorage, setStorage } from '../persistence/storage.js';
 
 const LAST_LOOK_KEY = 'wasteland_last_look';
 const HEX_RE = /^#[0-9a-f]{6}$/i;
+
+function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// v3.76 合并命名+捏脸：随机角色名（2~3 个汉字 + 可选数字后缀），供捏脸界面名字输入框使用
+const _RND_NAME = '荒岚孤舟苍漠凝霜曜岩流萤暮雪逐星烬夜苍梧青鸾玄甲赤焰凛风浮云残阳沙砾';
+function randomNameText() {
+    let s = '';
+    const n = 2 + Math.floor(Math.random() * 2);   // 2~3 字
+    for (let i = 0; i < n; i++) s += _RND_NAME[Math.floor(Math.random() * _RND_NAME.length)];
+    if (Math.random() < 0.4) s += String(Math.floor(Math.random() * 90) + 10);   // 40% 概率带数字后缀
+    return s;
+}
 
 export const LOOK_DEFAULTS = {
     skin: '#c49470', hair: '#34302d', shirt: '#39d98a',
@@ -144,7 +157,9 @@ function drawPreview(look) {
 
 // ====== 主预览 sprite：front/side/back 各方向 walk 帧（4 帧循环）======
 const _thumbSprites = { front: [null, null, null, null], side: [null, null, null, null], back: [null, null, null, null] };
-function loadThumbSprites() {
+// v3.81 导出供开始游戏弹窗提前预热（buildStartDialog 时加载 walk 帧 PNG），
+// 首次打开捏脸时 sprite 已缓存 → 不卡顿、预览立即显示
+export function loadThumbSprites() {
     if (_thumbSprites._loaded) return;
     _thumbSprites._loaded = true;
     // 用 new URL 解析为当前页面 origin + 相对路径,避免子目录页面下相对路径失效
@@ -177,7 +192,10 @@ function loadThumbSprites() {
 }
 
 // 一次性构建所有色板行（色块按钮 + 自定义取色入口 + 发型选择行），之后只切换选中态
+// v3.81 缓存构建结果：色板/发型选项是静态常量，每次打开捏脸重建大字符串（60+ 按钮）会卡顿
+let _rowsHtmlCache = null;
 function buildRowsHtml() {
+    if (_rowsHtmlCache) return _rowsHtmlCache;
     const hairBtns = HAIR_STYLES.map(h =>
         `<button class="wsl-look-hair" data-hair="${h.id}" title="${h.label}">${h.label}</button>`).join('');
     const colorRows = Object.keys(LOOK_PALETTES).map(key => {
@@ -194,10 +212,11 @@ function buildRowsHtml() {
             </div>
         </div>`;
     }).join('');
-    return `<div class="wsl-look-row">
+    _rowsHtmlCache = `<div class="wsl-look-row">
             <div class="wsl-look-label">发型</div>
             <div class="wsl-look-hairs">${hairBtns}</div>
         </div>${colorRows}`;
+    return _rowsHtmlCache;
 }
 
 // 选中态同步：只切换 .on 与自定义色块底色，不重建行
@@ -223,19 +242,25 @@ function clickSound() {
     AudioSystem && AudioSystem.playClick && AudioSystem.playClick();
 }
 
-// 打开捏脸界面：确认后回调 onConfirm(look)；
-// initialLook 为初始外观（缺省继承"上次外观"，否则随机）。
-export function showLookCreator(onConfirm, initialLook) {
-    if (lookEl) { lookEl.remove(); lookEl = null; }
-    const look = normalizeLook(initialLook) || loadLastLook() || randomLook();
-    const hasLast = !!loadLastLook();
-    lookEl = document.createElement('div');
-    lookEl.className = 'wsl-look';
-    lookEl.innerHTML = `
+// ================= v3.83 捏脸 DOM 骨架模板 =================
+// 根因：捏脸面板 70+ 元素（色板/发型行 + 渐变/多阴影）用 innerHTML 解析 + appendChild，
+// 每次打开都产生一次明显的同步卡顿（主线程阻塞 → bg-fx 背景动画同步掉帧"顿一下"）。
+// 修复：预构建一份【脱离文档】的骨架模板（detached，不触发 layout/渲染），
+// showLookCreator 时直接 cloneNode(true) 挂载 —— clone 比 innerHTML 解析快一个量级，
+// 点击瞬间只剩轻量操作，彻底消除卡顿。模板在 buildStartDialog 打开开始弹窗时预热。
+let _lookSkeleton = null;
+const LOOK_SKELETON_HTML = `
         <div class="wsl-look-panel">
-            <div class="wsl-look-title">◈ 角色定制 ◈</div>
-            <button class="wsl-look-btn wsl-look-close" id="wsl-look-close" style="position:absolute;top:10px;right:12px;background:none;border:none;color:#8a9aa2;font-size:20px;cursor:pointer;line-height:1;padding:2px;min-width:0;width:auto;" title="取消 (ESC)">✕</button>
+            <div class="wsl-look-title">◈ 创建角色 ◈</div>
+            <button class="wsl-look-btn wsl-look-close" id="wsl-look-close" title="返回 (ESC)">← 返回</button>
             <div class="wsl-look-sub">像素幸存者 · 外观只影响形象，不影响属性 · 彩虹块可自定义任意颜色</div>
+            <div class="wsl-look-namerow">
+                <div class="wsl-look-nameinp">
+                    <span class="wsl-look-namelab">角色名</span>
+                    <input id="wsl-look-name" maxlength="8" placeholder="输入名称或点 🎲" value="">
+                </div>
+                <button class="wsl-look-btn wsl-look-namernd" id="wsl-look-namernd" title="随机名字">🎲</button>
+            </div>
             <div class="wsl-look-body">
 <div class="wsl-look-stage">
                 <canvas class="wsl-look-preview" width="48" height="96"></canvas>
@@ -246,105 +271,262 @@ export function showLookCreator(onConfirm, initialLook) {
                     <button class="wsl-look-dir" data-dir="sideWest" title="朝西行走">西</button>
                 </div>
                 <div class="wsl-look-info">
-                        <div class="wsl-look-info-row"><i style="background:${look.skin};"></i><span>肤色</span></div>
-                        <div class="wsl-look-info-row"><i style="background:${look.hair};"></i><span>发色</span></div>
-                        <div class="wsl-look-info-row"><i style="background:${look.shirt};"></i><span>上衣</span></div>
+                        <div class="wsl-look-info-row"><i style="background:#c49470;"></i><span>肤色</span></div>
+                        <div class="wsl-look-info-row"><i style="background:#34302d;"></i><span>发色</span></div>
+                        <div class="wsl-look-info-row"><i style="background:#39d98a;"></i><span>上衣</span></div>
                     </div>
                 </div>
                 <div class="wsl-look-rows">${buildRowsHtml()}</div>
             </div>
             <div class="wsl-look-actions">
                 <button class="wsl-look-btn" id="wsl-look-random">🎲 随机</button>
-                <button class="wsl-look-btn" id="wsl-look-last" style="${hasLast ? '' : 'display:none;'}">↩ 上次</button>
-                <button class="wsl-look-btn wsl-look-ok" id="wsl-look-ok">确定捏脸形象 ▶</button>
+                <button class="wsl-look-btn" id="wsl-look-last" style="display:none;">↩ 上次</button>
+                <button class="wsl-look-btn wsl-look-ok" id="wsl-look-ok">创建角色 ✓</button>
             </div>
             <div class="wsl-look-keys">Enter 确认 · ESC 取消返回</div>
         </div>`;
-    document.body.appendChild(lookEl);
-    syncRows(look);
-    drawPreview(look);
-    loadThumbSprites(); // 打开捏脸立即加载 sprite(首次打开即显示预览)
+// 预热：构建脱离文档的骨架模板（不渲染、不触发 layout；幂等）
+export function preloadLookSkeleton() {
+    if (_lookSkeleton) return _lookSkeleton;
+    const tmp = document.createElement('div');
+    tmp.className = 'wsl-look';
+    tmp.style.animation = 'none';               // 去掉外层 CSS wslLookFade（与 JS 淡入叠加/移动时重置）
+    tmp.style.visibility = 'hidden';            // detached + hidden：即使误挂载也不渲染
+    tmp.innerHTML = LOOK_SKELETON_HTML;
+    _lookSkeleton = tmp;
+    return _lookSkeleton;
+}
 
+// ================= v3.86/3.87 预挂载实例复用 + 常驻事件绑定 =================
+// 把"clone 骨架 + 挂载 + 粒子背景 + 首次样式计算 + 事件绑定"整体移到 buildStartDialog
+// （打开开始弹窗时）完成：预构建一份 display:none 挂载在 bg-fx 的完整捏脸实例，事件只绑一次。
+// 点击「创建绑定角色」时直接复用，点击路径只剩状态更新（动态字段 + syncRows + drawPreview +
+// reveal，全部在 display:none 下零 reflow）→ 无任何 addEventListener/querySelector 遍历，
+// 彻底消除"点击时同步阻塞 → 上弹动画掉帧 / 背景粒子顿"。
+let _lookMounted = null;
+export function preloadLookCreator() {
+    // v3.90 单实例铁律：只要有挂载实例就复用，永不重建。
+    // 之前 _avail 条件重建会制造多个 .wsl-look → reveal 用 querySelector 选错 / close 删错
+    // → "二次进入界面直接消失"。永不重建后文档永远只有 0~1 个实例，复用前清理动画残留态。
+    if (_lookMounted && _lookMounted.isConnected) {
+        const inst = _lookMounted;
+        inst.style.transition = 'none';   // 清上次关闭/显示残留动画，保证复用干净
+        inst.style.opacity = '1';
+        inst.style.transform = '';
+        return inst;
+    }
+    const inst = preloadLookSkeleton().cloneNode(true);
+    inst.style.visibility = 'visible';
+    inst.style.display = 'none';   // 隐藏挂载：不渲染、不拦截点击
+    document.body.appendChild(inst);
+    attachParticleBg(inst);
+    bindLookHandlers(inst);        // v3.87 常驻事件绑定（仅此一次）
+    // v3.90 预热布局：display:flex → 强制首次全量 layout（此刻在打开开始弹窗时，用户在看
+    // 黄沙过渡/开始弹窗，无感知）→ 再 display:none。点击 reveal 的 display:none → flex 变成
+    // 二次布局（增量 ~1ms）→ 不再长帧卡顿（修"首次点击卡 + 背景粒子顿"）。
+    inst.style.display = 'flex';
+    void inst.offsetWidth;
+    inst.style.display = 'none';
+    inst._avail = true;            // 空闲待复用
+    _lookMounted = inst;
+    return inst;
+}
+// 常驻事件绑定：处理器从 lookEl._look / _nameOpts / _onConfirm 读取当前状态，
+// 因此只需绑定一次，点击打开/关闭捏脸时无需清理或重绑。
+function bindLookHandlers(lookEl) {
+    const lookOf = () => lookEl._look || {};
+    const sync = () => { syncRows(lookOf()); drawPreview(lookOf()); };
     const confirm = () => {
+        const look = lookOf();
+        const nameOpts = lookEl._nameOpts;
+        if (nameOpts) {
+            const raw = (lookEl.querySelector('#wsl-look-name').value || '').trim();
+            if (!raw) {
+                // v3.76 名字必填：留空弹提示（与创建世界/角色弹窗同规则）
+                showToast('请输入角色名称', '#FFB347');
+                const inp = lookEl.querySelector('#wsl-look-name');
+                inp.style.borderColor = '#ff5544';
+                inp.focus();
+                return;
+            }
+            const finalLook = { ...look };
+            saveLastLook(finalLook);
+            closeLookCreator();
+            setTimeout(() => { if (nameOpts.onDone) nameOpts.onDone(raw, finalLook); }, 260);   // v3.80 弹出后恢复上一界面
+            return;
+        }
         const finalLook = { ...look };
         saveLastLook(finalLook);
         closeLookCreator();
-        onConfirm && onConfirm(finalLook);
+        setTimeout(() => { if (lookEl._onConfirm) lookEl._onConfirm(finalLook); }, 260);   // v3.80 弹出后回调
     };
-    const applyColor = (key, color) => {
-        look[key] = color;
-        syncRows(look);
-        drawPreview(look);
+    const applyColor = (key, color) => { lookOf()[key] = color; sync(); };
+    const goBack = () => {
+        clickSound();
+        const nameOpts = lookEl._nameOpts;   // close 前捕获（closeLookCreator 会把模块 lookEl 置 null，此处捕获避免 260ms 后读 null）
+        closeLookCreator();
+        setTimeout(() => { if (nameOpts && nameOpts.onCancel) nameOpts.onCancel(); }, 260);
     };
-
     // 方向选择按钮：切换预览方向并重绘动画
     lookEl.querySelectorAll('.wsl-look-dir').forEach(btn => {
         btn.addEventListener('click', () => {
             previewDir = btn.dataset.dir;
             lookEl.querySelectorAll('.wsl-look-dir').forEach(b => b.classList.toggle('on', b === btn));
-            drawPreview(look);
+            drawPreview(lookOf());
             clickSound();
         });
     });
-    // 默认选中朝南
-    const defDir = lookEl.querySelector('.wsl-look-dir[data-dir="' + previewDir + '"]');
-    if (defDir) defDir.classList.add('on');
-
     const rows = lookEl.querySelector('.wsl-look-rows');
-    rows.addEventListener('click', e => {
-        const hair = e.target.closest('.wsl-look-hair');
-        if (hair) {
-            look.hairStyle = Number(hair.dataset.hair);
-            syncRows(look);
-            drawPreview(look);
+    if (rows) {
+        rows.addEventListener('click', e => {
+            const hair = e.target.closest('.wsl-look-hair');
+            if (hair) {
+                lookOf().hairStyle = Number(hair.dataset.hair);
+                sync();
+                clickSound();
+                return;
+            }
+            const btn = e.target.closest('.wsl-look-swatch');
+            if (!btn || btn.classList.contains('wsl-look-custom')) return;
+            applyColor(btn.dataset.key, btn.dataset.color);
             clickSound();
-            return;
-        }
-        const btn = e.target.closest('.wsl-look-swatch');
-        if (!btn || btn.classList.contains('wsl-look-custom')) return;
-        applyColor(btn.dataset.key, btn.dataset.color);
-        clickSound();
-    });
-    rows.addEventListener('input', e => {
-        if (e.target.type !== 'color') return;
-        applyColor(e.target.dataset.key, e.target.value.toLowerCase());
-    });
-    rows.addEventListener('change', e => {
-        if (e.target.type !== 'color') return;
-        clickSound();
-    });
-
-    lookEl.querySelector('#wsl-look-random').addEventListener('click', () => {
-        Object.assign(look, randomLook());
-        syncRows(look);
-        drawPreview(look);
-        clickSound();
-    });
-    if (hasLast) {
-        lookEl.querySelector('#wsl-look-last').addEventListener('click', () => {
-            Object.assign(look, loadLastLook() || randomLook());
-            syncRows(look);
-            drawPreview(look);
+        });
+        rows.addEventListener('input', e => {
+            if (e.target.type !== 'color') return;
+            applyColor(e.target.dataset.key, e.target.value.toLowerCase());
+        });
+        rows.addEventListener('change', e => {
+            if (e.target.type !== 'color') return;
             clickSound();
         });
     }
-    lookEl.querySelector('#wsl-look-ok').addEventListener('click', confirm);
-    // 2026-08-11 v2.99 用户要求：所有弹窗都有叉号关闭按钮（右上角取消）
-    const lcBtn = lookEl.querySelector('#wsl-look-close');
-    if (lcBtn) lcBtn.addEventListener('click', () => { clickSound(); closeLookCreator(); });
+    const rnd = lookEl.querySelector('#wsl-look-random');
+    if (rnd) rnd.addEventListener('click', () => { Object.assign(lookOf(), randomLook()); sync(); clickSound(); });
+    // v3.76 合并命名+捏脸：随机名字按钮（点击填入随机名并清红框）——常驻绑定，namerow 显示时才可点
+    const nmBtn = lookEl.querySelector('#wsl-look-namernd');
+    const nmInp = lookEl.querySelector('#wsl-look-name');
+    if (nmBtn && nmInp) nmBtn.addEventListener('click', () => {
+        nmInp.value = randomNameText();
+        nmInp.style.borderColor = '';
+        nmInp.focus();
+        clickSound();
+    });
+    // Enter 在名字输入框内 → 触发确认（避免与全局 keydown 冲突用 onkeydown）
+    if (nmInp) nmInp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); confirm(); }
+    });
+    const lb = lookEl.querySelector('#wsl-look-last');
+    if (lb) lb.addEventListener('click', () => { Object.assign(lookOf(), loadLastLook() || randomLook()); sync(); clickSound(); });
+    const ok = lookEl.querySelector('#wsl-look-ok');
+    if (ok) ok.addEventListener('click', confirm);
+    // 2026-08-13 改为"返回"按钮（语义更明确：返回上一弹窗/创建角色界面），ESC 仍可用
+    const lc = lookEl.querySelector('#wsl-look-close');
+    if (lc) lc.addEventListener('click', goBack);
     const onKey = e => {
         if (e.target && e.target.tagName === 'INPUT') return;   // 取色器自己处理回车
-        if (e.key === 'Escape') closeLookCreator();
+        if (e.key === 'Escape') goBack();
         else if (e.key === 'Enter') confirm();
     };
     lookEl._key = onKey;
     window.addEventListener('keydown', onKey);
 }
 
+// 打开捏脸界面：确认后回调 onConfirm(look)；
+// v3.62 每次进入自动随机配色（用户需求：每次进捏脸自动随机配色）；
+// initialLook 有值（如 wdev 局内重捏脸传当前外观）则保留，否则每次随机（不再默认继承"上次"）。
+// v3.76 合并命名+捏脸：可选 nameOpts={ name, onDone(name, look) }。
+// 传入时面板顶部显示角色名输入框 + 🎲 随机名，确认按钮文案变「创建角色 ✓」，
+// 确认时先校验名字再回调 onDone(name, look)（满足"世界创建完弹创建角色、一个界面完成命名+捏脸"）。
+export function showLookCreator(onConfirm, initialLook, nameOpts, opts) {
+    // v3.82 预构建模式 opts.deferReveal：构建捏脸 DOM 但先隐藏，
+    // 由外部（animateDialogSwap 在旧弹窗上弹结束后）调用 lookEl._wslReveal() 触发淡入。
+    const deferReveal = !!(opts && opts.deferReveal);
+    // v3.90 单实例复用：永不重建 → 文档永远只有一个 .wsl-look。上次未正常关闭的残留实例
+    // 由 preloadLookCreator 复用前清理（清动画态），此处不再删除任何实例。
+    const look = normalizeLook(initialLook) || randomLook();
+    const hasLast = !!loadLastLook();
+    const withName = !!nameOpts;
+    const nameVal = (nameOpts && nameOpts.name) || '';
+    // v3.86 预挂载实例复用：DOM（clone/挂载/粒子背景）在 buildStartDialog 时已建好（display:none），
+    // 点击路径只剩状态更新（syncRows/drawPreview 在 display:none 下零 reflow）→
+    // 彻底消除"点创建绑定角色"时 clone 70+ 节点/挂载/样式计算造成的同步卡顿（背景动画顿）。
+    lookEl = preloadLookCreator();
+    lookEl._avail = false;
+    lookEl.style.visibility = 'visible';
+    lookEl.style.display = 'none';   // 隐藏挂载：不渲染、不拦截点击、零 layout（复用实例常驻）
+    // v3.87 状态挂到实例上供常驻事件读取（事件已在 preloadLookCreator 时绑定一次）
+    lookEl._look = look;
+    lookEl._onConfirm = onConfirm;
+    lookEl._nameOpts = nameOpts;
+    // 动态部分：标题/确认文案/名字输入/返回上次按钮/信息色块（namerow 显隐而非移除，保证复用）
+    const titleEl = lookEl.querySelector('.wsl-look-title');
+    if (titleEl) titleEl.textContent = withName ? '◈ 创建角色 ◈' : '◈ 角色定制 ◈';
+    const okEl = lookEl.querySelector('#wsl-look-ok');
+    if (okEl) okEl.textContent = withName ? '创建角色 ✓' : '确定捏脸形象 ▶';
+    const nmRow = lookEl.querySelector('.wsl-look-namerow');
+    if (nmRow) nmRow.style.display = withName ? '' : 'none';
+    if (withName) {
+        const nmInp = lookEl.querySelector('#wsl-look-name');
+        if (nmInp) nmInp.value = nameVal;
+    }
+    const lastBtn = lookEl.querySelector('#wsl-look-last');
+    if (lastBtn) lastBtn.style.display = hasLast ? '' : 'none';
+    const infoIcons = lookEl.querySelectorAll('.wsl-look-info-row i');
+    if (infoIcons[0]) infoIcons[0].style.background = look.skin;
+    if (infoIcons[1]) infoIcons[1].style.background = look.hair;
+    if (infoIcons[2]) infoIcons[2].style.background = look.shirt;
+    // 方向按钮选中态重置 + 默认朝南（复用实例时残留选中需清理）
+    lookEl.querySelectorAll('.wsl-look-dir').forEach(b => b.classList.remove('on'));
+    const defDir = lookEl.querySelector('.wsl-look-dir[data-dir="' + previewDir + '"]');
+    if (defDir) defDir.classList.add('on');
+    // v3.80 弹窗切换动画：内容面板(.wsl-look-panel)作卡片，屏幕中央缓缓淡入（opacity 0→1 + 上浮归位）
+    const lookCard = lookEl.querySelector('.wsl-look-panel') || lookEl;
+    lookEl.dataset.wslDialog = '1';
+    lookCard.style.opacity = '0';
+    lookCard.style.transition = 'opacity 0.32s ease, transform 0.32s ease';
+    lookCard.style.transform = 'translateY(14px)';
+    // v3.85/v3.90 淡入封装：display:none → display:flex（一次性 layout 在 opacity 0 帧）→
+    // 帧1 完成 syncRows（选中态，透明帧内用户不可见）→ 帧2 启动 0.32s 淡入。
+    // syncRows 从点击路径移出后，点击路径只剩轻量字段更新 + 启动 rAF（<3ms）。
+    // v3.92 卡顿由加载遮罩掩盖（startBoundCharacter 的 reveal 闭包先 showWslLoading 再调本 reveal）。
+    const reveal = () => {
+        if (!lookEl) return;
+        lookEl.style.display = 'flex';
+        requestAnimationFrame(() => {
+            if (!lookEl || !lookEl.isConnected) return;
+            syncRows(lookEl._look || {});   // v3.87 选中态延迟一帧（透明帧完成，不阻塞点击）
+            requestAnimationFrame(() => {
+                if (!lookEl || !lookEl.isConnected) return;
+                lookCard.style.opacity = '1';
+                lookCard.style.transform = 'translateY(0)';
+            });
+        });
+    };
+    drawPreview(look);
+    loadThumbSprites(); // 打开捏脸立即加载 sprite(首次打开即显示预览)
+    if (deferReveal) {
+        lookEl._wslReveal = reveal;
+        return reveal;   // v3.90 返回闭包引用，供 animateDialogSwap 精确调用（不依赖 querySelector）
+    }
+    reveal();
+}
+
 function closeLookCreator() {
     if (!lookEl) return;
     cancelAnimationFrame(lookAnimRaf);
     window.removeEventListener('keydown', lookEl._key);
-    lookEl.remove();
+    // v3.80 弹窗切换动画：捏脸面板【向上弹出】（与开始游戏/创建世界一致）
+    const card = lookEl.querySelector('.wsl-look-panel') || lookEl;
+    card.style.transition = 'opacity 0.24s ease, transform 0.24s ease';
+    card.style.opacity = '0';
+    card.style.transform = 'translateY(-26px)';
+    const el = lookEl;
     lookEl = null;
+    setTimeout(() => {
+        // v3.86 预挂载实例复用：保留 DOM（display:none 待下次复用，不再重建 clone），否则移除
+        if (el === _lookMounted) {
+            el.style.display = 'none';
+            el._avail = true;
+        } else if (el.parentNode) el.parentNode.removeChild(el);
+    }, 250);
 }

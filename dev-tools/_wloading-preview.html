@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>末世风加载动画 · 方案预览</title>
+<style>
+    html, body { margin: 0; height: 100%; background: #0b0d10; font-family: 'Microsoft YaHei', monospace; }
+    body { display: flex; flex-direction: column; }
+    /* 工具栏：z-index 1400 > 加载层 1300，且加载层 pointer-events:none，事件正常冒泡到按钮 */
+    #toolbar {
+        position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+        z-index: 1400; display: flex; gap: 10px; align-items: center;
+        background: rgba(20, 26, 34, 0.94); border: 1px solid #2a3a33;
+        border-radius: 8px; padding: 10px 16px; color: #9fb3ab; font-size: 12px;
+        box-shadow: 0 4px 18px rgba(0,0,0,0.5); flex-wrap: wrap; justify-content: center;
+    }
+    #toolbar .sep { width: 1px; height: 24px; background: #2a3a33; }
+    #toolbar button {
+        background: #123d2c; border: 1px solid #39d98a; color: #8dffc4;
+        border-radius: 5px; padding: 6px 14px; cursor: pointer; font-size: 13px;
+    }
+    #toolbar button:hover { background: #17613f; }
+    #toolbar button.active { background: #1d5a3c; box-shadow: 0 0 8px rgba(57,217,138,0.4); }
+    #toolbar button#replay { background: #1a2a3a; border-color: #4da3ff; color: #9cc9ff; }
+    #toolbar button#replay:hover { background: #22405c; }
+    #toolbar button#skip { background: #2a2020; border-color: #8a5a5a; color: #e0a0a0; }
+    .hint { position: fixed; top: 14px; left: 0; right: 0; text-align: center; color: rgba(180,160,130,0.7); font-size: 12px; z-index: 1400; letter-spacing: 2px; }
+    #variants { display: flex; gap: 6px; }
+</style>
+</head>
+<body>
+<div class="hint">末世风加载动画方案预览 · 点按钮切换方案 · 真实效果在游戏点「开始游戏」后 4 秒展示</div>
+<div id="toolbar">
+    <span id="variants">
+        <button data-v="comet">A · 彗星</button>
+        <button data-v="sundial">B · 日晷</button>
+        <button data-v="gears">C · 齿轮</button>
+        <button data-v="radar">D · 雷达</button>
+        <button data-v="sandstorm">E · 沙尘暴</button>
+    </span>
+    <span class="sep"></span>
+    <button id="replay">▶ 重播</button>
+    <button id="skip">跳过</button>
+    <span id="info">动画 4 秒</span>
+</div>
+<script type="module">
+    import { showLoadingOverlay, hideLoadingOverlay } from '../source-code/mod-wasteland/wloading.js';
+    let cur = 'sandstorm';
+    const btns = document.querySelectorAll('#variants button');
+    const setActive = (v) => btns.forEach(b => b.classList.toggle('active', b.dataset.v === v));
+    const play = (v) => {
+        hideLoadingOverlay();
+        showLoadingOverlay({ durMs: 10000, variant: v, onDone: () => console.log('加载结束 ' + v) });
+        cur = v;
+        setActive(v);
+    };
+    btns.forEach(b => b.addEventListener('click', () => play(b.dataset.v)));
+    document.getElementById('replay').addEventListener('click', () => play(cur));
+    document.getElementById('skip').addEventListener('click', () => hideLoadingOverlay());
+    play('comet');
+</script>
+</body>
+</html>

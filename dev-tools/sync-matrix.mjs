@@ -331,9 +331,9 @@ console.log('\n===== D. 各玩法 =====');
     Panel.addItem(sv, 'wood', 3);
     const wood = sv.inv.filter(s => s && s.id === 'wood').reduce((a, s) => a + s.n, 0);
     assert(wood === 8, `D: 背包堆叠 (wood=${wood})`);
-    // 物品详情数据
+    // 物品详情数据（2026-08-12 v3.7 泛称食物改名"应急干粮"）
     const info = Panel.getItemInfo('food');
-    assert(info && info.name === '食物', 'D: 物品表可读');
+    assert(info && info.name === '应急干粮' && info.satiate && !info.heal, 'D: 物品表可读');
     // 交易价值
     assert(B.itemValue('wood') > 0, 'D: 交易价值');
     // 车辆数据结构

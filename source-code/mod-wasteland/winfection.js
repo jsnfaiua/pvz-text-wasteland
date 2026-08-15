@@ -31,39 +31,56 @@ export function infectionBand(level) {
     return 'text';
 }
 
+// v3.63 感染机制重写：每 1% 感染 → 角色所有属性降低约 0.5%（速度/血量/伤害/拾取/治疗……统一按总乘子削弱）。
+// 即 100% 感染时属性 ≤ 50%（≤ 0.5 乘子），stage 5（≥ 90% 感染）maxHpMul < 0.5。感染到 100% 仍触发致死。
+// 阶段名（用于 UI 浮字）：连续值用以下阈值划分（保留视觉分段）。
+const INF_STAGE_THRESHOLDS = [
+    { stage: 0, name: '完整', min: 0,   desc: '身体完好，无文字侵蚀痕迹' },
+    { stage: 1, name: '浮字', min: 10,  desc: '皮肤表面偶发字符闪烁，可被检测' },
+    { stage: 2, name: '缺口', min: 25,  desc: '局部像素缺失被字块填充，对应部位能力下降' },
+    { stage: 3, name: '字骨', min: 45,  desc: '笔画替代肌肉与骨骼，动作僵硬' },
+    { stage: 4, name: '失名', min: 70,  desc: '身份词残缺，记忆与认知开始异常' },
+    { stage: 5, name: '文尸', min: 90,  desc: '像素身份即将被文字结构完全取代' },
+];
+// v3.63 每 1% 感染 → 角色所有属性降低 0.5%（用户规则）。
+// 计算公式：totalMul = 1 - (v / 100) * 0.5 → 感染 100% 时属性 = 50%（0.5 乘子），感染 50% 时属性 = 75%。
+// 本常量作为 metadata 暴露（保持代码与公式严格匹配）。
+const INF_ATTR_DECAY_PER_PCT = 0.005;   // 0.5% / 1%感染（每 1% 削弱率）
 export const PLAYER_INFECTION = {
     max: 100,
-    stages: [
-        { stage: 0, name: '完整', min: 0,   speedMul: 1.0,  hpMul: 1.0,  desc: '身体完好，无文字侵蚀痕迹' },
-        { stage: 1, name: '浮字', min: 10,  speedMul: 0.95, hpMul: 1.0,  desc: '皮肤表面偶发字符闪烁，可被检测' },
-        { stage: 2, name: '缺口', min: 25,  speedMul: 0.88, hpMul: 0.9,  desc: '局部像素缺失被字块填充，对应部位能力下降' },
-        { stage: 3, name: '字骨', min: 45,  speedMul: 0.78, hpMul: 0.8,  desc: '笔画替代肌肉与骨骼，动作僵硬' },
-        { stage: 4, name: '失名', min: 70,  speedMul: 0.65, hpMul: 0.65, desc: '身份词残缺，记忆与认知开始异常' },
-        { stage: 5, name: '文尸', min: 90,  speedMul: 0.5,  hpMul: 0.4,  desc: '像素身份即将被文字结构完全取代' },
-    ],
+    stages: INF_STAGE_THRESHOLDS,
     zombieHitChance: 0.18,
     zombieHitAmount: [2, 6],
     infectedGlyphUseAmount: 8,
     bedRestRecovery: 5,
     naturalDecayPerDay: 0,
+    // v3.63 单点属性削弱系数（每 1% 感染 = 0.5%）：0%→1.0×，50%→0.75×，100%→0.5×
+    attrDecayPerPct: INF_ATTR_DECAY_PER_PCT,
 };
 
 export function playerInfectionStage(value) {
     const v = Math.max(0, Math.min(PLAYER_INFECTION.max, value));
-    let result = PLAYER_INFECTION.stages[0];
-    for (const entry of PLAYER_INFECTION.stages) {
+    let result = INF_STAGE_THRESHOLDS[0];
+    for (const entry of INF_STAGE_THRESHOLDS) {
         if (v >= entry.min) result = entry;
     }
     return result;
 }
 
+// v3.63 感染属性总乘子：1 - (infection/100) * 0.5 = 0.5~1.0 连续值。
+// 所有依赖此函数的位置（玩家/NPC 的速度、血上限、伤害、治疗量……）都自动按此削弱。
 export function playerInfectionEffects(value) {
     const stage = playerInfectionStage(value);
+    const v = Math.max(0, Math.min(PLAYER_INFECTION.max, value));
+    const totalMul = Math.max(0.5, 1 - (v / PLAYER_INFECTION.max) * 0.5);
     return {
         stage: stage.stage,
         name: stage.name,
-        speedMul: stage.speedMul,
-        maxHpMul: stage.hpMul,
+        speedMul: totalMul,
+        maxHpMul: totalMul,
+        damageMul: totalMul,
+        attrDecayPerPct: INF_ATTR_DECAY_PER_PCT,
+        totalMul,
         desc: stage.desc,
     };
 }

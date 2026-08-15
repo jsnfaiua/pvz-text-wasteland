@@ -107,7 +107,9 @@ export function checkHordeEnd(sv, saveNow) {
 function dropHordeRewards(sv) {
     const rewards = [];
     rewards.push(['wood', 2 + Math.floor(Math.random() * 3)]);
-    rewards.push(['food', 1 + Math.floor(Math.random() * 2)]);
+    // 2026-08-12 v3.7 尸潮奖励给具体食物（与搜刮掉落一致）
+    const _fd = ['food', 'carrot', 'corn', 'potato', 'bread', 'apple', 'melon'][Math.floor(Math.random() * 7)];
+    rewards.push([_fd, 1 + Math.floor(Math.random() * 2)]);
     const at = B.LOOT_AMMO[Math.floor(Math.random() * B.LOOT_AMMO.length)];
     rewards.push(['ammo:' + at, Math.max(4, Math.round(((AMMO_INFO[at] || {}).pack || 20) * 0.5))]);
     if (sv.day >= B.REWARD_WEAPON_DAY && Math.random() < B.REWARD_WEAPON_CHANCE) {

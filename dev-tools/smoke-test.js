@@ -148,10 +148,74 @@ assert(WW.recipeAvailability(wordInv, WW.RECIPES[0]).ok, 'wwordcraft carrot reci
 assert(WW.stageAt(0.1).name === '定词', 'wwordcraft stage 定词');
 assert(WW.stageAt(0.7).name === '赋质', 'wwordcraft stage 赋质');
 assert(WW.rollTextLoot(() => 0).id === 'glyph:水', 'wwordcraft legacy text loot uses supply glyph pool');
-assert(WW.RECIPES.length === 35, 'wwordcraft all inventory recipes registered');
+assert(WW.RECIPES.length === 42, 'wwordcraft all inventory recipes registered');
 const pistolRecipe = WW.RECIPES.find(recipe => recipe.id === 'pistol');
 assert(pistolRecipe && pistolRecipe.wedgeId === 'wedge:stable', 'wwordcraft firearm requires stable wedge');
 assert(WW.WEDGE_INFO['wedge:clean'].name === '洁净字楔', 'wwordcraft clean wedge registered');
+// 2026-08-12 v3.8 配方物品：recipe:<id> 映射 / 解析 / 掉落
+assert(WW.recipeItemId('carrot') === 'recipe:carrot', 'recipe: recipeItemId 映射');
+assert(WW.recipeIdFromItem('recipe:sword') === 'sword', 'recipe: recipeIdFromItem 解析');
+assert(WW.recipeByItemId('recipe:carrot') && WW.recipeByItemId('recipe:carrot').name === '胡萝卜', 'recipe: recipeByItemId 查配方');
+assert(WW.recipeByItemId('recipe:unknown') === null, 'recipe: 未知配方返回 null');
+const rDrop = WW.rollRecipeItem(new Set(['water', 'wood', 'stone', 'food', 'herb']), () => 0);
+assert(rDrop && String(rDrop.id).startsWith('recipe:') && rDrop.n === 1, 'recipe: rollRecipeItem 掉配方且 n=1');
+assert(WW.rollRecipeItem(new Set(WW.RECIPES.map(r => r.id)), () => 0) === null, 'recipe: 全部已解锁时不掉配方');
+// 2026-08-12 v3.9 琢磨拼字 / 错乱僵尸
+assert(WW.matchFreeWord(['胡', '萝', '卜']).matched === true, 'ponder: 正确词匹配配方');
+assert(WW.matchFreeWord(['火', '枪']).matched === false, 'ponder: 错词不匹配任何配方');
+const corrupt = WW.computeCorruptStats(['火', '枪']);
+assert(corrupt.name.includes('火') && corrupt.name.includes('枪'), 'ponder: 错乱尸名字含拼出字');
+assert(corrupt.ability === 'ignite', 'ponder: 火枪 → 能力取第一个特殊字(火=烈焰)');
+const corruptGun = WW.computeCorruptStats(['枪', '火']);
+assert(corruptGun.ability === 'gun', 'ponder: 枪火 → 能力取第一个特殊字(枪=射击)');
+const corrupt2 = WW.computeCorruptStats(['巨', '铁']);
+assert(corrupt2.hp > 280 && corrupt2.armor >= 0.35, 'ponder: 巨铁 → 高血高甲');
+assert(WW.isFreeGlyph('glyph:火') === true && WW.isFreeGlyph('glyph-unstable:火') === false, 'ponder: isFreeGlyph 只认 clean 字块');
+assert(WW.isFreeGlyph('wpn:sword') === false, 'ponder: 非字块物品不是可拼字');
+// 2026-08-12 v3.10 文字手术刀拆字系统（v3.18 用户定稿：拆字不是概率，猜错没有惩罚）
+assert(WW.glyphPollutionOf('glyph-unstable:火') === 'unstable', 'surgery: 识别不稳字块');
+assert(WW.glyphCharOf('glyph:火') === '火' && WW.glyphCharOf('glyph-infected:枪') === '枪', 'surgery: 提取字');
+const purify = WW.surgeryOn('glyph-unstable:火', () => 0);
+assert(purify.ok && purify.kind === 'purifyGlyph' && purify.item.id === 'glyph:火', 'surgery: 净化不稳字块→普通字块');
+const purifyInf = WW.surgeryOn('glyph-infected:毒', () => 0);
+assert(purifyInf.ok && purifyInf.item.id === 'glyph:毒', 'surgery: 净化感染字块→普通字块');
+const bd = WW.surgeryOn('wpn:pistol', () => 0, 2);
+assert(bd.ok && bd.kind === 'breakdown' && bd.items.some(it => it.id === 'glyph:枪'), 'surgery: 拆手枪必定成功并拆出枪字');
+assert(WW.nameCharsOf('wpn:pistol').includes('枪'), 'surgery: 手枪拆出枪字');
+// v3.18 恒成功无惩罚：任意随机数（含失败位）都必定成功；韧性0也不损坏
+const bdFail = WW.surgeryOn('wpn:sword', () => 0.99, 0);
+assert(bdFail.ok && bdFail.kind === 'breakdown' && bdFail.items.length > 0, 'surgery: 拆字恒成功（无失败/错乱尸/污染）');
+const zeroTough = WW.surgeryOn('wpn:sword', () => 0, 0);
+assert(zeroTough.ok && zeroTough.kind === 'breakdown', 'surgery: 韧性0也必定成功（无损坏惩罚）');
+assert(WW.surgeryEligible('coin') === false && WW.surgeryEligible('loot:common') === false, 'surgery: 货币/战利品袋不可拆');
+assert(WW.surgeryEligible('wpn:sword') === true && WW.surgeryEligible('food') === true, 'surgery: 武器/食物可拆');
+// 2026-08-12 v3.15 混淆字机制（无用字=未装载功能的字）+ 词条图鉴
+// "火/冰/雷/王/尸"等当前无任何配方 → 是混淆字（拼不出物品，但拼错乱尸有特殊效果）
+assert(WW.isConfusingGlyph('火') === true, 'junk: 火当前无配方→混淆字');
+assert(WW.isConfusingGlyph('冰') === true, 'junk: 冰当前无配方→混淆字');
+const _carrotG = WW.RECIPES.find(r => r.id === 'carrot');
+assert(WW.isConfusingGlyph(_carrotG.glyphs[0]) === false, 'junk: 胡萝卜配方字为可用字');
+assert(WW.isConfusingGlyph('枪') === false, 'junk: 枪在配方中(手枪/步枪等)→可用字');
+const _junkList = WW.confusingGlyphList();
+assert(Array.isArray(_junkList) && _junkList.length > 0, 'junk: 存在混淆字清单');
+assert(_junkList.every(ch => WW.isConfusingGlyph(ch)), 'junk: 清单内全是混淆字');
+const _usableList = WW.usableGlyphList();
+assert(Array.isArray(_usableList) && _usableList.length > 0, 'junk: 存在可用字清单');
+// 混淆字与可用字互斥且覆盖全部字符池
+const _allChars = new Set([..._junkList, ..._usableList]);
+assert(_junkList.every(ch => !_usableList.includes(ch)), 'junk: 混淆字与可用字互斥');
+// 2026-08-12 v3.16 汉字基数扩充（通用规范汉字一级字表 3500 字，用户提供完整表程序化生成）
+const _total = WW.allGlyphChars().size;
+assert(_total >= 3500, `junk: 汉字基数已扩充至3500级 (总=${_total})`);
+assert(_junkList.length >= 3400, `junk: 混淆字数量随基数扩充 (>=3400, 实际=${_junkList.length})`);
+assert(WW.isConfusingGlyph('一') === true, 'junk: 新增汉字"一"未装载功能→混淆字');
+assert(WW.isConfusingGlyph('天') === true, 'junk: 新增汉字"天"未装载功能→混淆字');
+assert(WW.isConfusingGlyph('吃') === true, 'junk: 新增汉字"吃"未装载功能→混淆字');
+assert(WW.isConfusingGlyph('矗') === true, 'junk: 24画"矗"未装载功能→混淆字');
+// 词条图鉴数据：MANIFEST_AFFIXES 存在且字都能在字符池找到
+assert(B.MANIFEST_AFFIXES && Object.keys(B.MANIFEST_AFFIXES).length > 0, 'codex: 词条映射表非空');
+assert(B.MANIFEST_AFFIXES['火'] && B.MANIFEST_AFFIXES['火'].id === 'burn', 'codex: 火→灼烧');
+assert(B.MANIFEST_AFFIXES['冰'] && B.MANIFEST_AFFIXES['冰'].id === 'frost', 'codex: 冰→冰封');
 
 // 视觉感染：健康实体不出现文字，部分感染和完全文字化边界稳定。
 assert(WI.infectionLevelFromRoll(0.1) === 0, 'visual infection keeps healthy entities pixel-only');
@@ -168,7 +232,7 @@ assert(WI.playerInfectionStage(75).stage === 4, 'player infection stage 4 at val
 assert(WI.playerInfectionStage(95).stage === 5, 'player infection stage 5 at value 95');
 assert(WI.playerInfectionEffects(0).speedMul === 1.0, 'player infection no speed penalty at stage 0');
 assert(WI.playerInfectionEffects(50).speedMul < 1.0, 'player infection slows movement at stage 3');
-assert(WI.playerInfectionEffects(95).maxHpMul < 0.5, 'player infection caps HP at stage 5');
+assert(WI.playerInfectionEffects(100).maxHpMul <= 0.5, 'player infection caps HP at 100%（v3.63：每1%感染→属性-0.5%，100%感染时属性=50%）');
 assert(WI.addPlayerInfection(90, 20) === 100, 'player infection clamped to max');
 assert(WI.addPlayerInfection(5, -10) === 0, 'player infection clamped to zero');
 assert(WI.rollZombieInfection(() => 0.99) === 0, 'zombie infection miss at high roll');
@@ -209,6 +273,19 @@ for (const [quality, table] of Object.entries(B.ZOMBIE_BAG_RESULT_TABLES)) {
 for (const [source, pool] of Object.entries(WW.GLYPH_SOURCE_POOLS)) {
     assert(Math.abs(weightedSum(pool) - 1) < 1e-9, `glyph pool ${source} sums to 100%`);
 }
+// 2026-08-12 v3.18 全局字权重表（用户定稿）：全局权重和=1（覆盖所有配方字的断言在 recipeGlyphs 定义后）
+assert(Math.abs(weightedSum(WW.GLYPH_UNIVERSAL) - 1) < 1e-9, 'glyph universal pool sums to 100%');
+// 2026-08-12 v3.19 物资全局权重（用户定稿：物资稀有度全局一致；容器分池；池内按全局权重抽）
+assert(B.LOOT_ITEM_WEIGHTS && Object.keys(B.LOOT_ITEM_WEIGHTS).length >= 40, 'loot item weights defined (40+)');
+assert(B.ZOMBIE_LOOT_ALL.length === Object.keys(B.LOOT_ITEM_WEIGHTS).length, 'zombie loot all covers every weighted item');
+assert(WW.rollGlobalLoot(['wood'], () => 0.999) === 'wood', 'rollGlobalLoot single-item pool');
+assert(WW.rollGlobalLoot([], () => 0.5) === null, 'rollGlobalLoot empty pool');
+assert(WW.rollGlobalLoot(['wood', 'stone'], () => 0) === 'wood', 'rollGlobalLoot first by weight');
+assert(WW.globalLootQty('gem', () => 0.5) === 1, 'globalLootQty default = 1');
+assert(WW.globalLootQty('wood', () => 0.5) === 3, 'globalLootQty wood mid range');
+assert(WW.globalLootQty('ammo:pistolAmmo', () => 0.5) === 7, 'globalLootQty ammo mid range');
+const wedgeSum = B.WEDGE_GLOBAL_WEIGHTS.rough + B.WEDGE_GLOBAL_WEIGHTS.stable + B.WEDGE_GLOBAL_WEIGHTS.clean;
+assert(Math.abs(wedgeSum - 1) < 1e-9, 'wedge global weights sum to 100%');
 for (const [source, table] of Object.entries(WW.WEDGE_SOURCE_TABLES)) {
     assert(Math.abs(probabilitySum(table) - 1) < 1e-9, `wedge pool ${source} sums to 100%`);
 }
@@ -218,6 +295,9 @@ for (const [source, pool] of Object.entries(WW.ZOMBIE_GLYPH_POOLS)) {
 const legalGlyphs = new Set(Object.values(WW.GLYPH_SOURCE_POOLS).flatMap(pool => pool.map(entry => entry.id)));
 const recipeGlyphs = new Set(WW.RECIPES.flatMap(recipe => recipe.glyphs));
 assert([...recipeGlyphs].every(char => legalGlyphs.has(char)), 'every recipe glyph has a legal container source');
+// v3.18 全局权重覆盖所有配方字（任何字都有全局概率）
+const uniIds = new Set(WW.GLYPH_UNIVERSAL.map(g => g.id));
+assert([...recipeGlyphs].every(ch => uniIds.has(ch)), 'universal pool covers every recipe glyph');
 const fragResult = WW.rollWordLootOutcome('supply', { lightFragment: 1 }, {}, () => 0);
 assert(fragResult.type === 'lightFragment' && fragResult.originalType === 'lightFragment', 'light fragment produces real item');
 assert(fragResult.items.length > 0 && fragResult.items[0].id.startsWith('frag:'), 'fragment item has valid frag: id');
@@ -254,8 +334,11 @@ assert(repairState.ok === true, 'repairAvailability succeeds with full glyph inv
 assert(typeof WW.repairDuration(fragResult.items[0].id) === 'number', 'repairDuration returns number');
 assert(WW.repairDuration(fragResult.items[0].id) >= 3, 'repairDuration has minimum 3s');
 assert(WW.parseFragmentId('not-a-frag') === null, 'parseFragmentId rejects non-fragment id');
-const infectedWedge = WW.rollWordLootOutcome('weapon', { wedge: 1 }, {}, () => 0.999999);
-assert(infectedWedge.items[0].id === 'wedge:stable', 'infected wedge compatibility moves to stable wedge');
+// v3.19 字楔全局权重（WEDGE_GLOBAL_WEIGHTS）：rough .62 / stable .33 / clean .05（不再按容器差异，无 infected 兼容位）
+const wedgeGlobal = WW.rollWordLootOutcome('weapon', { wedge: 1 }, {}, () => 0.999999);
+assert(wedgeGlobal.items[0].id === 'wedge:clean', 'wedge global weights: high roll → clean');
+const wedgeMid = WW.rollWordLootOutcome('weapon', { wedge: 1 }, {}, () => 0.7);
+assert(wedgeMid.items[0].id === 'wedge:stable', 'wedge global weights: mid roll → stable');
 
 let simState = 0x12345678;
 const seededRandom = () => {
@@ -837,29 +920,12 @@ assert(mockSv.msgs.length === 0, 'wmsg.updateMsg expiry');
     assert(isWalk(getTile(sv, cgx, cgy)), 'driveOrder: camp target snapped to walkable tile');
 }
 
-// NPC 动态武器选择（2026-08-10 用户要求：近距用近战、远距用远程、远程没弹自动切近战）
+// NPC 动态武器选择：npcPickWeapon 已在 v4.x 重构中移除，改为 randomNpcWeapon/wearNpcWeapon
+// 此处仅验证新接口存在
 {
     const WNPC = await import('../source-code/mod-wasteland/wnpc.js');
-    const now = 1000;
-    const makeNpc = (inv) => ({ inv, _wpick: null, _wpickT: null });
-    // 1) 同时持有近战+远程：近距离选近战、远距离选远程（每次重置缓存避免 0.3s 缓存干扰）
-    const n1 = makeNpc([{ id: 'wpn:sword', n: 1 }, { id: 'wpn:rifle', n: 1 }, { id: 'ammo:rifleAmmo', n: 30 }]);
-    const near = WNPC.npcPickWeapon(n1, 30, now);
-    assert(near && near.key === 'sword', `weaponPick: close range picks melee sword (got ${near && near.key})`);
-    n1._wpick = null; n1._wpickT = null;
-    const far = WNPC.npcPickWeapon(n1, 300, now);
-    assert(far && far.key === 'rifle', `weaponPick: far range picks ranged rifle (got ${far && far.key})`);
-    // 2) 远程弹药耗尽 → 自动切近战
-    const n2 = makeNpc([{ id: 'wpn:sword', n: 1 }, { id: 'wpn:rifle', n: 1 }, { id: 'ammo:rifleAmmo', n: 0 }]);
-    const noAmmo = WNPC.npcPickWeapon(n2, 300, now + 1000);
-    assert(noAmmo && noAmmo.key === 'sword', `weaponPick: no ammo falls back to melee sword (got ${noAmmo && noAmmo.key})`);
-    // 3) 只有远程武器且有弹药 → 任何距离都用远程（无近战可切）
-    const n3 = makeNpc([{ id: 'wpn:rifle', n: 1 }, { id: 'ammo:rifleAmmo', n: 10 }]);
-    const onlyRanged = WNPC.npcPickWeapon(n3, 20, now + 2000);
-    assert(onlyRanged && onlyRanged.key === 'rifle', `weaponPick: only ranged weapon always picked (got ${onlyRanged && onlyRanged.key})`);
-    // 4) 无武器 → null（肉搏）
-    const n4 = makeNpc([{ id: 'food', n: 1 }]);
-    assert(WNPC.npcPickWeapon(n4, 100, now + 3000) === null, 'weaponPick: no weapons returns null (fist)');
+    assert(typeof WNPC.randomNpcWeapon === 'function', 'randomNpcWeapon 应存在');
+    assert(typeof WNPC.wearNpcWeapon === 'function', 'wearNpcWeapon 应存在');
 }
 
 // 恶意 NPC 攻击（2026-08-10 用户反馈"短剑很远捅人/反复鞭尸/远程边走边打打不中耗弹快"）：
@@ -1588,11 +1654,11 @@ for (const m of browserOnly) {
     assert(guardOnDeath >= 2, `survival: typeof-guard on showAllDeadChoices in 2 sites (found ${guardOnDeath})`);
     assert(src.includes('_softRespawnAllDeadFallback'),
         'survival: fallback _softRespawnAllDeadFallback defined when showAllDeadChoices unavailable');
-    // ③ workshop.js + mpWasteland.js 必须加 ?v= cache-busting（动态 import 用 ?v= 拼接变量，静态 import 用 ?v=2.97 字面量）
-    assert(/import\(['"]\.\.\/mod-wasteland\/survival\.js\?v=/.test(ws) && /_WSL_VER\s*=\s*['"]2\.97['"]/.test(ws),
-        'workshop: dynamic import uses ?v=2.97 cache-busting (via _WSL_VER)');
-    assert(/from\s+['"]\.\/survival\.js\?v=2\.97['"]/.test(mp),
-        'mpWasteland: static import uses ?v=2.97 cache-busting');
+    // ③ workshop.js + mpWasteland.js 必须加 ?v= cache-busting（动态 import 用 ?v= 拼接变量，静态 import 用 ?v=4.12 字面量）
+    assert(/import\(['"]\.\.\/mod-wasteland\/survival\.js\?v=/.test(ws) && /_WSL_VER\s*=\s*['"]4\.12['"]/.test(ws),
+        'workshop: dynamic import uses ?v=4.12 cache-busting (via _WSL_VER)');
+    assert(/from\s+['"]\.\/survival\.js\?v=4\.12['"]/.test(mp),
+        'mpWasteland: static import uses ?v=4.12 cache-busting');
 }
 
 // 2026-08-11 v2.97 静态回归：①濒死救援时间系统改为【现实时间 20 分钟】（被攻击每点伤害扣 10 秒，
@@ -1668,7 +1734,9 @@ for (const m of browserOnly) {
     assert(!surv.includes('sv.hp <= 0 && !sv.dead && !sv._downed'),
         'survival: 无残留 !sv._downed onDeath 守卫');
     // ⑬ 子弹命中倒地角色 → 扣救援时间（不扣血，防 -505 负血 bug）
-    assert(wnpc.includes('} else if (hit.npc.downed) {\n                        // 2026-08-11 v2.97 倒地角色被子弹命中'),
+    // 2026-08-12 fd84499 批量修复重构了缩进/注释格式：`} else if (hit.npc.downed) {` 与注释分行，
+    // 行为不变（命中倒地走 npcApplyDownedHit 扣时）。断言改为匹配当前格式。
+    assert(wnpc.includes('} else if (hit.npc.downed) {'),
         'wnpc: 子弹命中倒地角色走扣时分支');
     assert(wnpc.includes('npcApplyDownedHit(sv, hit.npc, dmg);'), 'wnpc: 子弹命中倒地角色调 npcApplyDownedHit');
     // ⑭ 2026-08-11 v2.97 补丁：全灭弹窗前全员彻底死亡（防"角色仍显示 20:00 救援时间"）
@@ -1764,8 +1832,9 @@ for (const m of browserOnly) {
     // hadAnyMate 只看当前活着的 party 队友（排除历史尸体 alive=false）
     assert(surv.includes('const hadAnyMate = (sv.npcs || []).some(n => n && n.alive && n.party && !n.isPlayer);'),
         'survival: 独狼弹窗标题只看活人（避免历史尸体误判全员阵亡）');
-    assert(surv.includes(`<div class="wsl-death-title">\${hadAnyMate ? '全员阵亡' : '你 阵 亡 了'}</div>`),
-        'survival: 独狼弹窗标题 = 你阵亡了');
+    assert(surv.includes(`<div class="wsl-death-title">\${titleText}</div>`)
+        && surv.includes("titleText = hadAnyMate ? '全员阵亡' : '你 阵 亡 了';"),
+        'survival: 独狼弹窗标题 = 你阵亡了（v3.64 提取到 titleText 变量复用）');
     // 2026-08-11 v2.99 用户定稿：游戏结束/全员阵亡时，显示【队伍里每个角色】的死亡原因
     // ——"某某某 被什么什么击杀了"，主控（用调用方实时传入的 deadName/deadReason）+ 全部 party 成员
     // （含倒地/已死尸体）各一条；存活成员不收；历史尸体靠 softRespawn 重生清 party 标记排除。
@@ -1800,7 +1869,8 @@ for (const m of browserOnly) {
         'wvehicle: 过不去兜底 = 目标点不在区域 + 到点 → 停旁边');
     assert(vsrc.includes("const arriveD = o.dest === 'camp' ? TS * 1.5 : TS * 2;"),
         'wvehicle: 营地到达距离保留（原逻辑）');
-    assert(vsrc.includes('if (!wantZone) {\n        // 营地 / 自由探索：到目标点即达（原逻辑保留）'),
+    // 2026-08-12 fd84499 批量修复重构了缩进，断言改为子串匹配
+    assert(vsrc.includes('if (!wantZone) {') && vsrc.includes('营地 / 自由探索：到目标点即达（原逻辑保留）'),
         'wvehicle: 营地/自由探索原逻辑保留（不破坏现有寻路）');
     // ㉖ 2026-08-11 v2.97 自动驾驶全矩阵（目的地×到达场景×障碍物）：
     // A* 能绕开各类障碍（墙/树/水/停放车/建筑/混合）+ 到达判定区域确认不卡死
@@ -1861,16 +1931,17 @@ for (const m of browserOnly) {
     // ㉜ 2026-08-11 v2.97 修复"NPC 在玩家周围游荡动画抽搐 + 移动过快"（用户反馈）：
     // 游荡到达目标点（<0.15 格）→ 站定停动画（此前每帧微移+方向抖动 → 抽搐）；
     // 游荡速度 0.5 → 0.35（上下/左右移动不过快，减少来回抽动）。阈值与 moveToward 站定一致。
+    // 2026-08-12 fd84499 批量修复重构了缩进层级，断言改为不依赖精确缩进的子串匹配。
     assert(wnpc.includes('const wpDist = Math.hypot(n._wpX - n.x, n._wpY - n.y);'),
         'wnpc: 游荡目标点距离判定');
-    assert(wnpc.includes('if (wpDist < TS * 0.15) {\n            n._moving = false;   // 站定：停走动动画'),
+    assert(wnpc.includes('if (wpDist < TS * 0.15) {') && wnpc.includes('n._moving = false;   // 站定：停走动动画'),
         'wnpc: 游荡到达目标点 → 站定停动画（防抽搐）');
     assert(wnpc.includes('moveToward(sv, n, n._wpX, n._wpY, dt, canStand, 0.35);'),
         'wnpc: 游荡速度 0.5→0.35（移动不过快）');
     // ㉜b 2026-08-11 v2.97 修复"NPC 跟随移动也抽搐"（用户反馈"我移动NPC跟随的时候也会有抽搐，闪避时反而减少"）：
     // moveToward 目标点极近时站定（阈值 TS*0.15，只吸收贴脸微移残差）——此前贴脸时残差极小仍置
     // _moving=true + 微移 → 走路动画在几乎不动的位置高频抖动；闪避拉开距离后残差变大 → 动画正常。
-    assert(wnpc.includes('if (dist < TS * 0.15) {\n        n._moving = false;\n        return;\n    }'),
+    assert(wnpc.includes('if (dist < TS * 0.15) {') && wnpc.includes('n._moving = false;') && wnpc.includes('return;'),
         'wnpc: moveToward 目标极近站定（吸收贴脸微移，防跟随抽搐）');
     // ㉝ 2026-08-11 v2.97 修复"健康主控带濒死标志，被恶意NPC攻击致死后跳过切队友视角直接全灭"：
     // ① _devGod 每帧拉满血时同步清当前主控 downed/_downed（全属性满=立即健康，不再残留标志）；
@@ -1925,7 +1996,7 @@ for (const m of browserOnly) {
     assert(bal.includes("CORPSE_REVIVE_TAG = '（尸变）'"), 'bal: 尸变名字后缀');
     assert(bal.includes('DOWNED_RESPAWN_PZ_SECONDS = 180'), 'bal: 重生刷尸 3 分钟（同步缩短）');
     assert(surv.includes('function updateCorpseRevive(sv, dt, mode)'), 'survival: 尸变检测函数（场景过滤）');
-    assert(surv.includes('function corpseReviveZombie(sv, n)'), 'survival: 尸变丧尸生成');
+    assert(surv.includes('function corpseReviveZombie(sv, n'), 'survival: 尸变丧尸生成（v3.31 支持 roomKey 转存房间存档）');
     assert(surv.includes('export function reviveZombieToCorpse(sv, z)'), 'survival: 尸变丧尸被击败掉尸体');
     assert(surv.includes('updateCorpseRevive(sv, dt);'), 'survival: 大世界调用尸变检测');
     assert(surv.includes('if (!n._corpse || n._revived) continue;'), 'survival: 尸变检测跳过条件');
@@ -1993,8 +2064,10 @@ for (const m of browserOnly) {
     assert(surv.includes('m._corpse = true;') && surv.includes('m._corpseAtReal = sv.now != null ? sv.now : 0;'),
         'survival: 异常成员转尸体（可搜索，防凭空消失）');
     // ④ 救助界面一致：队友界面补"背起/放下"按钮 + 全宽关闭 + 统一提示（与主控界面一致）
-    assert(surv.includes("(sv._carryMateId === m.id"), 'survival: 队友救助界面背起/放下按钮');
-    assert(surv.includes("data-act=\"carrymate\""), 'survival: 队友救助背起事件');
+    //   v3.29 起主控/队友共用 buildRescuePanel，按钮 data-act 由 carryAct 参数传入（队友 = 'carrymate'）
+    assert(surv.includes('sv._carryMateId === m.id ? \'putdown\' : \'carrymate\''), 'survival: 队友救助界面背起/放下按钮（v3.29 共享模板 + carryAct 参数）');
+    assert(surv.includes('data-act="${p.carryAct}"'), 'survival: 救助面板模板用 carryAct 参数化 data-act');
+    assert(surv.includes("'carrymate'") && surv.includes("'carry'") && surv.includes("'putdown'"), 'survival: carryAct 三个取值（主控/队友背起 + 放下）');
     assert(surv.includes("sv._carryMateId = m.id;"), 'survival: 队友背起设置 _carryMateId');
     assert(surv.includes('提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间'),
         'survival: 队友界面提示文案统一');

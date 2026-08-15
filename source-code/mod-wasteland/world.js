@@ -501,8 +501,17 @@ export function genChunkTiles(seed, cx, cy) {
                 }
             }
             if (component.some(([x, y]) => tiles[y * CHUNK + x] === T.DOOR)) continue;
+            // 2026-08-12 v3.60 门禁止生成在角落格（建筑包围盒四角）的任意一条边上：
+            // 角落格当门会与转角墙体冲突、视觉突兀，统一排除。
+            let cMinX = CHUNK, cMaxX = -1, cMinY = CHUNK, cMaxY = -1;
+            for (const [x, y] of component) {
+                cMinX = Math.min(cMinX, x); cMaxX = Math.max(cMaxX, x);
+                cMinY = Math.min(cMinY, y); cMaxY = Math.max(cMaxY, y);
+            }
             const candidates = [];
             for (const [x, y] of component) {
+                if (x === cMinX && (y === cMinY || y === cMaxY)) continue;
+                if (x === cMaxX && (y === cMinY || y === cMaxY)) continue;
                 for (const [dx, dy] of [[0, 1], [-1, 0], [1, 0], [0, -1]]) {
                     const score = outsideScore(x + dx, y + dy);
                     if (score > 0) candidates.push({ x, y, score, tie: H(0xD007, cx * CHUNK + x, cy * CHUNK + y) });
@@ -741,7 +750,9 @@ export function genChunkTiles(seed, cx, cy) {
 
             const streetCandidates = [], fallbackCandidates = [];
             let hasDoor = false, hasStreetDoor = false;
+            // v3.60 门禁止生成在角落格（包围盒四角），与第一次补门一致
             for (const [x, y] of component) {
+                const cornerCell = (x === minX && (y === minY || y === maxY)) || (x === maxX && (y === minY || y === maxY));
                 if (tiles[y * CHUNK + x] === T.DOOR) hasDoor = true;
                 for (const [dx, dy] of [[0, 1], [-1, 0], [1, 0], [0, -1]]) {
                     const ox = x + dx, oy = y + dy;
@@ -750,6 +761,7 @@ export function genChunkTiles(seed, cx, cy) {
                     const street = outside === T.ROAD || outside === T.SIDEWALK || outside === T.CAR || outside === T.BARRICADE;
                     if (tiles[y * CHUNK + x] === T.DOOR && street) hasStreetDoor = true;
                     const score = outside === T.ROAD ? 5 : (outside === T.SIDEWALK ? 4 : ((outside === T.CAR || outside === T.BARRICADE) ? 2 : 1));
+                    if (cornerCell) continue;   // 角落格不作为门候选
                     const candidate = { x, y, score, tie: H(0xD117, gx0 + x, gy0 + y) };
                     fallbackCandidates.push(candidate);
                     if (street) streetCandidates.push(candidate);
@@ -767,6 +779,8 @@ export function genChunkTiles(seed, cx, cy) {
             for (const [x, y] of component) for (const [dx, dy] of [[0, 1], [-1, 0], [1, 0], [0, -1]]) {
                 const ox = x + dx, oy = y + dy;
                 if (ox < 0 || ox >= CHUNK || oy < 0 || oy >= CHUNK || finalIsBuilding(ox, oy)) continue;
+                // v3.60 角落格不作为门候选
+                if ((x === minX && (y === minY || y === maxY)) || (x === maxX && (y === minY || y === maxY))) continue;
                 const outside = tiles[oy * CHUNK + ox];
                 const score = outside === T.ROAD ? 4 : (outside === T.SIDEWALK ? 3 : 1);
                 candidates.push({ x, y, score, tie: H(0xD117, gx0 + x, gy0 + y) });
@@ -883,9 +897,16 @@ export function genChunkTiles(seed, cx, cy) {
         }
         if (cells.length < 4) continue;
         if (cells.some(([x, y]) => tiles[y * CHUNK + x] === T.DOOR)) continue;
+        // v3.60 门禁止生成在角落格（包围盒四角）
+        let rMinX = CHUNK, rMaxX = -1, rMinY = CHUNK, rMaxY = -1;
+        for (const [x, y] of cells) {
+            rMinX = Math.min(rMinX, x); rMaxX = Math.max(rMaxX, x);
+            rMinY = Math.min(rMinY, y); rMaxY = Math.max(rMaxY, y);
+        }
         const choices = [];
         for (const [x, y] of cells) {
             if (tiles[y * CHUNK + x] !== T.WALL) continue;
+            if ((x === rMinX && (y === rMinY || y === rMaxY)) || (x === rMaxX && (y === rMinY || y === rMaxY))) continue;
             for (const [dx, dy] of [[0, 1], [-1, 0], [1, 0], [0, -1]]) {
                 const ox = x + dx, oy = y + dy;
                 if (ox < 0 || ox >= CHUNK || oy < 0 || oy >= CHUNK || fragmentBuilding(ox, oy)) continue;

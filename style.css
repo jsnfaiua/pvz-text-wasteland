@@ -2283,6 +2283,8 @@ body {
 .wsl-bag-tip { color: #778888; font-size: 11px; letter-spacing: 0; }
 
 .wsl-bag-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+/* v3.68 无限背包：超过 24 格时启用垂直滚动（隐藏滚动条样式）+ 固定最大高度 */
+.wsl-bag-grid.wsl-bag-infinite { max-height: 360px; overflow-y: auto; padding-right: 4px; }
 
 .wsl-cell {
 
@@ -2762,7 +2764,8 @@ body {
     position: fixed;
     inset: 0;
     z-index: 1200;
-    background: radial-gradient(ellipse at center, rgba(10,16,24,0.88) 0%, rgba(4,7,11,0.96) 100%);
+    /* v3.75 弹窗外层遮罩改透明：让 bg-fx 末世废土粒子透出（之前径向渐变盖住粒子） */
+    background: transparent;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2805,6 +2808,45 @@ body {
     font-size: 12px;
     margin-bottom: 16px;
     letter-spacing: 1px;
+}
+/* 2026-08-13 合并命名+捏脸：角色名输入行（绿系描边与面板一致，输入框深色底） */
+.wsl-look-namerow {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 14px;
+    padding: 0 2px;
+}
+.wsl-look-nameinp {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #0e141b;
+    border: 1px solid #2a3a33;
+    border-radius: 6px;
+    padding: 0 12px;
+}
+.wsl-look-namelab {
+    color: #9fb3ab;
+    font-size: 13px;
+    letter-spacing: 1px;
+    flex: none;
+}
+.wsl-look-nameinp input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #dce6e2;
+    font-size: 15px;
+    padding: 9px 0;
+    font-family: inherit;
+}
+.wsl-look-namernd {
+    flex: none;
+    padding: 8px 14px;
 }
 .wsl-look-body {
     display: flex;
@@ -2887,6 +2929,14 @@ body {
     max-height: 320px;
     padding-right: 2px;
 }
+/* 2026-08-13 滚动条：平时隐藏，hover/active 时显形并与背景色相近（不突兀） */
+.wsl-look-rows { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.wsl-look-rows::-webkit-scrollbar { width: 6px; }
+.wsl-look-rows::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+.wsl-look-rows:hover::-webkit-scrollbar-thumb { background: rgba(120,140,155,0.28); }
+.wsl-look-rows:active::-webkit-scrollbar-thumb { background: rgba(140,165,180,0.45); }
+.wsl-look-rows::-webkit-scrollbar-track { background: transparent; }
+.wsl-look-rows:hover { scrollbar-color: rgba(120,140,155,0.28) transparent; }
 .wsl-look-row {
     display: flex;
     align-items: center;
@@ -2902,10 +2952,17 @@ body {
 }
 .wsl-look-swatches,
 .wsl-look-hairs {
-    display: flex;
+    /* v3.62 色块排整齐：grid 固定每行 6 个，不再 flex 参差换行 */
+    display: grid;
+    grid-template-columns: repeat(6, 26px);
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap;
+}
+@media (max-width: 720px) {
+    .wsl-look-swatches,
+    .wsl-look-hairs {
+        grid-template-columns: repeat(4, 26px);
+    }
 }
 .wsl-look-swatch {
     width: 26px;
@@ -3009,6 +3066,24 @@ body {
 }
 .wsl-look-btn:active {
     transform: translateY(0);
+}
+/* 2026-08-13 顶部"返回"按钮：右上角紧凑布局，弱化视觉（与背景色调相近），
+   hover 时再亮起，避免一上来就抢眼 */
+.wsl-look-btn.wsl-look-close {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    padding: 5px 12px;
+    font-size: 12px;
+    letter-spacing: 1px;
+    border-color: #2a3540;
+    background: rgba(35, 46, 56, 0.45);
+    color: #7a8a96;
+}
+.wsl-look-btn.wsl-look-close:hover {
+    border-color: #5a7a8c;
+    color: #eaf6fb;
+    background: linear-gradient(180deg, #232e38, #182129);
 }
 .wsl-look-btn.wsl-look-ok {
     border-color: #39d98a;

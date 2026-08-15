@@ -28,7 +28,6 @@
 //   _savedMag                 null                        startRun 恢复弹匣
 //   interior/interiors        sv.mods.interiors 缺省 {}   室内楼层进度
 //   boxSearched / guarded     {}                          容器已搜/守卫标记
-//   mods.explored             {}                          E1 世界地图探索记录（区块级 'cx,cy':1）
 //   zombies[].isPlayerZombie  false                       尸化玩家精英（hardcore 死亡后留世）
 //   zombies[].playerName/skin null/null                   尸化僵尸名字/肤色
 //   zombies[].inv/hotbar/wpnKey null                      尸化僵尸继承的装备背包
@@ -84,12 +83,6 @@ export function serializeSV(sv, deps) {
             isPlayerZombie: !!z.isPlayerZombie,
             playerName: z.playerName || null, skin: z.skin || null,
             inv: z.inv || null, hotbar: z.hotbar || null, wpnKey: z.wpnKey || null,
-            // 2026-08-11 v2.98 尸变丧尸标记（读档保持：被击败时掉"尸变尸体"，物品守恒）
-            _reviveFromCorpse: !!z._reviveFromCorpse,
-            _reviveCorpseName: z._reviveCorpseName || null,
-            // v2.99 尸变僵尸 home 坐标（读档保持：僵尸 wander 范围受 home 限制，留在死亡地点）
-            _deathHomeX: z._deathHomeX != null ? z._deathHomeX : null,
-            _deathHomeY: z._deathHomeY != null ? z._deathHomeY : null,
         })),
     };
 }
@@ -116,7 +109,7 @@ export function createRunDefaults(opts, deps) {
         saveT: B.SAVE_INTERVAL, now: 0, last: 0, raf: 0, playT: 0,
         prompt: null, promptTarget: null, ctx: null,
         mouse: { x: 0, y: 0, inside: false }, mouseDown: false,
-        world: null, mods: { tiles: {}, chests: {}, boxLoot: {}, explored: {} },
+        world: null, mods: { tiles: {}, chests: {}, boxLoot: {}, explored: {} },   // v3.86 explored 默认空（smoke-test 断言 + 世界地图探索记录默认值）
         homeBed: null, wpn: null, curSlot: 'ranged', stamina: 100, maxStamina: 100,
         _downed: null,   // 软核倒地救治状态（默认无）
         build: false, buildSel: 0, buildOk: false, woodCount: 0,
@@ -165,7 +158,6 @@ export function applySnapshot(run, saved, deps) {
         run.mods = saved.mods && saved.mods.tiles ? saved.mods : { tiles: {}, chests: {}, boxLoot: {} };
         if (!run.mods.chests) run.mods.chests = {};
         if (!run.mods.boxLoot) run.mods.boxLoot = {};
-        if (!run.mods.explored) run.mods.explored = {};   // E1 世界地图探索记录（旧档缺省空）
         run.hp = Math.max(1, Math.min(B.MAX_HP, saved.hp || B.MAX_HP));
         run.food = typeof saved.food === 'number' ? Math.max(0, Math.min(B.HUNGER_MAX, saved.food)) : B.HUNGER_MAX;
         run.water = typeof saved.water === 'number' ? Math.max(0, Math.min(B.WATER_MAX, saved.water)) : B.WATER_MAX;
@@ -197,16 +189,12 @@ export function applySnapshot(run, saved, deps) {
         run._savedMag = saved.wpnMag || null;
         run.curSlot = saved.curSlot || 'ranged';
         run._deathCount = typeof saved._deathCount === 'number' ? Math.max(0, Math.floor(saved._deathCount)) : 0;
-        // 软核倒地救治状态（旧档无则 null；2026-08-11 v2.97 加现实时间救援倒计时字段）
+        // 软核倒地救治状态（旧档无则 null）
         run._downed = (saved._downed && typeof saved._downed === 'object') ? {
             name: saved._downed.name || null,
             px: saved._downed.px || 0, py: saved._downed.py || 0,
             dayDead: saved._downed.dayDead || 0,
             med: saved._downed.med || 0, herb: saved._downed.herb || 0,
-            downedAtReal: saved._downed.downedAtReal != null ? saved._downed.downedAtReal : (run.now != null ? run.now : 0),
-            _penaltySec: saved._downed._penaltySec || 0,
-            // 2026-08-12 v2.101 每人独立濒死次数：本次救援限时随档保持（旧档无 limitSec → 默认 DOWNED_LIMIT_SECONDS）
-            limitSec: saved._downed.limitSec != null ? saved._downed.limitSec : null,
         } : null;
         if (Array.isArray(saved.hotbar)) {
             run.hotbar = saved.hotbar.slice(0, HOTBAR_SIZE);
@@ -330,25 +318,18 @@ export function serializeWorld(sv, deps) {
             isPlayerZombie: !!z.isPlayerZombie,
             playerName: z.playerName || null, skin: z.skin || null,
             inv: z.inv || null, hotbar: z.hotbar || null, wpnKey: z.wpnKey || null,
-            // 2026-08-11 v2.98 尸变丧尸标记（读档保持：被击败时掉"尸变尸体"，物品守恒）
-            _reviveFromCorpse: !!z._reviveFromCorpse,
-            _reviveCorpseName: z._reviveCorpseName || null,
-            // v2.99 尸变僵尸 home 坐标（读档保持：僵尸 wander 范围受 home 限制，留在死亡地点）
-            _deathHomeX: z._deathHomeX != null ? z._deathHomeX : null,
-            _deathHomeY: z._deathHomeY != null ? z._deathHomeY : null,
         })),
         npcs: deps.WNPC.serializeNpcs(sv),
         px: sv.px, py: sv.py, faceX: sv.faceX, faceY: sv.faceY,
-        // 死亡位置指引（软核正常模式死亡点；重进世界恢复。遗物以主角尸体形式存在，随 npcs 落盘）
+        // 遗物包裹（正常模式死亡后原地包裹：位置 + 内容；重进世界恢复，拾取后清除）
         legacyDrop: sv._legacyDrop ? {
             x: sv._legacyDrop.x, y: sv._legacyDrop.y,
-        } : null,
-        // 2026-08-10 上次死亡位置（持久，不随指引清除——开发者传送死亡点兜底用）
-        lastDeathPos: sv._lastDeathPos ? {
-            x: sv._lastDeathPos.x, y: sv._lastDeathPos.y,
+            contents: (sv.drops.find(d => d.id === 'loot:legacy') || {}).contents || null,
         } : null,
         // 软核倒地救治状态（跟世界：倒地位置/限时/已提交药品，重进世界恢复）
         downed: sv._downed || null,
+        // 上次死亡位置（开发者传送死亡点兜底；不随指引清除，持久随档）
+        lastDeathPos: sv._lastDeathPos ? { x: sv._lastDeathPos.x, y: sv._lastDeathPos.y } : null,
     };
 }
 
@@ -364,9 +345,10 @@ export function applyWorld(run, data, deps) {
     try {
         run.world = { seed: data.seed, chunks: new Map() };
         run.mods = data.mods && data.mods.tiles ? data.mods : { tiles: {}, chests: {}, boxLoot: {} };
+        // 旧档兼容：回填 explored（v4.11+ 新增字段）
+        if (!run.mods.explored) run.mods.explored = {};
         if (!run.mods.chests) run.mods.chests = {};
         if (!run.mods.boxLoot) run.mods.boxLoot = {};
-        if (!run.mods.explored) run.mods.explored = {};   // E1 世界地图探索记录（旧档缺省空）
         if (typeof data.t === 'number') run.t = data.t;
         run.day = data.day || 1;
         if (typeof data.playT === 'number') run.playT = data.playT;
@@ -401,47 +383,25 @@ export function applyWorld(run, data, deps) {
         if (typeof data.faceX === 'number') run.faceX = data.faceX;
         if (typeof data.faceY === 'number') run.faceY = data.faceY;
         if (data.legacyDrop && typeof data.legacyDrop.x === 'number') {
-            // 2026-08-10 死亡地点指引统一 {x,y}（遗物以主角尸体形式存在，尸体随 npcs 落盘恢复）。
             run._legacyDrop = { x: data.legacyDrop.x, y: data.legacyDrop.y };
-            // 2026-08-10 上次死亡位置：优先读独立字段 lastDeathPos，旧档无则用 legacyDrop 位置兜底
-            if (data.lastDeathPos && typeof data.lastDeathPos.x === 'number') {
-                run._lastDeathPos = { x: data.lastDeathPos.x, y: data.lastDeathPos.y };
-            } else {
-                run._lastDeathPos = { x: data.legacyDrop.x, y: data.legacyDrop.y };
-            }
-            // 旧档兼容：旧版遗物是 loot:legacy 掉落袋（contents），且旧档无尸体记录——
-            // 此时兜底生成主角尸体（复用死亡点尸体机制，F 搜索拿回遗物），保证老档遗物可找回。
-            const hasContents = !!(Array.isArray(data.legacyDrop.contents) && data.legacyDrop.contents.length);
-            const ts = deps.TS || 36;   // 格宽像素（smoke-test 无 TS 注入时兜底 36）
-            const corpseExists = (run.npcs || []).some(n => n._corpse &&
-                Math.abs(n.x - data.legacyDrop.x) < ts && Math.abs(n.y - data.legacyDrop.y) < ts);
-            if (hasContents && !corpseExists) {
-                const corpseSeq = (run._corpseSeq = (run._corpseSeq || 0) + 1);
-                run.npcs.push({
-                    id: 'corpse:' + corpseSeq, name: run.characterName || '幸存者',
-                    role: 'friendly', look: run.character || null,
-                    x: data.legacyDrop.x, y: data.legacyDrop.y, hp: 0, maxHp: 100,
-                    alive: false, _corpse: true, _corpseContents: data.legacyDrop.contents, _corpseSearched: false,
-                    // 2026-08-11 v2.98 旧档遗留尸体：_corpseAtReal 缺失 → 读档后尸变检测兜底为当前时刻 → 立即尸变。
-                    // 旧档无时刻，给一个"很久以前"的时间戳让它进入正常倒计时（此时实际已超时 → 读档后尸变，合理）
-                    _corpseAtReal: 0,
-                    inInterior: false, interiorKey: null, interiorFloor: null,
-                    atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
-                });
+            // 恢复遗物包裹（drops 不随世界档保存，这里重建）
+            if (Array.isArray(data.legacyDrop.contents) && data.legacyDrop.contents.length) {
+                run.drops.push({ x: data.legacyDrop.x, y: data.legacyDrop.y, id: 'loot:legacy', n: 1, contents: data.legacyDrop.contents });
             }
         }
+        // 上次死亡位置恢复（旧档兼容：无 lastDeathPos 时用 legacyDrop 位置兜底）
+        if (data.lastDeathPos && typeof data.lastDeathPos.x === 'number') {
+            run._lastDeathPos = { x: data.lastDeathPos.x, y: data.lastDeathPos.y };
+        } else if (data.legacyDrop && typeof data.legacyDrop.x === 'number') {
+            run._lastDeathPos = { x: data.legacyDrop.x, y: data.legacyDrop.y };
+        }
         // 软核倒地救治状态恢复（旧档无则 null）
-        // 2026-08-12 修复#16：补全 downedAtReal/_penaltySec/limitSec，与 buildRun（201-210）字段集一致，
-        // 否则世界档路径读档后救援限时/时间戳被重置（与角色档路径、联机快照行为不一致）。
         if (data.downed && typeof data.downed === 'object') {
             run._downed = {
                 name: data.downed.name || null,
                 px: data.downed.px || 0, py: data.downed.py || 0,
                 dayDead: data.downed.dayDead || 0,
                 med: data.downed.med || 0, herb: data.downed.herb || 0,
-                downedAtReal: data.downed.downedAtReal != null ? data.downed.downedAtReal : (run.now != null ? run.now : 0),
-                _penaltySec: data.downed._penaltySec || 0,
-                limitSec: data.downed.limitSec != null ? data.downed.limitSec : null,
             };
         }
         out.loaded = true;

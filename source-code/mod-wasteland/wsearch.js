@@ -511,8 +511,26 @@ function onPointerUp(e) {
         handleClick(sv, drag);
     } else {
         const el = document.elementFromPoint(e.clientX, e.clientY);
-        const over = el && el.closest('[data-drag-drop]');
-        if (over) handleDrop(sv, drag, parseTag(over.dataset.dragDrop));
+        // v3.99 丢弃判定：①拖到丢弃区（[data-drag-drop=discard]）；或
+        // ②拖到弹窗外的区域（不在搜索·垃圾桶弹窗内）= 同样视为丢弃。
+        // 排除拖到搜索格/背包格/快捷栏上（那些是"交换/移动"操作，不走丢弃）。
+        const inSearchUI = el && el.closest('#wsl-search');
+        const inCell = el && el.closest('.wsl-cell,.wsl-hot-cell');
+        if (!inSearchUI) {
+            // 拖到弹窗外 = 直接丢弃
+            handleDrop(sv, drag, { kind: 'discard' });
+        } else if (!inCell) {
+            const over = el && el.closest('[data-drag-drop]');
+            if (over && parseTag(over.dataset.dragDrop).kind === 'discard') {
+                handleDrop(sv, drag, { kind: 'discard' });
+            } else if (over) {
+                handleDrop(sv, drag, parseTag(over.dataset.dragDrop));
+            }
+        } else {
+            // 拖到格子上 = 交换/移动，按原逻辑
+            const over = el && el.closest('[data-drag-drop]');
+            if (over) handleDrop(sv, drag, parseTag(over.dataset.dragDrop));
+        }
     }
     clearDrag();
     if (sv) rerender(sv);

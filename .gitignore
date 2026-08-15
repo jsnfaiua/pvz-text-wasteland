@@ -46,5 +46,6 @@ package-lock.json
 .idea/
 *.local
 
-# ---- WorkBuddy 工作区记忆（不入库，属本地 agent 上下文） ----
+# ---- WorkBuddy / CodeBuddy 工作区记忆（不入库，属本地 agent 上下文） ----
 .workbuddy/
+.codebuddy/

@@ -13,17 +13,19 @@ import { saveData } from '../core/state.js';
 import { getStorage, setStorage } from '../persistence/storage.js';
 import { TS } from './wconst.js';
 import { T, CHUNK, getTile, isWalk, setTile } from './world.js';
-import { spawnZombie } from './wzombie.js';
+import { spawnZombie, spawnCorruptedZombie } from './wzombie.js';   // 2026-08-12 v3.9 错乱僵尸测试
 import * as Panel from './panel.js';
 import * as MSG from './wmsg.js';
 import * as B from './wbalance.js';
 import { startHordePrep } from './whorde.js';
+import { startEvent } from './survival.js';   // v3.72 导入：手动触发空投/停电事件
 import * as WNPC from './wnpc.js';
 import * as HUD from './whud.js';
 import * as WD from './windoor.js';
 import { showLookCreator, normalizeLook } from './wlook.js';
 import * as WMAP from './wmap.js';
 import * as WGRADE from './wgrade.js';   // 2026-08-11 v2.98 品级系统：开发者测试入口
+import * as WW from './wwordcraft-rules.js';   // 2026-08-12 v3.8 配方：开发者可刷全部配方
 import AudioSystem from '../systems/audio.js';
 
 const SAVE_KEY = 'wasteland_save';
@@ -105,13 +107,22 @@ const CATEGORIES = [
             { id: 'tool:pick', name: '石镐', char: '镐', n: 1 },
             { id: 'tool:hoe', name: '锄头', char: '锄', n: 1 },
             { id: 'tool:wrench', name: '扳手', char: '扳', n: 1 },
+            // 2026-08-12 v3.10 文字手术刀（拆字工具，测试拆字台）
+            { id: 'tool:surgery', name: '文字手术刀', char: '刀', n: 1 },
             { id: 'flag', name: '领地旗帜', char: '旗', n: 1 },
         ],
     },
     {
         name: '材料', color: '#8FBC8F',
         items: [
-            { id: 'food', name: '食物', char: '食', n: 5 },
+            // 2026-08-12 v3.7 食物类：具体食物与泛称应急干粮（食物只加饱食，不回血）
+            { id: 'food', name: '应急干粮', char: '食', n: 5 },
+            { id: 'carrot', name: '胡萝卜', char: '卜', n: 5 },
+            { id: 'corn', name: '玉米', char: '玉', n: 5 },
+            { id: 'potato', name: '土豆', char: '土', n: 5 },
+            { id: 'bread', name: '面包', char: '包', n: 5 },
+            { id: 'apple', name: '苹果', char: '苹', n: 5 },
+            { id: 'melon', name: '西瓜', char: '瓜', n: 5 },
             { id: 'water', name: '水', char: '水', n: 5 },
             { id: 'wood', name: '木材', char: '木', n: 10 },
             { id: 'stone', name: '石块', char: '石', n: 10 },
@@ -126,13 +137,17 @@ const CATEGORIES = [
     {
         name: '药品', color: '#FFB08A',
         items: [
+            // 2026-08-12 v3.7 回血药（heal:* 只回血）+ 疾病药（med:* 治病）
+            { id: 'herb', name: '草药', char: '草', n: 3 },
+            { id: 'heal:bandage', name: '绷带', char: '绷', n: 3 },
+            { id: 'heal:tonic', name: '强心针', char: '针', n: 3 },
+            { id: 'heal:kit', name: '急救包', char: '急', n: 3 },
             { id: 'med:cold', name: '感冒药', char: '药', n: 1 },
             { id: 'med:wound', name: '消炎药', char: '消', n: 1 },
             { id: 'med:poison', name: '解毒剂', char: '解', n: 1 },
             { id: 'med:dysentery', name: '止泻药', char: '止', n: 1 },
             { id: 'med:heat', name: '藿香正气水', char: '藿', n: 1 },
             { id: 'med:pan', name: '抗生素', char: '抗', n: 1 },
-            { id: 'herb', name: '草药', char: '草', n: 3 },
         ],
     },
     {
@@ -155,6 +170,11 @@ const CATEGORIES = [
         ],
     },
     {
+        // 2026-08-12 v3.8 配方：搜索/僵尸掉落获得，背包右键使用解锁到拼字台
+        name: '配方', color: '#C88AFF',
+        items: WW.RECIPES.map(r => ({ id: 'recipe:' + r.id, name: '配方·' + r.name, char: '配', n: 1 })),
+    },
+    {
         name: '僵尸（附近刷出）', color: '#B0B0B0',
         items: [
             { id: 'zombie:normal', name: '普通', char: '僵', n: 1 },
@@ -163,6 +183,38 @@ const CATEGORIES = [
             { id: 'zombie:pole', name: '撑杆', char: '杆', n: 1 },
             { id: 'zombie:flag', name: '旗帜', char: '旗', n: 1 },
             { id: 'zombie:door', name: '铁门', char: '门', n: 1 },
+            // 2026-08-12 v3.9 错乱僵尸（随机拼错词，测试特殊字属性）
+            { id: 'zombie:corrupt', name: '错乱尸(随机)', char: '错', n: 1 },
+        ],
+    },
+    {
+        // 2026-08-12 v3.17 未实装模子：骨架已立、无攻击/特效/数值；刷出后背包带"未"角标，左键点击仅提示"尚未实装"
+        name: '未实装模子', color: '#FF8844',
+        items: [
+            { id: 'proto:flamethrower', name: '火焰枪', char: '焰', n: 1 },
+            { id: 'proto:frostbow', name: '冰霜弓', char: '霜', n: 1 },
+            { id: 'proto:lightningGun', name: '雷击枪', char: '雷', n: 1 },
+            { id: 'proto:poisonSprayer', name: '毒雾喷射器', char: '毒', n: 1 },
+            { id: 'proto:meteorFlail', name: '流星锤', char: '锤', n: 1 },
+            { id: 'proto:javelin', name: '标枪', char: '标', n: 1 },
+            { id: 'proto:crossbow', name: '十字弩', char: '弩', n: 1 },
+            { id: 'proto:chainsaw', name: '电锯', char: '锯', n: 1 },
+            { id: 'proto:saw', name: '锯子', char: '锯', n: 1 },
+            { id: 'proto:hammer', name: '锤子', char: '锤', n: 1 },
+            { id: 'proto:fishingRod', name: '鱼竿', char: '竿', n: 1 },
+            { id: 'proto:pliers', name: '钳子', char: '钳', n: 1 },
+            { id: 'proto:torch', name: '火把', char: '火', n: 1 },
+            { id: 'proto:iron', name: '铁矿石', char: '矿', n: 1 },
+            { id: 'proto:clay', name: '黏土', char: '泥', n: 1 },
+            { id: 'proto:gunpowder', name: '火药', char: '爆', n: 1 },
+            { id: 'proto:battery', name: '电池', char: '电', n: 1 },
+            { id: 'proto:fabric', name: '布料', char: '布', n: 1 },
+            { id: 'proto:jerky', name: '肉干', char: '肉', n: 1 },
+            { id: 'proto:mushroom', name: '蘑菇', char: '菇', n: 1 },
+            { id: 'proto:honey', name: '蜂蜜', char: '蜜', n: 1 },
+            { id: 'proto:painkiller', name: '止痛药', char: '止', n: 1 },
+            { id: 'proto:stimulant', name: '兴奋剂', char: '奋', n: 1 },
+            { id: 'proto:antiserum', name: '解毒血清', char: '血', n: 1 },
         ],
     },
 ];
@@ -174,8 +226,8 @@ export function isDev() { return !!saveData.devMode; }
 export function init(sv) {
     curSv = sv;
     if (!isDev()) return;
-    // 开发者模式默认开启资源无限
-    if (sv._devInf == null) sv._devInf = true;
+    // v3.63 资源无限默认关闭（用户要求：默认关，按需开启）
+    if (sv._devInf == null) sv._devInf = false;
     if (sv._devDmgMul == null) sv._devDmgMul = 1;
     // 恢复上次的调试 HUD 开关（本地 profile，不进联机同步）
     const p = getStorage(PROFILE_KEY, null);
@@ -300,15 +352,11 @@ function buildHtml() {
             <button data-q="t1h">快进1小时</button>
             <button data-q="tnight">到夜晚20点</button>
             <button data-q="tday">到白天6点</button>
+            <!-- v3.70 恢复"生成空投"按钮（之前 v3.65 加的；v3.68 被误删）。开启 _devGod 后 loop 屏蔽空投触发（v3.68 保留），故 _devGod 状态 = 测试/快速体验；非 _devGod 状态 = 正常触发空投事件 -->
+            <button data-q="airdrop">✈ 生成空投</button>
         </div>
-        <div class="wsl-dev-dmg">
-            <span class="wsl-dev-dmg-label">画质（纯本地显示，不参与联机同步）</span>
-            <div class="wsl-dev-dmg-presets" id="wdev-gfx">
-                <button data-gfx="2">高</button>
-                <button data-gfx="1">中</button>
-                <button data-gfx="0">低</button>
-            </div>
-        </div>
+        <!-- v3.68 用户要求：去掉时间加速自定义输入框 + 应用按钮 + 画质调整 -->
+        <!-- v3.68 用户要求：去掉危险操作分区（reset archive 功能）-->
         <div class="wsl-dev-quick">
             <select id="wdev-wx-sel" class="wsl-dev-select" title="天气与强度（含雷阵雨闪电）"></select>
             <button data-q="wxset" id="wdev-wxset">设置天气</button>
@@ -367,10 +415,6 @@ function buildHtml() {
         <div class="wsl-dev-quick">
             <button data-q="summonmate" title="召唤 NPC 队友瞬移到身边（调试用）">召唤队友</button>
             <button data-sick="setcamp" title="营地设为当前位置（命令队员返回营地测试）">设营地(脚下)</button>
-        </div>
-        <div class="wsl-dev-sub">▸ 危险操作</div>
-        <div class="wsl-dev-quick">
-            <button data-q="wipe" class="wsl-dev-danger">清空存档</button>
         </div>`;
 
     return `
@@ -416,11 +460,9 @@ function syncState() {
     devEl.querySelector('#wdev-hud').classList.toggle('on', !!sv._devHud);
     devEl.querySelector('#wdev-spd10').classList.toggle('on', sv._devTimeScale === 10);
     devEl.querySelector('#wdev-spd60').classList.toggle('on', sv._devTimeScale === 60);
+    // v3.68 移除自定义数字输入框（spd-custom）+ 天气独立倍率（已 v3.67 移除）+ 画质同步（wdev-gfx）
     devEl.querySelectorAll('.wsl-dev-dmg-presets [data-mul]').forEach(b => {
         b.classList.toggle('on', Number(b.dataset.mul) === (sv._devDmgMul || 1));
-    });
-    devEl.querySelectorAll('#wdev-gfx button').forEach(b => {
-        b.classList.toggle('on', Number(b.dataset.gfx) === (sv._devGfx == null ? 2 : sv._devGfx));
     });
 }
 
@@ -472,6 +514,17 @@ function spawnZombieNear(sv, type) {
         const x = sv.px + Math.cos(ang) * d, y = sv.py + Math.sin(ang) * d;
         const gx = Math.floor(x / TS), gy = Math.floor(y / TS);
         if (isWalk(getTile(sv, gx, gy))) {
+            // 2026-08-12 v3.9 开发者测试错乱僵尸：随机拼一个错词生成错乱尸
+            if (type === 'corrupt') {
+                const pool = Object.keys(B.TEXT_GLYPH_EFFECTS);
+                const n = 1 + Math.floor(Math.random() * 3);
+                const chars = [];
+                for (let i = 0; i < n; i++) chars.push(pool[Math.floor(Math.random() * pool.length)]);
+                const stats = WW.computeCorruptStats(chars);
+                spawnCorruptedZombie(sv, x, y, stats);
+                MSG.pushMsg(sv, `[DEV] 已生成错乱尸「${stats.name}」(${stats.chars})`, '#FFCC66');
+                return;
+            }
             spawnZombie(sv, type, x, y);
             MSG.pushMsg(sv, `[DEV] 已在附近刷出 ${B.Z_CHAR[type] || type} 僵尸`, '#FFCC66');
             return;
@@ -578,14 +631,11 @@ function bindEvents() {
             if (!sv || !sv.active) return;
             const t = btn.dataset.t;
             if (t === 'god') {
-                // 2026-08-09 用户要求：无敌 = 所有属性全满（生命/体力/饱食/水分无限，不受伤）
-                // 开启时联动无限体力（一个键全满）；关闭时保留独立"无限体力"开关状态
+                // v3.63 用户要求：属性全满开启**不再**联动"无限体力"——无限体力需单独点击其 UI 按钮。
+                // 仅开启"无敌 + 一次回满"（生命/饱食/水分全满、不受伤），保留 sv._devInfStamina 独立状态。
                 sv._devGod = !sv._devGod;
-                if (sv._devGod) {
-                    sv._devInfStamina = true;
-                    setAllStatsFull(sv);
-                }
-                MSG.pushMsg(sv, sv._devGod ? '[DEV] 属性全满开启（生命/体力/饱食/水分无限 + 不受伤）' : '[DEV] 属性全满关闭', '#FFB347');
+                if (sv._devGod) setAllStatsFull(sv);
+                MSG.pushMsg(sv, sv._devGod ? '[DEV] 属性全满开启（不联动无限体力；体力 ∞ 需单独点）' : '[DEV] 属性全满关闭', '#FFB347');
             } else if (t === 'stamina') {
                 sv._devInfStamina = !sv._devInfStamina;
                 if (sv._devInfStamina) { sv.stamina = sv.maxStamina; sv.exhausted = false; }
@@ -637,21 +687,7 @@ function bindEvents() {
         });
     });
 
-    // 画质档（B：低/中/高；纯本地显示降级——渲染分辨率/昼夜氛围/特效上限，
-    // 不参与联机同步、不影响任何玩法数值）
-    devEl.querySelectorAll('#wdev-gfx button').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const sv = curSv;
-            if (!sv) return;
-            sv._devGfx = Number(btn.dataset.gfx);
-            const label = sv._devGfx === 0 ? '低（内部分辨率0.75x·关昼夜暗色·特效上限20）'
-                : sv._devGfx === 1 ? '中（特效上限35）' : '高（完整效果）';
-            MSG.pushMsg(sv, `[DEV] 画质已切换：${label}`, '#FFB347');
-            syncState();
-            persistDev();
-            AudioSystem.playClick();
-        });
-    });
+    // v3.68 画质档按钮已移除（#wdev-gfx 同步代码 + click handler 都已删除）
 
     // 刷物品
     devEl.querySelectorAll('.wsl-dev-item').forEach(btn => {
@@ -895,6 +931,15 @@ function bindEvents() {
                     MSG.pushMsg(sv, `[DEV] 跳到白天 6:00 → 第 ${sv.day} 天`, '#FFB347');
                     break;
                 }
+                case 'airdrop': {
+                    // v3.70 恢复：手动触发空投（不受 _devGod 屏蔽——wdev 显式调用永远生效）
+                    if (sv.mp && sv.mp.role === 'guest') { reportDevCmd(sv, { cmd: 'event', op: 'airdrop' }); break; }
+                    if (typeof startEvent === 'function') {
+                        startEvent(sv, 'airdrop');
+                        MSG.pushMsg(sv, '[DEV] 手动生成空投（无视 _devGod 屏蔽）', '#7DFF7D');
+                    }
+                    break;
+                }
                 case 'wxset': {
                     // 天气与强度选择（host 权威，weather/wxLevel 进 wsync 快照回传双端）
                     const sel = document.getElementById('wdev-wx-sel');
@@ -918,16 +963,19 @@ function bindEvents() {
                     const ok = (gx, gy) => isWalk(getTile(sv, gx, gy)) &&
                         (isWalk(getTile(sv, gx - 1, gy)) || isWalk(getTile(sv, gx + 1, gy)) ||
                          isWalk(getTile(sv, gx, gy - 1)) || isWalk(getTile(sv, gx, gy + 1)));
-                    for (let tries = 0; tries < 80; tries++) {
-                        const ang = Math.random() * Math.PI * 2;
-                        const dist = (10 + Math.random() * 6) * CHUNK;
-                        const gx = Math.round(Math.cos(ang) * dist), gy = Math.round(Math.sin(ang) * dist);
+                    // v3.63 用户要求：[X,Y] 区块坐标完全随机跨区块（不再被 dist=10~16 区块限制）。
+                    // 采样范围 = ±200 区块（覆盖整个世界，城乡/郊区/废墟全覆盖）。
+                    const RANGE = 200;
+                    for (let tries = 0; tries < 200; tries++) {
+                        const cx = Math.floor(Math.random() * (RANGE * 2 + 1)) - RANGE;
+                        const cy = Math.floor(Math.random() * (RANGE * 2 + 1)) - RANGE;
+                        const gx = cx * CHUNK + Math.floor(Math.random() * CHUNK);
+                        const gy = cy * CHUNK + Math.floor(Math.random() * CHUNK);
                         if (!ok(gx, gy)) continue;
-                        // 若在室内：随机重生应退出室内回到室外（否则 sv 坐标与室内模式错乱 → 卡死）
                         if (sv.interior) WD.exitInterior(sv, true);
                         sv.px = (gx + 0.5) * TS; sv.py = (gy + 0.5) * TS;
                         sv.faceX = 1; sv.faceY = 0;
-                        MSG.pushMsg(sv, `[DEV] 随机重生 → 区块(${Math.floor(gx / CHUNK)},${Math.floor(gy / CHUNK)})`, '#7DFF7D');
+                        MSG.pushMsg(sv, `[DEV] 随机重生 → 区块(${cx},${cy}) [X,Y 完全随机]`, '#7DFF7D');
                         break;
                     }
                     break;
@@ -951,7 +999,8 @@ function bindEvents() {
                     // 2026-08-11 开发者召唤 NPC 队友瞬移到身边（调试用，不受冷却限制）。
                     // 内联实现避免 wdev↔survival 循环依赖；联机 guest 上报 host 权威执行。
                     if (sv.mp && sv.mp.role === 'guest') { reportDevCmd(sv, { cmd: 'summonmate' }); MSG.pushMsg(sv, '[DEV] 已请求召唤队友（同步中）', '#FFCC66'); break; }
-                    const mates = (sv.npcs || []).filter(n => n.alive && n.party && n.id !== sv.controllerId && !n.isPlayer && !n.downed && !n.riding);
+                    // 2026-08-12 v2.104 谁是主控谁可召集：只排除当前主控，含 isPlayer 原主控
+                    const mates = (sv.npcs || []).filter(n => n.alive && n.party && n.id !== sv.controllerId && !n.downed && !n.riding);
                     if (!mates.length) { MSG.pushMsg(sv, '[DEV] 队伍里没有可召唤的 NPC 队员', '#FF8866'); break; }
                     let cnt = 0;
                     for (const m of mates) {
@@ -1064,7 +1113,7 @@ function bindEvents() {
                     // 全部物资各 ×1（覆盖武器/弹药/工具/材料/药品/种子/战利品袋）
                     let got = 0, miss = 0;
                     for (const cat of CATEGORIES) {
-                        if (cat.name.startsWith('僵尸')) continue;
+                        if (cat.name.startsWith('僵尸') || cat.name === '未实装模子') continue;
                         for (const it of cat.items) {
                             const ok = it.id.startsWith('loot')
                                 ? Panel.addItemLoot(sv, { id: it.id, n: 1, contents: [], searched: false })
@@ -1079,11 +1128,6 @@ function bindEvents() {
                     for (let i = 0; i < sv.inv.length; i++) sv.inv[i] = null;
                     if (sv.wpn) sv.wpn.mag = {};
                     MSG.pushMsg(sv, '[DEV] 背包已清空', '#FFB347');
-                    break;
-                case 'wipe':
-                    if (!confirm('确定清空荒原存档？此操作不可撤销！')) return;
-                    setStorage(SAVE_KEY, null);
-                    MSG.pushMsg(sv, '[DEV] 荒原存档已清空', '#FF6666');
                     break;
                 case 'look':
                     // 局内重新捏脸：以当前外观为初始，确认后写回角色并落存档
@@ -1153,7 +1197,8 @@ export function applyDevCmd(p) {
             break;
         case 'summonmate': {
             // 2026-08-11 host 权威执行 guest 的"召唤队友"请求（与本地 dev 按钮同逻辑）
-            const mates = (sv.npcs || []).filter(n => n.alive && n.party && n.id !== sv.controllerId && !n.isPlayer && !n.downed && !n.riding);
+            // 2026-08-12 v2.104 谁是主控谁可召集：只排除当前主控，含 isPlayer 原主控
+            const mates = (sv.npcs || []).filter(n => n.alive && n.party && n.id !== sv.controllerId && !n.downed && !n.riding);
             let cnt = 0;
             for (const m of mates) {
                 let spot = null;
@@ -1282,7 +1327,9 @@ function setAllStatsFull(sv) {
     // "一键回满"，sv.hp 拉满但 _downed 残留 → updateDowned 仍走倒地逻辑（救援倒计时/濒死标志
     // 不消失）。与主循环 _devGod 块一致：全满 = 立即恢复健康，同步清倒地状态。
     sv._downed = null;
-    sv._downedMembers = [];
+    // 2026-08-12 v3.25 修复：属性全满只作用于【主控】，不再清空 sv._downedMembers（队友濒死记录）——
+    // 此前会把队伍里所有濒死队友一并"救活"（用户反馈：主控点属性全满后队友突然活过来）。
+    // 队友濒死状态由救援系统（updateDownedMembersTimeout / mateMedSubmit）独立管理，不受主控回满影响。
     sv._carryDowned = false;
     sv._carryMateId = null;
     sv._waitDowned = false;

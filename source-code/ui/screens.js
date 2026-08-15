@@ -106,7 +106,9 @@ export function initScreenButtons(callbacks) {
     // 创意工坊按钮
     document.getElementById('btn-workshop')?.addEventListener('click', () => {
         showScreen('workshop');
-        import('./workshop.js').then(m => {
+        // v3.80 加 ?v= cache-busting：workshop.js 内 _WSL_VER 升级必须强制浏览器重取，
+        // 否则缓存旧 workshop.js（_WSL_VER=3.75）→ import survival.js?v=3.75 → 旧代码生效。
+        import('./workshop.js?v=4.12').then(m => {
             m.refresh?.();
         });
     });

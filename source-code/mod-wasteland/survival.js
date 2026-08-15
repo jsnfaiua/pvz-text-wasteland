@@ -1,9 +1,9 @@
-﻿// ============================================================
+// ============================================================
 // 【无尽植僵荒原】模组 · 生存模式主控（调度层）
 // 建造→wbuild.js / 僵尸→wzombie.js / 尸潮→whorde.js / 数值→wbalance.js
 // ============================================================
 
-import { ZOMBIES, AMMO_INFO, WEAPONS, ACTION } from '../core/constants.js';
+import { ZOMBIES, WEAPONS, ACTION } from '../core/constants.js';
 import { getStorage, setStorage, removeStorage, writeSave, getSession } from '../persistence/storage.js';
 import { saveData } from '../core/state.js';
 import { showScreen } from '../ui/screens.js';
@@ -12,7 +12,7 @@ import { T, CHUNK, SPAWN, isWalk, newSeed, hash2,
     getTile, setTile, builtAt, purgeChunks } from './world.js';
 import { TS } from './wconst.js';
 import { fitCanvasBacking, toggleFullscreen } from '../core/canvasFit.js';
-import { draw, BUILD_ITEMS, BUILD_HP, resetWeatherParticles, tintSprite, _mcSprites, _mcWalk } from './render.js';
+import { draw, BUILD_ITEMS, BUILD_HP, resetWeatherParticles, tintSprite, _mcSprites, _mcWalk, attachParticleBg, showToast, destroyBgFx, destroyBgFxNow, clearBgFxPrevScreen, preloadBgFxParts } from './render.js';
 import * as Panel from './panel.js';
 import * as WG from './wgear.js';
 import * as WA from './waction.js';
@@ -27,10 +27,11 @@ import * as WDEV from './wdev.js';
 import * as WSearch from './wsearch.js';
 import * as WV from './wvehicle.js';
 import * as WW from './wwordcraft.js';
-import { showLookCreator, normalizeLook, randomLook } from './wlook.js';
+import { showLookCreator, normalizeLook, randomLook, loadThumbSprites, preloadLookSkeleton, preloadLookCreator } from './wlook.js';
 import * as WNPC from './wnpc.js';
 import * as HUD from './whud.js';
 import * as TUT from './wtut.js';
+import { showLoadingOverlay } from './wloading.js';
 import * as WMAP from './wmap.js';
 import { districtAt, cityCenterAt, arterialClassAt, blockAt } from './wdistrict.js';
 
@@ -53,6 +54,15 @@ const CHAR_LIST_KEY = 'wasteland_characters';// { names: [] } 已创建角色索
 const CHAR_KEY_PREFIX = 'wasteland_character_'; // + 角色名 → 角色档（跨世界）
 const WORLD_KEY_PREFIX = 'wasteland_world_';    // + seed → 世界档（跟种子走）
 export const HOTBAR_SIZE = B.HOTBAR_SIZE;
+
+// 2026-08-12 v3.57 把生存模块已导入的模块/工具挂载到 window，供 render.js（已加载完）通过 window 间接访问：
+// render.js 之前裸写 `Panel.anyOpen()` 会抛 ReferenceError（Panel 未 import），每帧被 try/catch 吞掉 →
+// draw 中断 → 苏醒/_wake 等所有 drawWakeOverlay 之后的内容不渲染。挂到 window 后用 typeof 守卫安全访问。
+if (typeof window !== 'undefined') {
+    window.Panel = Panel;
+    window.WSearch = WSearch;
+    window.scanPanelOpen = scanPanelOpen;
+}
 
 // wstate.js 依赖装配（环内模块在此集中注入，wstate.js 本体保持无环、可单测）
 const STATE_DEPS = {
@@ -88,6 +98,28 @@ function countItem(id) {
     let n = 0;
     for (const s of sv.inv) if (s && s.id === id) n += s.n;
     return n;
+}
+// 2026-08-12 v3.7 具体食物 id 列表（食物只加饱食，不回血）
+const FOOD_ITEM_IDS = ['food', 'carrot', 'corn', 'potato', 'bread', 'apple', 'melon'];
+function isFoodId(id) { return FOOD_ITEM_IDS.includes(id); }
+// 2026-08-12 v3.7 驯服植物等消耗"任意食物"：不限于泛称 food
+function countAnyFood() {
+    if (WDEV.isDev() && sv._devInf) return 9999;
+    let n = 0;
+    for (const s of sv.inv) if (s && isFoodId(s.id)) n += s.n;
+    return n;
+}
+function takeAnyFood(need) {
+    if (WDEV.isDev() && sv._devInf) return need;
+    let left = need || 1;
+    for (let i = 0; i < sv.inv.length && left > 0; i++) {
+        const s = sv.inv[i];
+        if (!s || !isFoodId(s.id)) continue;
+        const t = Math.min(s.n, left);
+        s.n -= t; left -= t;
+        if (s.n <= 0) sv.inv[i] = null;
+    }
+    return need - left;
 }
 function hasTool(toolId) {
     return sv.inv.some(s => s && s.id === toolId);
@@ -267,6 +299,28 @@ export function currentCharacterName() {
     return (sv && sv.characterName) || (getStorage(PROFILE_KEY, null) || {}).characterName || null;
 }
 
+// v3.62 随机出生/重生区域（城区/郊区/废墟三选一）：随机选目标区域后，
+// 在对应区域随机采样可站立位置。sv 为空（buildRun 出生阶段地形未生成）跳过 canStand，
+// 由开局 unstickPlayer 兜底；重生（softRespawn）时 sv 已存在 → 校验可站立。
+function randomZoneSpawn(seed, sv) {
+    const zones = ['urban', 'suburb', 'ruins'];   // 城区/郊区/废墟（不落在荒野深处）
+    const zone = zones[Math.floor(Math.random() * zones.length)];
+    for (let i = 0; i < 200; i++) {
+        // 随机城市节点 ±6×6 + 随机角度 + 距中心 0~19 区块（覆盖 urban 内环~suburb 边界）
+        const ccx = Math.round(Math.random() * 12) - 6;
+        const ccy = Math.round(Math.random() * 12) - 6;
+        const cc = cityCenterAt(seed, ccx, ccy);
+        const ang = Math.random() * Math.PI * 2;
+        const dist = Math.random() * 19 * CHUNK;
+        const gx = Math.round(cc.x * CHUNK + Math.cos(ang) * dist);
+        const gy = Math.round(cc.y * CHUNK + Math.sin(ang) * dist);
+        const cx = Math.floor(gx / CHUNK), cy = Math.floor(gy / CHUNK);
+        if (districtAt(seed, cx, cy) !== zone) continue;
+        const px = (gx + 0.5) * TS, py = (gy + 0.5) * TS;
+        if (!sv || canStand(px, py)) return { x: px, y: py, zone };
+    }
+    return null;
+}
 function buildRun(worldSaved, charSaved, opts) {
     const run = createRunDefaults(opts, STATE_DEPS);
     const wl = applyWorld(run, worldSaved, STATE_DEPS);
@@ -277,16 +331,22 @@ function buildRun(worldSaved, charSaved, opts) {
             run._legacyNote = true;
         }
         run.world = { seed: opts.seed || newSeed(), chunks: new Map() };
-        // 随机选一个城市节点，在其附近出生（随机城市 ±3×3、随机角度、距中心 5~15 区块）：
-        // 每次开局位置仍完全随机（不同城市/方向/远近），但保证出生点附近就有郊区和城市，
-        // 避免完全随机落在荒野深处、走很久都见不到城市。
-        const ccx = Math.round(Math.random() * 6) - 3;
-        const ccy = Math.round(Math.random() * 6) - 3;
-        const cc = cityCenterAt(run.world.seed, ccx, ccy);
-        const ang = Math.random() * Math.PI * 2;
-        const dist = (5 + Math.random() * 10) * CHUNK;
-        run.px = (Math.round(cc.x * CHUNK + Math.cos(ang) * dist) + 0.5) * TS;
-        run.py = (Math.round(cc.y * CHUNK + Math.sin(ang) * dist) + 0.5) * TS;
+        // v3.62 出生位置随机到「城区/郊区/废墟」三选一（用户需求：创建账号随机苏醒区域）。
+        // 随机选城市节点 + 目标区域采样，保证开局位置在城市圈内（不落荒野深处），
+        // 且每次开局的区域/城市/方向/远近都不同。
+        const sp = randomZoneSpawn(run.world.seed, null);
+        if (sp) {
+            run.px = sp.x; run.py = sp.y; run._spawnZone = sp.zone;
+        } else {
+            // 兜底：随机城市节点附近（原 v3.35 逻辑）
+            const ccx = Math.round(Math.random() * 8) - 4;
+            const ccy = Math.round(Math.random() * 8) - 4;
+            const cc = cityCenterAt(run.world.seed, ccx, ccy);
+            const ang = Math.random() * Math.PI * 2;
+            const dist = (8 + Math.random() * 12) * CHUNK;
+            run.px = (Math.round(cc.x * CHUNK + Math.cos(ang) * dist) + 0.5) * TS;
+            run.py = (Math.round(cc.y * CHUNK + Math.sin(ang) * dist) + 0.5) * TS;
+        }
     }
     applyCharacter(run, charSaved, STATE_DEPS);
     // 历史档迁移：路带格（rx<4||ry<4）里的 mods 人行道是旧 bug 产物
@@ -511,7 +571,20 @@ function loop(now) {
     // 主循环防崩溃（AGENTS.md §7）：update/draw 内任何异常都必须捕获，保证下一帧仍注册，
     // 禁止未捕获异常让 requestAnimationFrame 停摆导致游戏永久冻结白屏。
     try {
-        if (!Panel.isChestOpen() && !pauseOpen && !WW.isOpen() && !sv.dead) update(dt);
+        // 2026-08-12 v3.58 苏醒期间世界暂停：不调 update（僵尸/天气/NPC/饱食全不动），
+        // 只推进世界时间 sv.now（角色呼吸动画/睁眼动画依赖 sv.now 播放）与苏醒计时 _wake.t。
+        // 2.4s 苏醒结束（_wake 清空）后恢复正常 update。玩家已全锁（moveInput/startDash/tryJump）。
+        if (window.__wslAnimBlocked && !sv._wake) {
+            // v4.3 加载/过渡动画期间完全冻结：只推进世界时间，不 update
+            //（僵尸/角色/天气/NPC 全停，配合遮罩拦截点击 + keydown 吞键 → 只能等待）
+            sv.now += dt * (sv._devTimeScale || 1);
+        }
+        else if (sv._wake && !sv.dead) {
+            sv.now += dt * (sv._devTimeScale || 1);
+            sv._wake.t += dt;
+            if (sv._wake.t >= sv._wake.dur) sv._wake = null;
+        }
+        else if (!Panel.isChestOpen() && !pauseOpen && !WW.isOpen() && !WW.isSurgeryOpen() && !sv.dead) update(dt);
         else if (!sv.dead) {
             sv.now += dt * (sv._devTimeScale || 1);
             if (WW.isOpen()) WW.update(dt);
@@ -556,6 +629,9 @@ function updateEvents(sv, dt) {
     }
     const hour = (sv.t / sv.dayLen) * 24;
     if (sv._lastEvtHour != null && sv._lastEvtHour < 8 && hour >= 8 && sv.day >= EVT_UNLOCK_DAY && Math.random() < EVT_TRIGGER_CHANCE) {
+        // v3.68 用户要求：开发者模式（sv._devGod）下不生成空投（airdrop）——避免作弊绕过正常事件频率。
+        // 区域停电（blackout）仍可触发（仅空投屏蔽）。
+        if (sv._devGod) return;
         const r = Math.random();
         if (r < 0.5) startEvent(sv, 'blackout');
         else startEvent(sv, 'airdrop');
@@ -567,6 +643,8 @@ function updateEvents(sv, dt) {
 // host/单机在 guest 分流后更新（guest 不本地随机，从 wsync 快照读 sv._weather → 双端一致 §5.1）。
 // 2026-08-10 季节系统：天气按季节限定类型（春/夏/秋/冬），sv._season 与草地渲染联动。
 function updateWeather(sv) {
+    // v3.65 用户要求还原 v3.62 行为：天气跟随 sv.t（与时间加速一致，不再用独立时钟 _wxClock）。
+    // 之前 v3.63 引入的 sv._wxClock / sv._devWxTimeScale 完全移除（代码里仍可能在 wdev 读到 sv._wxClock 残留值，但不再使用）。
     const hour = (sv.t / sv.dayLen) * 24;
     // 同步季节（幂等：读档/跨天/换日都保持正确；0春 1夏 2秋 3冬，与 wgrass SEASONS 索引一致）
     const seasonNow = B.seasonAt(sv.day);
@@ -585,10 +663,14 @@ function updateWeather(sv) {
             const info = B.wxInfo(wx);
             const level = B.wxLevelAt(sv.world.seed, sv.day);
             const inten = B.wxIntensity(wx, level);
+            // v3.65 天气切换触发淡入：粒子 alpha 从 0 在 1.5s 内升至 1，避免"突然出现"。
             sv._weather = wx;
+            sv._weatherFadeT = 0;
+            sv._wxDensityMul = 0;
             // 大字公告（提示与天气改变同刻，host 端设 → wsync 快照 announce 双端显示）：
-            // 「🌧 雷阵雨 ⚡ 即将来袭」
-            sv.announce = { text: `${info.icon} ${inten.name}${inten.flash ? ' ⚡' : ''}即将来袭`, t: 2.8, color: info.color };
+            // v3.63 排布得当：「🌧 中雨 即将来袭 · 雨幕连绵，视野模糊」（图标+名字+状态+描述紧凑串成一句，避免多行重叠）
+            const flashTag = inten.flash ? ' ⚡' : '';
+            sv.announce = { text: `${info.icon} ${inten.name}${flashTag} 即将来袭 · ${info.desc}`, t: 3.2, color: info.color };
             log(`${inten.name}：${info.desc}`, info.color);   // 强度名（小雨/中雨…大雪/浓雾）+ 描述，host 广播 msg 双端可见
             if (wx === 'sandstorm' || inten.flash) AudioSystem.playWaveWarning();
         }
@@ -596,14 +678,16 @@ function updateWeather(sv) {
     sv._lastWxHour = hour;
 }
 
-function startEvent(sv, type) {
+// v3.72 export startEvent：让 wdev.js 可导入（手动触发空投/停电事件）
+export function startEvent(sv, type) {
     if (type === 'blackout') {
         sv._evt = { type, endT: sv.now + 30 };
         sv.announce = { text: '⚡ 停电夜！视野受限', t: 2.5, color: '#8899BB' };
         AudioSystem.playWaveWarning();
     } else if (type === 'airdrop') {
-        const boxes = ['WBOX', 'MEDBOX', 'MATBOX'];
-        let n = 0;
+        // v3.65 用户要求：空投物资包含地图上所有物资，稀有概率高。
+        // 全部使用 WBOX（武器箱）外观统一（之后会替换）；每个箱 3~5 件稀有物资 + 50% 概率给传送宝石。
+        const dropSites = [];
         for (let i = 0; i < 3; i++) {
             for (let tries = 0; tries < 10; tries++) {
                 const ang = Math.random() * Math.PI * 2;
@@ -612,18 +696,24 @@ function startEvent(sv, type) {
                 const gy = Math.floor((sv.py + Math.sin(ang) * d) / TS);
                 const t = getTile(sv, gx, gy);
                 if (isWalk(t) && t !== T.ROAD && t !== T.SIDEWALK) {
-                    const bt = T[boxes[Math.floor(Math.random() * boxes.length)]];
-                    setTile(sv, gx, gy, bt);
-                    const items = WZ.rollLootContents(Math.random() < 0.5 ? 'rare' : 'common');
+                    setTile(sv, gx, gy, T.WBOX);   // v3.65 统一外观：武器箱（之后会替换为专属空投箱 sprite）
+                    // v3.65 物品更丰富：3~5 件，全部走 rare 路径（共享 B.ZOMBIE_LOOT_ALL 全字池，含地图所有物资）
+                    const itemN = 3 + Math.floor(Math.random() * 3);   // 3~5
+                    const items = [];
+                    for (let j = 0; j < itemN; j++) {
+                        const it = WZ.rollLootContents('rare');
+                        if (it && it.length) items.push(...it);
+                    }
+                    if (Math.random() < 0.5) items.push({ id: 'tpgem', n: 1 });   // 50% 给传送宝石
                     sv.mods.boxLoot[gx + ',' + gy] = items;
-                    n++;
+                    dropSites.push({ gx, gy, kind: 'WBOX' });
                     break;
                 }
             }
         }
-        if (n > 0) {
-            sv._evt = { type, endT: sv.now + 5 };
-            sv.announce = { text: `✈ 物资空投！附近 ${n} 个物资箱（发光处可搜索）`, t: 3, color: '#7DFF7D' };
+        if (dropSites.length > 0) {
+            sv._evt = { type, endT: sv.now + 5, dropSites };
+            sv.announce = { text: `✈ 物资空投！附近 ${dropSites.length} 个武器箱（带光柱）`, t: 3, color: '#7DFF7D' };
             AudioSystem.playCollect();
         } else {
             sv._evt = null;
@@ -675,6 +765,36 @@ function update(dt) {
     WMAP.markExplore(sv);
     // 切视角后室内/室外状态同步（死亡切队友/手动切换/T 键切换等路径全覆盖）
     syncControllerInterior();
+    // 2026-08-12 v3.45 长按扫描自动开门：进度环满（render 置 _scanDone）→ 立即打开扫描面板（无需松手）
+    // 2026-08-12 v3.47 开门后置 0.5s 冷却：防止"按住不放 → 面板打开 → auto-repeat keydown 立刻关闭并重开"
+    // 导致面板闪烁/反复触发（配合 keydown 首次按下才计时）。
+    if (sv._scanDone) {
+        sv._scanDone = false;
+        sv._scanHeld = false;
+        sv._scanCooldownUntil = performance.now() + 500;
+        openScanPanel();
+    }
+    // 2026-08-12 v3.42 鼠标交互准心：8 方向朝向每帧计算（准心世界坐标 - 玩家 → facing8 索引）
+    // 注意：不在此处覆盖 faceX/faceY（移动逻辑在后面会覆盖）；准心覆盖放在大世界/室内帧尾，
+    // 仅无移动输入时生效（见 updateAimFacing 调用）。
+    if (!sv || !sv.mouse || sv.mouse.x == null) { /* 无鼠标 */ }
+    else {
+        // 2026-08-12 v3.50 修复"室内待机朝向不跟准星"：室内/室外统一用 camX+camY 作鼠标世界坐标基准
+        //（与 render.mouseWorld 一致）。此前室内误用 sv.interior.px + sv.mouse.x（玩家局部坐标当相机基准），
+        // 导致室内准星世界坐标偏右上，facing8 朝向永远错 → 室内待机朝向不跟随准星。
+        const wx = (sv.camX != null ? sv.camX : 0) + sv.mouse.x;
+        const wy = (sv.camY != null ? sv.camY : 0) + sv.mouse.y;
+        const dx = wx - sv.px, dy = wy - sv.py;
+        if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+            const ang = Math.atan2(dy, dx);
+            const deg = (ang * 180 / Math.PI + 360) % 360;
+            // 2026-08-12 v3.44 用户修正：4 主方向各占 90° 扇区（非 8 方向 45°）——
+            // 西北~东北（225°~315°）→ 北；东北~东南（315°~45°）→ 东；
+            // 东南~西南（45°~135°）→ 南；西南~西北（135°~225°）→ 西。
+            // floor((deg+45)/90)%4：东=0 南=1 西=2 北=3；映射回 8 方向索引(×2)：东0 南2 西4 北6。
+            sv.facing8 = Math.floor((deg + 45) / 90) % 4 * 2;
+        }
+    }
     // 昏迷苏醒过渡计时（不序列化；期满后清空，玩家恢复移动）
     if (sv._wake) { sv._wake.t += dt; if (sv._wake.t >= sv._wake.dur) sv._wake = null; }
     // 2026-08-10 脱离卡死倒计时（暂停菜单入口；移动键取消，期满自动传送）
@@ -688,6 +808,8 @@ function update(dt) {
     updateWeather(sv);      // 天气切换（确定性 weatherAt）——host 权威，guest 从快照同步
 
     sv.t += dt * (sv._devTimeScale || 1);   // 开发工具：时间加速（测昼夜用），1 现实小时 = 1 游戏天
+    // v3.63 天气独立时钟：默认按真实流逝（_devWxTimeScale=1）——开发者勾选"天气也加速"时才乘 _devTimeScale。
+    // 这样时间加速仅影响上方时间/救助/尸变速度，不会导致天气切换频闪（粒子密度保持稳定）。
     if (sv.t >= sv.dayLen) {
         sv.t -= sv.dayLen;
         sv.day++;
@@ -773,16 +895,24 @@ function update(dt) {
         }
     }
 
+    // ---------- 2026-08-12 v3.9 错乱僵尸持续状态：中毒/灼烧掉血（拼错词触发，4 秒） ----------
+    if (sv._poisonT > 0) {
+        sv._poisonT -= dt; sv._poisonTic = (sv._poisonTic || 0) + dt;
+        if (sv._poisonTic >= 0.5) { sv._poisonTic = 0; if (!sv._devGod) sv.hp = Math.max(1, sv.hp - 2); }
+        if (sv._poisonT <= 0) { sv._poisonT = 0; log('中毒状态消除', '#9AE88A'); }
+    }
+    if (sv._burnT > 0) {
+        sv._burnT -= dt; sv._burnTic = (sv._burnTic || 0) + dt;
+        if (sv._burnTic >= 0.5) { sv._burnTic = 0; if (!sv._devGod) sv.hp = Math.max(1, sv.hp - 3); }
+        if (sv._burnT <= 0) { sv._burnT = 0; log('灼烧熄灭', '#9AE88A'); }
+    }
+
     // ---------- 生命恢复：血量<100% 时缓慢自愈（有粮有水才回）；饱食充足可加快，代价是更快消耗饱食 ----------
-    // 2026-08-09 修复"僵尸持续啃咬卡 1 血"：持续啃咬 DPS 与自然回血(0.5~3/s)互相抵消，
-    // 低攻僵尸（旗手 4/1.2≈3.3/s）咬时血条几乎不动。战斗状态（_combatT>0，被咬/出手刷新）
-    // 期间暂停自然回血——持续啃咬的掉血不再被回血追平，血条持续缓慢下降；脱离战斗 4s 后恢复自愈。
-    // _biting 帧末重置（帧尾）：回血块在帧首用"上一帧啃咬"的 _biting=true 跳过回血，
-    // 帧末重置保证未啃咬时下帧正常回血。
-    // 2026-08-09 用户要求"脱战后低血量也回血要变慢"：hp<=20 完全禁自然回血（同营地回血）；
-    // 20~maxHp 区间按血量线性 ramp（hp=20 时 rate=0，hp=maxHp 时 rate=1）——
-    // 让玩家在危险血量（<20 不回血、20~50 极慢回血）感受到压力，不会"血看着危险但站着就满"。
-    if (sv.hp > B.HP_REGEN_MIN_SAFE && sv.hp < sv.maxHp && (sv.food || 0) > 0 && (sv.water || 0) > 0 && !((sv._combatT || 0) > 0) && !sv._biting) {
+    // v3.63 用户反馈"脱战不回血"：放宽阈值 hp > 10（v3.62 前 >20 太严，低血时一直不回）。
+    // 仍保留 hp 10~maxHp 的 ramp（低血时回血慢），避免"1 血瞬间满"破坏紧张感。
+    // 战斗状态（_combatT>0）+ 啃咬帧（_biting）期间暂停自然回血。
+    // _biting 帧末重置（帧尾）：回血块在帧首用"上一帧啃咬"的 _biting=true 跳过回血。
+    if (sv.hp > 10 && sv.hp < sv.maxHp && (sv.food || 0) > 0 && (sv.water || 0) > 0 && !((sv._combatT || 0) > 0) && !sv._biting) {
         let regen = B.HP_REGEN_NATURAL;
         const fed = (sv.food || 0) >= B.HP_REGEN_FED_AT;
         if (fed) {
@@ -790,8 +920,8 @@ function update(dt) {
             regen += B.HP_REGEN_FED * ramp;
             sv.food = Math.max(0, sv.food - B.HP_REGEN_FUEL * dt);   // 进食回血：加快消耗饱食度
         }
-        // 危险血量 ramp：hp=20 → rate=0（已由 >20 限定），hp=maxHp → rate=1
-        const hpRate = Math.min(1, Math.max(0, (sv.hp - B.HP_REGEN_MIN_SAFE) / Math.max(1, sv.maxHp - B.HP_REGEN_MIN_SAFE)));
+        // hp=10 → rate=0，hp=maxHp → rate=1
+        const hpRate = Math.min(1, Math.max(0, (sv.hp - 10) / Math.max(1, sv.maxHp - 10)));
         regen *= hpRate;   // 低血时回血变慢，避免"危险血站着就满"
         sv.hp = Math.min(sv.maxHp, sv.hp + regen * dt);
     }
@@ -848,6 +978,8 @@ function update(dt) {
     // ---------- 室内模式 ----------
     if (sv.interior) {
         updateInteriorMode(dt);
+        // 2026-08-12 v3.42 静止时角色朝向跟随准心（8 方向）
+        updateAimFacing(sv);
         sv.saveT -= dt;
         if (sv.saveT <= 0) { sv.saveT = B.SAVE_INTERVAL; saveNow(); }
         sv._biting = false;   // 被啃咬标记复位（室内同室外）
@@ -858,9 +990,20 @@ function update(dt) {
 
     // ---------- 大世界模式 ----------
     const hour = (sv.t / sv.dayLen) * 24;
-    if (sv.opts.invasion && !sv.horde && !sv._hordeDayStarted && hour >= B.HORDE_START_HOUR) {
-        sv._hordeDayStarted = true;
-        WH.startHordePrep(sv);
+    // v3.65 用户要求：尸潮机制改为"每 7 天一波，时间在 20:00~23:00 随机"（不是每天固定 20:00 准时）。
+    // 仅当今天是 7 天倍数（day >= 7 且 day % 7 === 0）时为尸潮日；每天 8:00 重新用确定性 LCG 计算一个
+    // 20~23 之间的随机小时存到 sv._hordeTriggerHour；到达该小时才启动尸潮。
+    if (sv.opts.invasion && !sv.horde && !sv._hordeDayStarted && sv.day >= 7 && sv.day % 7 === 0) {
+        if (sv._hordeTriggerHour == null) {
+            const r = hash2(sv.world.seed | 0, sv.day | 0, 0x9A3F);   // 确定性（双端一致）
+            sv._hordeTriggerHour = 20 + r * 3;   // 20:00 ~ 23:00
+        }
+        if (hour >= sv._hordeTriggerHour) {
+            sv._hordeDayStarted = true;
+            // 5~10 分钟倒计时提示（玩家可以看到预告）
+            sv.announce = { text: `⚠ 尸潮即将来袭（约 ${(sv._hordeTriggerHour - hour).toFixed(1)} 小时后）`, t: 3.5, color: '#FF8866' };
+            WH.startHordePrep(sv);
+        }
     }
     if (sv.horde) WH.updateHorde(sv, dt, canStand);
 
@@ -960,6 +1103,8 @@ function update(dt) {
         }
         }
     }
+    // 2026-08-12 v3.42 静止时角色朝向跟随准心（8 方向）；移动时移动方向优先（updateAimFacing 内部判断）
+    updateAimFacing(sv);
     // 沙尘暴风力推挤（被风吹着走；强度越大推力越强，风向随游戏小时变化 —— 站着也会缓慢滑行）
     if (sv._weather === 'sandstorm' && !sv.driving) {
         const itnW = B.wxIntensity('sandstorm', B.wxLevelCur(sv));
@@ -1130,8 +1275,8 @@ function updateGuest(dt) {
     }
 
     // 生命恢复（室内模式；战斗中被咬期间暂停自愈，与室外一致——持续啃咬卡 1 血修复）
-    // HP_REGEN_MIN_SAFE：低血(<20)完全禁自然回血（同室外，2026-08-09 锁血修复）
-    if (sv.hp > B.HP_REGEN_MIN_SAFE && sv.hp < sv.maxHp && (sv.food || 0) > 0 && (sv.water || 0) > 0 && !((sv._combatT || 0) > 0) && !sv._biting) {
+    // v3.63 阈值放宽：hp > 10 才回血（v3.62 前 >20 太严），hp 10~maxHp 线性 ramp
+    if (sv.hp > 10 && sv.hp < sv.maxHp && (sv.food || 0) > 0 && (sv.water || 0) > 0 && !((sv._combatT || 0) > 0) && !sv._biting) {
         let regen = B.HP_REGEN_NATURAL;
         const fed = (sv.food || 0) >= B.HP_REGEN_FED_AT;
         if (fed) {
@@ -1139,6 +1284,8 @@ function updateGuest(dt) {
             regen += B.HP_REGEN_FED * ramp;
             sv.food = Math.max(0, sv.food - B.HP_REGEN_FUEL * dt);
         }
+        const hpRate = Math.min(1, Math.max(0, (sv.hp - 10) / Math.max(1, sv.maxHp - 10)));
+        regen *= hpRate;
         sv.hp = Math.min(sv.maxHp, sv.hp + regen * dt);
     }
     }
@@ -1337,6 +1484,8 @@ export function removeZombieById(id) {
     }
     // 2026-08-11 v2.98 尸变丧尸被击杀（联机）→ 掉尸变尸体（物品守恒）
     if (z._reviveFromCorpse) reviveZombieToCorpse(sv, z);
+    // 2026-08-12 v3.9 错乱僵尸死亡结算（爆裂能力）
+    WZ.corruptDeathEffects(sv, z);
     sv.effects.push({ kind: 'dead', x: z.x, y: z.y, life: 0.6, maxLife: 0.6, label: z.name });
     AudioSystem.playZombieDie();
     sv.zombies.splice(i, 1);
@@ -1369,7 +1518,17 @@ export function applyWorldMods(mods) {
         interiors: { ...(mods.interiors || {}) },
         guarded: { ...(mods.guarded || {}) },
         explored: { ...(mods.explored || {}) },   // 2026-08-10 世界地图探索记录
+        recipes: Array.isArray(mods.recipes) ? [...mods.recipes] : [],   // 2026-08-12 v3.8 已解锁配方
     };
+}
+// 2026-08-12 v3.8 联机：应用某端解锁的配方（host/guest 任一使用配方物品 → 双端 sv.mods.recipes 同步）
+export function applyRecipeUnlock(recipeId) {
+    if (!sv || !recipeId) return;
+    if (!sv.mods.recipes) sv.mods.recipes = [];
+    if (!sv.mods.recipes.includes(recipeId)) {
+        sv.mods.recipes.push(recipeId);
+        saveNow();
+    }
 }
 
 // 2026-08-10 世界地图：host 权威合并 guest 上报的探索区块（world 档随存）
@@ -2226,7 +2385,14 @@ function updateInteriorMode(dt) {
     // 只是 canStand 换成 interiorCanStand、sv.zombies 换成室内僵尸。此前只驱动 follow 队员
     // 且行为简化，导致室内队员不攻击僵尸等差异。躲藏者（未招募，it.npcs）仍保持不动。
     const worldZombies = sv.zombies;
+    sv._worldZombies = worldZombies;   // v3.30 供尸变检测把室外尸体生成的丧尸放进室外世界数组（防瞬移）
     sv.zombies = it.zombies;   // 提前替换为室内僵尸：让战斗 AI 打室内僵尸（室内外行为一致）
+    // 2026-08-12 v3.39 修复"室内战斗掉落的物品队伍成员不捡"：
+    // npcScavengeDrops 只扫 sv.drops，而室内击杀僵尸掉落的物品进 it.drops（windoor 882）。
+    // 此前室内模式没像 sv.zombies 那样替换 sv.drops → 室内掉落成员完全无视、只有玩家手动捡。
+    // 与 sv.zombies = it.zombies 同思路：室内把 sv.drops 临时指向 it.drops（恢复在下方）。
+    const worldDrops = sv.drops;
+    sv.drops = Array.isArray(it.drops) ? it.drops : (it.drops = []);
     const controller = WNPC.controlledNpc(sv);
     if (sv.npcs && sv.npcs.length) {
         for (const n of sv.npcs) {
@@ -2249,9 +2415,16 @@ function updateInteriorMode(dt) {
     // 必须在 sv.zombies 恢复为世界僵尸之前调用（NPC 子弹要打室内僵尸）
     WNPC.updateNpcBullets(sv, dt);
     sv.zombies = worldZombies;
+    sv.drops = worldDrops;   // v3.39 恢复室外掉落数组（室内驱动结束后）
 
     it.px = sv.px;
     it.py = sv.py;
+    // 2026-08-12 v3.37 修复"室内外主控不同步"：室内模式此前从不写回主控记录
+    //（大世界 updateNpcs 每帧 syncControlledToRecord，室内 updateInteriorMode 缺失）→
+    // 主控在室内掉血/拾取/移动后，存档（serializeNpcs 用记录）读档回退到进屋时状态、
+    // 切视角（switchControl 载入用记录）位置/背包丢失。帧尾与室外一致写回。
+    const _ctrl = WNPC.controlledNpc(sv);
+    if (_ctrl) WNPC.syncControlledToRecord(sv, _ctrl);
     sv.wpnText = WG.hudText(sv);
     // 2026-08-10 修复"室内死亡切视角后濒死不结束/反复切换"：
     // 室内模式此前从不调用 updateDowned → 倒地主角的全灭检测/超时尸变在室内完全不运行，
@@ -2310,13 +2483,59 @@ function updateInteriorPrompt() {
     }
     // ③ 3×3 内的箱子（2026-08-10 移到队员之前：跟随队员贴玩家游荡会抢占箱子交互，
     //    导致"围着箱子一圈都交互不了"——箱子优先，队员仅在无箱子时作为交互对象）
+    // 2026-08-12 v3.46 准星优先（与室外一致）：准星指向的格若是箱子则优先，否则回退 3×3 顺序。
     const pgx = Math.floor(it.px / TS), pgy = Math.floor(it.py / TS);
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const gx = pgx + dx, gy = pgy + dy;
-        if (gx < 0 || gx >= it.w || gy < 0 || gy >= it.h) continue;
+    const isBoxTile = (gx, gy) => {
+        if (gx < 0 || gx >= it.w || gy < 0 || gy >= it.h) return false;
         const tile = it.tiles[gy * it.w + gx];
-        if (tile === WD.INTERIOR_TILES.BOX || tile === WD.INTERIOR_TILES.WBOX
-            || tile === WD.INTERIOR_TILES.MEDBOX || tile === WD.INTERIOR_TILES.MATBOX) {
+        return tile === WD.INTERIOR_TILES.BOX || tile === WD.INTERIOR_TILES.WBOX
+            || tile === WD.INTERIOR_TILES.MEDBOX || tile === WD.INTERIOR_TILES.MATBOX;
+    };
+    let aimPicked = false;
+    if (sv.mouse && sv.mouse.x != null) {
+        // 2026-08-12 v3.48 修复"室内准星未同步"：室内鼠标世界坐标 = sv.camX + m.x（sv.camX=-ox），
+        // 与 render.mouseWorld / waction 攻击角度一致。此前用 it.px + m.x 错把玩家局部坐标当相机基准。
+        // 2026-08-12 v3.58 准星优先扩展到 NPC（碰撞体积）与楼梯（格子），与室外"指哪交互哪"一致：
+        // ① 鼠标指到 NPC 碰撞体积（3×3 内）→ 优先该 NPC（渲染时金色长方体边框提示）
+        // ② 准星指向楼梯格（3×3 内）→ 优先该楼梯
+        // ③ 准星指向箱子格（3×3 内）→ 优先该箱子（原逻辑）
+        const mwx = (sv.camX != null ? sv.camX : 0) + sv.mouse.x;
+        const mwy = (sv.camY != null ? sv.camY : 0) + sv.mouse.y;
+        const agx = Math.floor(mwx / TS);
+        const agy = Math.floor(mwy / TS);
+        const inAimGrid = Math.abs(agx - pgx) <= 1 && Math.abs(agy - pgy) <= 1;
+        if (inAimGrid) {
+            // ① NPC 碰撞体积优先：鼠标落在 NPC 渲染范围内（以 n.x/n.y 为中心、半径 ~26px）
+            // 3×3 内（玩家到 NPC 距离 ≤1.9*TS 与其它交互判定一致）
+            if (it.npcs) {
+                for (const n of it.npcs) {
+                    if (!n || n.hp <= 0) continue;
+                    if (Math.hypot(mwx - n.x, mwy - n.y) <= 26) {
+                        it.promptTarget = { npc: 1, x: n.x, y: n.y, aim: 1 };
+                        aimPicked = true;
+                        break;
+                    }
+                }
+            }
+            // ② 楼梯格优先（与箱子同格子判定）
+            if (!aimPicked && agx >= 0 && agx < it.w && agy >= 0 && agy < it.h) {
+                const at = it.tiles[agy * it.w + agx];
+                if (at === WD.INTERIOR_TILES.STAIRS_UP || at === WD.INTERIOR_TILES.STAIRS_DOWN) {
+                    it.promptTarget = { stairs: 1, x: agx, y: agy, dir: at === WD.INTERIOR_TILES.STAIRS_UP ? 1 : -1 };
+                    aimPicked = true;
+                }
+            }
+            // ③ 箱子格优先（原逻辑）
+            if (!aimPicked && isBoxTile(agx, agy)) {
+                it.promptTarget = { x: agx, y: agy };
+                aimPicked = true;
+            }
+        }
+    }
+    if (!aimPicked) {
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const gx = pgx + dx, gy = pgy + dy;
+            if (!isBoxTile(gx, gy)) continue;
             it.promptTarget = { x: gx, y: gy };
             return;
         }
@@ -2334,10 +2553,14 @@ function updateInteriorPrompt() {
         if (best) { it.promptTarget = { npc: 1, x: best.x, y: best.y }; return; }
     }
     // 2026-08-10 室内尸体搜索提示（成员死亡后留在房间的尸体）
+    // 2026-08-12 v3.36 与室外一致：普通尸体搜完（_corpseSearched）也提示（可反复打开空界面续搜）；
+    // 尸变尸体掏空才消失、未掏空也可续搜；只提示当前房间/楼层尸体（其它房间/室外尸体不干扰）。
     if (sv.npcs && sv.npcs.length) {
         let best = null, bd = 1.9 * TS;
         for (const n of sv.npcs) {
-            if (!n || !n._corpse || n._corpseSearched) continue;
+            if (!n || !n._corpse || n.downed) continue;
+            // 2026-08-12 v3.36 只搜当前房间/楼层尸体（v3.27 规则）：其它房间尸体不干扰当前交互
+            if (!(n.inInterior && n.interiorKey === it.key && (n.interiorFloor == null ? 1 : n.interiorFloor) === (it.floor || 1))) continue;
             const d = Math.hypot(n.x - it.px, n.y - it.py);
             if (d < bd) { bd = d; best = n; }
         }
@@ -2358,6 +2581,13 @@ const INTERACT_LABEL = {
     // 轮胎（T.TIRES）为纯障碍物，不可交互，不进提示表
 };
 
+// 2026-08-12 v3.43 扫描面板只收集"交互会弹 UI 界面"的交互体（用户定稿：扫描的是弹出 UI 的那种交互）：
+// 过滤纯采集类（草药/伐木/阳光/水/作物/中立植物 = 按 F 直接采集加物品，不弹 UI）。
+const SCAN_UI_TILES = new Set([
+    T.BOX, T.CABINET, T.DOOR, T.BED, T.WBOX, T.MEDBOX, T.MATBOX,
+    T.CAR, T.CARWRECK, T.TRASHBIN, T.CARDBOX, T.HYDRANT, T.NEWSSTAND, T.PLOT,
+]);
+
 // 街道容器是否仍可交互：轮胎不可；消防栓搜过即空不再交互；纸箱/报刊亭/垃圾桶（小储物）始终可交互
 function containerInteractable(t, tx, ty) {
     if (t === T.TIRES) return false;
@@ -2370,7 +2600,7 @@ function containerInteractable(t, tx, ty) {
 
 // 容器是否已搜索过（含已转为储物箱 / 已掏空）：之后按储物箱处理（可随时打开存取）
 function isSearchedContainer(t, tx, ty) {
-    if (!BOX_ROLL[t]) return false;
+    if (!CONTAINER_LOOT_POOLS[t]) return false;
     const key = tx + ',' + ty;
     if (sv.mods.chests && sv.mods.chests['box:' + key]) return true;
     return !!(sv.mods.boxLoot && sv.mods.boxLoot[key]);
@@ -2406,6 +2636,8 @@ function updatePrompt() {
         let best = null, bd = 1.9 * TS;
         for (const m of sv._downedMembers) {
             if (!m || !m.alive || !m.downed) continue;
+            // 2026-08-12 v3.27 室内只救当前房间/楼层队友（其它房间留下的濒死队友不干扰当前交互）
+            if (sv.interior && !(m.inInterior && m.interiorKey === sv.interior.key && (m.interiorFloor == null ? 1 : m.interiorFloor) === sv.interior.floor)) continue;
             const d = Math.hypot(m.x - sv.px, m.y - sv.py);
             if (d < bd) { bd = d; best = m; }
         }
@@ -2432,14 +2664,36 @@ function updatePrompt() {
     }
 
     let best = null, bestD = 1.9;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const tx = Math.floor(ptx) + dx, ty = Math.floor(pty) + dy;
-        const t = getTile(sv, tx, ty);
-        if (!INTERACT_LABEL[t]) continue;
-        if (!containerInteractable(t, tx, ty)) continue;
-        if (t === T.DOOR && builtAt(sv, tx, ty)) continue;
-        const d = Math.hypot(tx + 0.5 - ptx, ty + 0.5 - pty);
-        if (d < bestD) { bestD = d; best = { x: tx, y: ty, t }; }
+    // 2026-08-12 v3.46 准星优先（用户需求）：玩家站在 3×3 中心、周围全是可交互物体时，
+    // F 键不再按"最近格"选（不准），而是优先选【准星指向的格】——准星指哪个格就交互哪个。
+    // 实现：先看准星世界坐标落在 3×3 内的哪一格，若该格是可交互目标则直接采用；
+    // 否则退回"最近格"（原逻辑）。准星指向格 = sv.mouse（屏幕坐标）→ 世界坐标。
+    let aimGx = null, aimGy = null;
+    if (sv.mouse && sv.mouse.x != null) {
+        // 2026-08-12 v3.50 统一鼠标世界坐标基准 = camX + m.x（与 render.mouseWorld 一致）
+        const mwx = (sv.camX != null ? sv.camX : 0) + sv.mouse.x;
+        const mwy = (sv.camY != null ? sv.camY : 0) + sv.mouse.y;
+        aimGx = Math.floor(mwx / TS); aimGy = Math.floor(mwy / TS);
+        // 准星格必须在玩家 3×3 内（含脚下）
+        if (Math.abs(aimGx - Math.floor(ptx)) > 1 || Math.abs(aimGy - Math.floor(pty)) > 1) { aimGx = null; aimGy = null; }
+    }
+    if (aimGx != null && aimGy != null) {
+        const t = getTile(sv, aimGx, aimGy);
+        if (INTERACT_LABEL[t] && containerInteractable(t, aimGx, aimGy) && !(t === T.DOOR && builtAt(sv, aimGx, aimGy))) {
+            best = { x: aimGx, y: aimGy, t };
+            bestD = 0;
+        }
+    }
+    if (!best) {
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const tx = Math.floor(ptx) + dx, ty = Math.floor(pty) + dy;
+            const t = getTile(sv, tx, ty);
+            if (!INTERACT_LABEL[t]) continue;
+            if (!containerInteractable(t, tx, ty)) continue;
+            if (t === T.DOOR && builtAt(sv, tx, ty)) continue;
+            const d = Math.hypot(tx + 0.5 - ptx, ty + 0.5 - pty);
+            if (d < bestD) { bestD = d; best = { x: tx, y: ty, t }; }
+        }
     }
     // NPC：与地块目标比较距离，更近者优先（NPC 站在箱子/车等可交互物体旁也能交谈/命令）
     // 2026-08-10 用户要求"相邻格朝对方向即可交互箱子"：跟随队员（party+follow）总是
@@ -2450,6 +2704,8 @@ function updatePrompt() {
     if (sv.npcs) {
         for (const n of sv.npcs) {
             if (!n.alive || n.role === 'hostile') continue;
+            // 2026-08-12 v3.27 室内只命令当前房间/楼层队友（其它房间队友不干扰当前交互）
+            if (sv.interior && !(n.inInterior && n.interiorKey === sv.interior.key && (n.interiorFloor == null ? 1 : n.interiorFloor) === sv.interior.floor)) continue;
             if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控角色不显示交互
             // 2026-08-10 倒地者（n.downed，如倒下的主控/队友）不属于"可命令/交谈队友"：
             // 靠近倒地主角应显示"救治 [F]"而非"命令 [F]"（此前倒地记录 alive=true 被当作队员，
@@ -2474,8 +2730,10 @@ function updatePrompt() {
     // 濒死倒地时 deathDropLegacy 生成独立遗物尸体（corpse:N，非 downed）就在倒地队友旁边，
     // 尸体搜索抢占救助 → 无救治按钮、按 F 打开搜索。人还活着应先救人。
     // 最终优先级：地块 > 救治倒地队友 > 救治倒地主控 > 尸体 > 队员（命令）。
+    // 2026-08-12 v3.24 尸体/濒死与容器重叠可交互：尸体检测不再依赖 `!best`，
+    // 与容器并存时也计算——供"先救人/取遗物再开箱"优先级使用。
     let corpseBest = null;
-    if (!best && sv.npcs) {
+    if (sv.npcs) {
         let cbd = 1.9 * TS;
         for (const n of sv.npcs) {
             // 2026-08-11 v2.97 修复"濒死队友被尸体搜索抢占"（用户反馈：濒死队友还不等于尸体）：
@@ -2485,11 +2743,20 @@ function updatePrompt() {
             // 2026-08-11 v2.98 尸变前/后尸体都像容器一样可反复打开搜索界面（用户需求定稿）：
             // 所有尸体（普通/尸变，已搜完掏空与否）都提示搜索；仅排除倒地（downed）角色（走救助）。
             if (!n || !n._corpse || n.downed) continue;
+            // 2026-08-12 v3.27 室内只搜当前房间/楼层尸体（其它房间留下的尸体不干扰当前交互）
+            if (sv.interior && !(n.inInterior && n.interiorKey === sv.interior.key && (n.interiorFloor == null ? 1 : n.interiorFloor) === sv.interior.floor)) continue;
             const d = Math.hypot(n.x - sv.px, n.y - sv.py);
             if (d < cbd) { cbd = d; corpseBest = n; }
         }
     }
-    if (best) { sv.promptTarget = best; }
+    if (best) {
+        // 2026-08-12 v3.24 用户定稿：濒死队友/倒地主控/尸体与容器重叠时，先救人/取遗物再开箱。
+        // 交互优先级：救治倒地队友 > 救治倒地主控 > 尸体搜索 > 容器（救完/搜完后再按 F 即可开箱）。
+        if (downedMatePrompt) { sv.promptTarget = downedMatePrompt.target; sv.prompt = downedMatePrompt.prompt; return; }
+        if (downedPrompt) { sv.promptTarget = downedPrompt.target; sv.prompt = downedPrompt.prompt; return; }
+        if (corpseBest) { sv.promptTarget = { corpse: corpseBest.id }; sv.prompt = `搜索 ${corpseBest.name} 的尸体 [F]`; return; }
+        sv.promptTarget = best;
+    }
     else if (downedMatePrompt) {
         // 2026-08-10 队友濒死救治：提示链漏用 downedMatePrompt 的 bug 修复——
         // 计算了但从未写入 promptTarget，导致靠近倒地队友按 F 无反应（不弹救助界面）。
@@ -2609,61 +2876,8 @@ function doInteract() {
         if (!c) return;
         const d = Math.hypot(c.x - sv.px, c.y - sv.py);
         if (d >= 1.9 * TS) return;
-        if (WSearch.isOpen() || sv.search) return;   // 已有搜索界面打开 → 忽略
-        const contents = c._corpseContents || [];
-        // 普通尸体搜完但未尸变：仍可打开空界面（用户需求：尸变前反复打开搜索界面）；内容为空的
-        // 尸变尸体（掏空会消失，不应再开）由 onClose 的 splice 处理——此处空内容也开界面（显示空）。
-        // if (!contents.length) { c._corpseSearched = true; c._corpseSearchedDay = sv.day; return; }
-        // 完整对象映射：给每个完整对象加 _rem（剩余可拿数量），供 takeFromSearch 保留属性入包
-        const corpseFull = contents.map(o => ({ ...o, _rem: o.n || 1 }));
-        // 与容器一致：done = 已搜索完成（r=1 直接显示），slot = 固定槽位（重开位置不变）
-        const items = contents.map(o => ({ id: o.id, n: o.n || 1, done: !!o.r, slot: o.slot }));
-        AudioSystem.playOpenBox && AudioSystem.playOpenBox();
-        WSearch.openSearch(sv, {
-            items,
-            name: `搜索 ${c.name} 的尸体`,
-            gx: Math.floor(c.x / TS), gy: Math.floor(c.y / TS),
-            cap: Math.max(6, contents.length),
-            corpseFull,
-            onClose: (remaining) => {
-                // 2026-08-11 v2.98 尸体搜索定稿（用户确认）：
-                //   · 普通尸体（未尸变，非 _revivedCorpse）：掏空后【不消失】，像容器一样可反复打开搜索界面
-                //     （空界面），未尸变照样 15 分钟尸变——物品守恒：拿走的数量不再出现，没拿走的保留。
-                //   · 尸变尸体（_revivedCorpse，丧尸被击败掉落）：【搜索完彻底消失】（与普通尸体不同）。
-                //     掏空（rest 为空）即从 sv.npcs 移除；未掏空时保留、可续搜。
-                // 未拿走物品写回尸体（保留完整属性 + r 搜索完成标记 + slot），掏空处理下方分两种。
-                const rest = (remaining || []).filter(o => o && o.n > 0).map(o => {
-                    const f = corpseFull.find(x => x && x.id === o.id);
-                    const base = f ? { ...f } : { id: o.id };
-                    delete base._rem;
-                    return { ...base, n: o.n, r: !!o.r, slot: o.slot };
-                });
-                if (c._revivedCorpse) {
-                    // —— 尸变尸体：掏空彻底消失，未掏空保留续搜 ——
-                    c._corpseContents = rest;
-                    if (!rest.length) {
-                        // 搜索完 → 从世界移除（尸体消失）
-                        if (Array.isArray(sv.npcs)) {
-                            const idx = sv.npcs.indexOf(c);
-                            if (idx >= 0) sv.npcs.splice(idx, 1);
-                        }
-                        log(`搜索了 ${c.name} 的尸体（物品已全部取走，尸变尸体消失）`, '#9fd6ff');
-                    } else {
-                        log(`搜索了 ${c.name} 的尸体（已取走部分物品，剩余 ${rest.length} 件留在原地可再搜）`, '#9fd6ff');
-                    }
-                    return;
-                }
-                // —— 普通尸体：掏空保留（像容器可反复打开），未尸变照样 15 分钟尸变 ——
-                c._corpseContents = rest;
-                if (!rest.length) {
-                    c._corpseSearched = true;
-                    c._corpseSearchedDay = sv.day;
-                    log(`搜索了 ${c.name} 的尸体（物品已取走，尸体保留可再次打开）`, '#9fd6ff');
-                } else {
-                    log(`搜索了 ${c.name} 的尸体（已取走部分物品，剩余 ${rest.length} 件留在原地可再搜）`, '#9fd6ff');
-                }
-            },
-        }, { onUseItem: (idx) => useItem(idx) });
+        // 2026-08-12 v3.40 提取公共函数（与室内 doInteriorInteract 共用，长按扫描面板复用）
+        openCorpseSearchUI(c);
         return;
     }
 
@@ -2682,7 +2896,7 @@ function doInteract() {
         return;
     }
 
-    if (BOX_ROLL[tg.t]) {
+    if (CONTAINER_LOOT_POOLS[tg.t]) {   // v3.19 容器判定走 CONTAINER_LOOT_POOLS（标准四箱+街道杂物）
         openContainer(tg.t, tg.x, tg.y);
         return;
     } else if (tg.t === T.HERB) {
@@ -2745,7 +2959,8 @@ function doInteract() {
         Panel.addItem(sv, 'water', 1);
         log('采集 水×1');
     } else if (tg.t === T.SPROUT) {
-        const r = WP.tryTame(sv, tg.x, tg.y, countItem, takeItem);
+        // 2026-08-12 v3.7 驯服支持任意具体食物（food/carrot/corn/potato/bread/apple/melon）
+        const r = WP.tryTame(sv, tg.x, tg.y, countAnyFood, takeAnyFood);
         if (r === 'ok') log('驯服成功！它加入了你的防线');
         else if (r === 'fail') log('驯服失败！它被激怒了');
         else if (r === 'need:food') log('驯服需要食物（用它最爱的食物诱捕）');
@@ -2790,10 +3005,15 @@ function doInteract() {
         Panel.refresh(sv);
     } else if (tg.t === T.CROP) {
         const cr = hash2(sv.world.seed ^ 0xC90B, tg.x, tg.y);
-        const names = ['萝卜', '玉米', '土豆'];
-        const cn = names[Math.floor(cr * 3) % 3];
+        // 2026-08-12 v3.7 收获具体农作物（萝卜→胡萝卜 / 玉米 / 土豆），不再统一给泛称食物
+        const crops = [
+            { id: 'carrot', name: '萝卜' },
+            { id: 'corn', name: '玉米' },
+            { id: 'potato', name: '土豆' },
+        ];
+        const cp = crops[Math.floor(cr * 3) % 3];
         const n = 1 + Math.floor(Math.random() * 2);
-        Panel.addItem(sv, 'food', n);
+        Panel.addItem(sv, cp.id, n);
         let extra = '';
         if (Math.random() < 0.30) {
             const seeds = ['seed:peashooter', 'seed:snowpea', 'seed:sunflower'];
@@ -2802,7 +3022,7 @@ function doInteract() {
             extra = ` + ${Panel.getItemInfo(sid).name}×1`;
         }
         setTile(sv, tg.x, tg.y, T.GROUND);
-        log(`采集 ${cn} → 食物×${n}${extra}`);
+        log(`采集 ${cp.name} → ${Panel.getItemInfo(cp.id).name}×${n}${extra}`);
     } else if (tg.t === T.CAR || tg.t === T.CARWRECK) {
         openCarMenu(tg.x + ',' + tg.y);
     } else if (tg.npc) {
@@ -2828,58 +3048,332 @@ function doInteract() {
     }
 }
 
+// ================= 2026-08-12 v3.42~v3.44 鼠标交互准心：角色朝向 =================
+// 准心可交互判定在 render.js 内部实现（renderTileInteractable/renderPointInteractable，模块解耦）。
+// v3.43 曾改为"完全由鼠标决定"，v3.44 用户回退局部：**走路时 WASD 移动方向优先，
+// 站立不动时才用准星方向判断角色朝向**（正常走路手感 + 静止可瞄准方向）。
+// 在 update 的大世界/室内帧尾调用（此时移动逻辑已处理完）。
+function updateAimFacing(sv) {
+    if (!sv || sv.facing8 == null || !sv.mouse || sv.mouse.x == null) return;
+    // 2026-08-12 v3.44 移动中：移动方向优先（不覆盖 WASD 已设的 faceX/faceY）
+    const moving = sv.keys && (sv.keys['w'] || sv.keys['a'] || sv.keys['s'] || sv.keys['d'] ||
+        sv.keys['arrowup'] || sv.keys['arrowdown'] || sv.keys['arrowleft'] || sv.keys['arrowright']);
+    if (moving) return;
+    // 站立：准星方向 → 4 主方向（facing8 现为 0=东 2=南 4=西 6=北，×0.5 即 0=东 1=南 2=西 3=北）
+    const faceMap = [
+        { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 0, y: -1 },
+    ];
+    const f = faceMap[Math.floor(sv.facing8 / 2) % 4];
+    if (f) { sv.faceX = f.x; sv.faceY = f.y; }
+}
+
+// 2026-08-12 v3.40 提取公共尸体搜索函数：室外 tg.corpse 分支 / 室内 doInteriorInteract / 长按扫描面板共用。
+// 完全对齐 v3.36 定稿语义：普通尸体（非 _revivedCorpse）掏空不消失、可反复打开空界面；
+// 尸变尸体（_revivedCorpse）掏空才彻底消失（splice 移除），未掏空可续搜。
+// 未拿走物品写回 _corpseContents（保留完整属性 + r 搜索完成标记 + slot）。
+function openCorpseSearchUI(c) {
+    if (!c || !sv) return;
+    if (WSearch.isOpen() || sv.search) return;   // 已有搜索界面打开 → 忽略
+    const contents = c._corpseContents || [];
+    // 空内容也开界面（普通尸体搜完可反复打开空界面；尸变尸体掏空由 onClose 移除）
+    const corpseFull = contents.map(o => ({ ...o, _rem: o.n || 1 }));
+    // 与容器/室外一致：done = 已搜索完成（r=1 直接显示），slot = 固定槽位（重开位置不变）
+    const items = contents.map(o => ({ id: o.id, n: o.n || 1, done: !!o.r, slot: o.slot }));
+    AudioSystem.playOpenBox && AudioSystem.playOpenBox();
+    WSearch.openSearch(sv, {
+        items,
+        name: `搜索 ${c.name} 的尸体`,
+        gx: Math.floor(c.x / TS), gy: Math.floor(c.y / TS),
+        cap: Math.max(6, contents.length),
+        corpseFull,
+        onClose: (remaining) => {
+            const rest = (remaining || []).filter(o => o && o.n > 0).map(o => {
+                const f = corpseFull.find(x => x && x.id === o.id);
+                const base = f ? { ...f } : { id: o.id };
+                delete base._rem;
+                return { ...base, n: o.n, r: !!o.r, slot: o.slot };
+            });
+            if (c._revivedCorpse) {
+                // —— 尸变尸体：掏空彻底消失，未掏空保留续搜 ——
+                c._corpseContents = rest;
+                if (!rest.length) {
+                    if (Array.isArray(sv.npcs)) {
+                        const idx = sv.npcs.indexOf(c);
+                        if (idx >= 0) sv.npcs.splice(idx, 1);
+                    }
+                    if (sv._legacyDrop && Math.abs(c.x - sv._legacyDrop.x) < TS && Math.abs(c.y - sv._legacyDrop.y) < TS) sv._legacyDrop = null;
+                    log(`搜索了 ${c.name} 的尸体（物品已全部取走，尸变尸体消失）`, '#9fd6ff');
+                } else {
+                    log(`搜索了 ${c.name} 的尸体（已取走部分物品，剩余 ${rest.length} 件留在原地可再搜）`, '#9fd6ff');
+                }
+                return;
+            }
+            // —— 普通尸体：掏空保留（像容器可反复打开），未尸变照样 15 分钟尸变 ——
+            c._corpseContents = rest;
+            if (!rest.length) {
+                c._corpseSearched = true;
+                c._corpseSearchedDay = sv.day;
+                log(`搜索了 ${c.name} 的尸体（物品已取走，尸体保留可再次打开）`, '#9fd6ff');
+            } else {
+                log(`搜索了 ${c.name} 的尸体（已取走部分物品，剩余 ${rest.length} 件留在原地可再搜）`, '#9fd6ff');
+            }
+        },
+    }, { onUseItem: (idx) => useItem(idx) });
+}
+
+// ================= 2026-08-12 v3.40/v3.42 长按 N 扫描周围可交互目标（用户需求） =================
+// 长按 N（0.8s，进度环顺时针加载）→ 周围 3×3 格（含脚下）内有目标则弹出"周围可交互目标"
+// 居中模态选择面板（滚轮滚动切换选中 + 左键点击确认 + 右上角✕关闭）；无目标则淡入淡出提示
+// "周围没有可交互目标"（显示约 1.2s 后自动淡出）。
+// 解决"有些交互的地方会有交互不到的问题"：F 键只判定最近单个目标，多目标堆叠/远处目标交互不到时，
+// 长按 N 可精确选中任意范围内的目标。面板右上角叉号关闭，ESC 也可关闭。
+let scanPanelEl = null;
+let scanPanelItems = [];
+let scanSel = -1;   // 滚轮选中索引
+function scanPanelOpen() { return !!(scanPanelEl && scanPanelEl.style.display !== 'none'); }
+function closeScanPanel() { if (scanPanelEl) scanPanelEl.style.display = 'none'; scanPanelItems = []; scanSel = -1; }
+function buildScanItem(label, fn) {
+    if (!fn) return;
+    scanPanelItems.push({ label, fn });
+}
+// 空态淡入淡出 toast（"周围没有可交互目标"，显示 1.2s 后淡出）
+let scanToastEl = null, scanToastTimer = null;
+function showScanEmptyToast() {
+    if (!document.body) return;
+    if (!scanToastEl) {
+        scanToastEl = document.createElement('div');
+        scanToastEl.id = 'wsl-scan-toast';
+        scanToastEl.style.cssText = 'position:fixed;top:16%;left:50%;transform:translateX(-50%);z-index:10000;background:rgba(26,31,39,.92);border:1px solid #3a4451;border-radius:10px;padding:12px 22px;color:#e8ecf1;font-size:14px;opacity:0;transition:opacity .3s ease;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,.45);';
+        document.body.appendChild(scanToastEl);
+    }
+    scanToastEl.textContent = '周围没有可交互目标';
+    scanToastEl.style.opacity = '1';   // 淡入
+    if (scanToastTimer) clearTimeout(scanToastTimer);
+    scanToastTimer = setTimeout(() => { scanToastEl.style.opacity = '0'; }, 1200);   // 显示后淡出
+}
+function scanPanelRender() {
+    if (!scanPanelEl) {
+        scanPanelEl = document.createElement('div');
+        scanPanelEl.id = 'wsl-scan-panel';
+        scanPanelEl.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;background:#161b22;border:1px solid #3a4451;border-radius:12px;padding:0;min-width:340px;max-width:540px;max-height:70vh;display:none;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.65);color:#e8ecf1;font-family:inherit;overflow:hidden;';
+        scanPanelEl.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#1d242e;border-bottom:1px solid #2e3540;">
+                <div style="font-weight:bold;font-size:14px;color:#7fd6ff;">周围可交互目标</div>
+                <div id="wsl-scan-close" style="cursor:pointer;width:26px;height:26px;line-height:24px;text-align:center;border-radius:50%;background:#2a313c;border:1px solid #3a4451;color:#ff9e9e;font-size:15px;">✕</div>
+            </div>
+            <div id="wsl-scan-list" style="overflow-y:auto;flex:1;padding:8px 12px;max-height:52vh;"></div>
+            <div style="padding:8px 14px;border-top:1px solid #2e3540;color:#8b93a1;font-size:12px;text-align:center;">滚轮切换 · 点击确认 · 右键/Esc 取消</div>`;
+        scanPanelEl.querySelector('#wsl-scan-close').addEventListener('click', closeScanPanel);
+        document.body.appendChild(scanPanelEl);
+        // 2026-08-12 v3.45 事件委托（修复"面板内除了叉号都不能交互"）：
+        // 此前 mouseenter/wheel 每次调用 scanPanelRender() → 重建 innerHTML → 旧列表项 click 监听被销毁，
+        // 鼠标移过某行再点击时节点已重建，监听丢失 → 点击无反应。改为在 list 容器上委托监听：
+        //   · wheel（面板上滚动）→ 切换选中并重绘
+        //   · mouseover（hover 行）→ 仅更新选中高亮（不重建整表，避免事件抖动）
+        //   · click（点击行）→ 取 data-i 执行对应 fn（先存引用再关闭面板）
+        const scanList = scanPanelEl.querySelector('#wsl-scan-list');
+        scanPanelEl.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            if (!scanPanelItems.length) return;
+            scanSel = (scanSel + (e.deltaY > 0 ? 1 : -1) + scanPanelItems.length) % scanPanelItems.length;
+            scanPanelRender();
+        }, { passive: false });
+        scanList.addEventListener('mouseover', (e) => {
+            const row = e.target.closest('.wsl-scan-item');
+            if (!row) return;
+            const i = Number(row.dataset.i);
+            if (i >= 0 && i !== scanSel) { scanSel = i; scanPanelRender(); }
+        });
+        scanList.addEventListener('click', (e) => {
+            const row = e.target.closest('.wsl-scan-item');
+            if (!row) return;
+            const i = Number(row.dataset.i);
+            const it = scanPanelItems[i];
+            closeScanPanel();
+            if (it && it.fn) it.fn();
+        });
+    }
+    const list = scanPanelEl.querySelector('#wsl-scan-list');
+    if (!scanPanelItems.length) {
+        list.innerHTML = '<div style="color:#8b93a1;padding:8px 0;text-align:center;">附近（3×3 格内）没有可交互目标</div>';
+    } else {
+        if (scanSel < 0) scanSel = 0;
+        list.innerHTML = scanPanelItems.map((it, i) => `<div class="wsl-scan-item" data-i="${i}" style="cursor:pointer;padding:9px 12px;border-radius:6px;border:1px solid ${i === scanSel ? '#39d98a' : '#2e3540'};background:${i === scanSel ? 'rgba(57,217,138,.14)' : '#212833'};margin:5px 0;display:flex;align-items:center;gap:8px;"><span style="color:${i === scanSel ? '#39d98a' : '#7fd6ff'};font-size:13px;">${i === scanSel ? '●' : '○'}</span><span style="flex:1;font-size:13px;">${it.label}</span></div>`).join('');
+        // 2026-08-12 v3.45 交互走事件委托（scanList 容器上监听 mouseover/click），此处不再逐行绑定
+    }
+    scanPanelEl.style.display = 'flex';
+}
+// 键盘 ↑↓ 切换选中（keydown 里调用）
+function scanSelMove(d) {
+    if (!scanPanelOpen() || !scanPanelItems.length) return;
+    scanSel = (scanSel + d + scanPanelItems.length) % scanPanelItems.length;
+    scanPanelRender();
+}
+function scanSelConfirm() {
+    if (!scanPanelOpen() || !scanPanelItems.length) return;
+    const it = scanPanelItems[scanSel < 0 ? 0 : scanSel];
+    closeScanPanel();
+    if (it && it.fn) it.fn();
+}
+// 收集 3×3（含脚下）范围内可交互目标并渲染面板
+function openScanPanel() {
+    if (!sv || sv.dead) return;
+    scanPanelItems = [];
+    const ptx = sv.interior ? Math.floor(sv.interior.px / TS) : Math.floor(sv.px / TS);
+    const pty = sv.interior ? Math.floor(sv.interior.py / TS) : Math.floor(sv.py / TS);
+    // —— 室外 ——
+    if (!sv.interior) {
+        // 3×3 地块目标（v3.43 只收集"交互会弹 UI"的交互体：容器/储物柜/门/床/车/报废车/垃圾桶/纸箱/报刊亭/消防栓/培养植物；
+        // 纯采集类【草药/伐木/阳光/水/作物/中立植物】不弹 UI → 不进扫描列表，仍可 F 直接采集）
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const tx = ptx + dx, ty = pty + dy;
+            const t = getTile(sv, tx, ty);
+            if (!SCAN_UI_TILES.has(t)) continue;
+            if (!containerInteractable(t, tx, ty)) continue;
+            if (t === T.DOOR && builtAt(sv, tx, ty)) continue;
+            const label = INTERACT_LABEL[t] || '容器';
+            buildScanItem(label, () => { sv.promptTarget = { x: tx, y: ty, t }; doInteract(); });
+        }
+        // 尸体（含尸变尸体）
+        if (sv.npcs) for (const n of sv.npcs) {
+            if (!n || !n._corpse || n.downed) continue;
+            if (Math.abs(n.x - sv.px) > 1.9 * TS || Math.abs(n.y - sv.py) > 1.9 * TS) continue;
+            buildScanItem(`搜索 ${n.name} 的尸体`, () => {
+                const c = sv.npcs.find(m => m && m._corpse && !m.downed && m.id === n.id);
+                if (c) openCorpseSearchUI(c);
+            });
+        }
+        // 倒地主角（救治）
+        if (sv._downed && Math.abs(sv._downed.px - sv.px) <= 1.9 * TS && Math.abs(sv._downed.py - sv.py) <= 1.9 * TS) {
+            buildScanItem(`救治 ${sv._downed.name}`, () => { sv.promptTarget = { downed: 1, x: Math.floor(sv._downed.px / TS), y: Math.floor(sv._downed.py / TS) }; doInteract(); });
+        }
+        // 倒地队友（救助）
+        if (Array.isArray(sv._downedMembers)) for (const m of sv._downedMembers) {
+            if (!m || !m.alive || !m.downed) continue;
+            if (Math.abs(m.x - sv.px) > 1.9 * TS || Math.abs(m.y - sv.py) > 1.9 * TS) continue;
+            buildScanItem(`救治 ${m.name}`, () => { openMateRescue(m.id); });
+        }
+        // 可命令/交谈队友
+        if (sv.npcs) for (const n of sv.npcs) {
+            if (!n || !n.alive || n.role === 'hostile' || n.downed) continue;
+            if (sv.controllerId && n.id === sv.controllerId) continue;
+            if (Math.abs(n.x - sv.px) > 1.9 * TS || Math.abs(n.y - sv.py) > 1.9 * TS) continue;
+            buildScanItem(n.party ? `命令 ${n.name}` : `交谈 ${n.name}`, () => {
+                sv.promptTarget = { npc: n.id };
+                doInteract();
+            });
+        }
+        // 营地中心/旗帜
+        if (sv.camp && Math.hypot(sv.px - sv.camp.x, sv.py - sv.camp.y) < 6 * TS) {
+            buildScanItem('营地（工作日志 · 物资箱）', () => openCampPanel());
+        }
+    } else {
+        // —— 室内 ——
+        const it = sv.interior;
+        // 3×3 箱子
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const gx = ptx + dx, gy = pty + dy;
+            if (gx < 0 || gx >= it.w || gy < 0 || gy >= it.h) continue;
+            const tile = it.tiles[gy * it.w + gx];
+            if (tile === WD.INTERIOR_TILES.BOX || tile === WD.INTERIOR_TILES.WBOX
+                || tile === WD.INTERIOR_TILES.MEDBOX || tile === WD.INTERIOR_TILES.MATBOX) {
+                buildScanItem('搜索箱子', () => openInteriorBox(gx, gy));
+            }
+        }
+        // 楼梯
+        for (let gy = 0; gy < it.h; gy++) for (let gx = 0; gx < it.w; gx++) {
+            const tile = it.tiles[gy * it.w + gx];
+            if (tile !== WD.INTERIOR_TILES.STAIRS_UP && tile !== WD.INTERIOR_TILES.STAIRS_DOWN) continue;
+            const dcx = (gx + 0.5) * TS, dcy = (gy + 0.5) * TS;
+            if (Math.hypot(it.px - dcx, it.py - dcy) < 1.9 * TS) {
+                const dir = tile === WD.INTERIOR_TILES.STAIRS_UP ? 1 : -1;
+                buildScanItem(dir > 0 ? '上楼' : '下楼', () => WD.changeFloor(sv, dir));
+            }
+        }
+        // 尸体（当前房间/楼层）
+        if (sv.npcs) for (const n of sv.npcs) {
+            if (!n || !n._corpse || n.downed) continue;
+            if (!(n.inInterior && n.interiorKey === it.key && (n.interiorFloor == null ? 1 : n.interiorFloor) === (it.floor || 1))) continue;
+            if (Math.abs(n.x - it.px) > 1.9 * TS || Math.abs(n.y - it.py) > 1.9 * TS) continue;
+            buildScanItem(`搜索 ${n.name} 的尸体`, () => { openCorpseSearchUI(n); });
+        }
+        // 倒地主角 / 倒地队友 / 躲藏幸存者 / 随行队员（同室外语义）
+        if (sv._downed && Math.abs(sv._downed.px - it.px) <= 1.9 * TS && Math.abs(sv._downed.py - it.py) <= 1.9 * TS) {
+            buildScanItem(`救治 ${sv._downed.name}`, () => openRescue());
+        }
+        if (Array.isArray(sv._downedMembers)) for (const m of sv._downedMembers) {
+            if (!m || !m.alive || !m.downed) continue;
+            if (Math.abs(m.x - it.px) > 1.9 * TS || Math.abs(m.y - it.py) > 1.9 * TS) continue;
+            buildScanItem(`救治 ${m.name}`, () => openMateRescue(m.id));
+        }
+        if (it.npcs) for (const n of it.npcs) {
+            if (!n || n.hp <= 0) continue;
+            if (Math.abs(n.x - it.px) > 1.9 * TS || Math.abs(n.y - it.py) > 1.9 * TS) continue;
+            buildScanItem(`交谈 ${n.name}`, () => openNpcMenu(n.id));
+        }
+        // 2026-08-12 v3.61 室内扫描补"随行队友/初始主控"交互（与室外 line 3197-3206 语义一致）：
+        // 本房间本楼层的随行队员可命令/交谈；切视角成队友后，初始主控也在 sv.npcs 里 → 也能交互。
+        if (sv.npcs) for (const n of sv.npcs) {
+            if (!n || !n.alive || n.role === 'hostile' || n.downed) continue;
+            if (!(n.inInterior && n.interiorKey === it.key && (n.interiorFloor == null ? 1 : n.interiorFloor) === (it.floor || 1))) continue;
+            if (sv.controllerId && n.id === sv.controllerId) continue;
+            if (Math.abs(n.x - it.px) > 1.9 * TS || Math.abs(n.y - it.py) > 1.9 * TS) continue;
+            buildScanItem(n.party ? `命令 ${n.name}` : `交谈 ${n.name}`, () => {
+                sv.promptTarget = { npc: n.id };
+                doInteract();
+            });
+        }
+    }
+    // 2026-08-12 v3.42 空态淡入淡出 toast；有目标才渲染面板
+    if (!scanPanelItems.length) { showScanEmptyToast(); return; }
+    scanPanelRender();
+}
+
 // 街道杂物单件掉落（并入箱子持久化搜索流程；返回 [id,n] 或 null=空手）
-function _junkAmmo() {
-    const at = B.LOOT_AMMO[Math.floor(Math.random() * B.LOOT_AMMO.length)];
-    const pack = (AMMO_INFO[at] || {}).pack || 20;
-    return ['ammo:' + at, Math.max(2, Math.round(pack * (0.2 + Math.random() * 0.3)))];
-}
-function rollTrashLoot() {
-    const r = Math.random();
-    if (r < 0.26) return ['food', 1];
-    if (r < 0.46) return ['water', 1];
-    if (r < 0.58) return ['part', 1];
-    if (r < 0.70) return ['herb', 1];
-    if (r < 0.78) return ['coin', 2 + Math.floor(Math.random() * 4)];
-    if (r < 0.86) return ['fuel', 1];
-    return null;
-}
-function rollCardLoot() {
-    const r = Math.random();
-    if (r < 0.28) return ['wood', 1 + Math.floor(Math.random() * 2)];
-    if (r < 0.46) return ['food', 1];
-    if (r < 0.56) return ['part', 1];
-    if (r < 0.64) return _junkAmmo();
-    if (r < 0.74) return ['coin', 3 + Math.floor(Math.random() * 5)];
-    return null;
-}
-function rollHydrantLoot() {
-    const r = Math.random();
-    if (r < 0.55) return ['water', 1];
-    if (r < 0.70) return ['water', 2];
-    if (r < 0.80) return ['part', 1];
-    return null;   // 栓里早干了
-}
-function rollNewsLoot() {
-    const r = Math.random();
-    if (r < 0.28) return ['food', 1];
-    if (r < 0.46) return ['herb', 1];
-    if (r < 0.60) return ['wood', 1];
-    if (r < 0.70) return ['part', 1];
-    return null;   // 只剩烂报纸
-}
-function rollTiresLoot() {
-    const r = Math.random();
-    if (r < 0.42) return ['part', 1];
-    if (r < 0.54) return ['part', 2];
-    if (r < 0.62) return _junkAmmo();
-    return null;   // 一堆烂轮胎
-}
+// v3.19 街道杂物改容器分池 + 全局权重（CONTAINER_LOOT_POOLS）；原 rollTrashLoot 等按箱型硬编码表已移除
 
 // ---------- 室内 F 交互（搜索箱子） ----------
 function doInteriorInteract() {
     const it = sv.interior;
     if (!it) return;
+    // 2026-08-12 v3.58 准星优先（与室外 updatePrompt 一致）：鼠标指到哪就交互哪——
+    // ① 指到 NPC 碰撞体积 → 打开该 NPC 菜单；② 指到楼梯格 → 换层；③ 指到箱子格 → 开箱子。
+    // 均限定 3×3 内（玩家到目标距离判定同其它交互）。倒地主控/倒地队友仍最高优先（救人优先）。
+    const pgx0 = Math.floor(it.px / TS), pgy0 = Math.floor(it.py / TS);
+    if (sv.mouse && sv.mouse.x != null) {
+        const mwx = (sv.camX != null ? sv.camX : 0) + sv.mouse.x;
+        const mwy = (sv.camY != null ? sv.camY : 0) + sv.mouse.y;
+        const agx = Math.floor(mwx / TS), agy = Math.floor(mwy / TS);
+        const inGrid = Math.abs(agx - pgx0) <= 1 && Math.abs(agy - pgy0) <= 1;
+        // ① NPC 碰撞体积优先（鼠标落在 NPC 渲染范围内 → 该 NPC）
+        if (inGrid && it.npcs) {
+            for (const n of it.npcs) {
+                if (!n || n.hp <= 0) continue;
+                if (Math.hypot(mwx - n.x, mwy - n.y) <= 26) {
+                    openNpcMenu(n.id);
+                    return;
+                }
+            }
+        }
+        // ② 楼梯格优先
+        if (inGrid && agx >= 0 && agx < it.w && agy >= 0 && agy < it.h) {
+            const at = it.tiles[agy * it.w + agx];
+            if (at === WD.INTERIOR_TILES.STAIRS_UP || at === WD.INTERIOR_TILES.STAIRS_DOWN) {
+                const dir = at === WD.INTERIOR_TILES.STAIRS_UP ? 1 : -1;
+                WD.changeFloor(sv, dir);
+                return;
+            }
+        }
+        // ③ 箱子格优先
+        if (inGrid) {
+            const at = (agx >= 0 && agx < it.w && agy >= 0 && agy < it.h) ? it.tiles[agy * it.w + agx] : -1;
+            if (at === WD.INTERIOR_TILES.BOX || at === WD.INTERIOR_TILES.WBOX
+                || at === WD.INTERIOR_TILES.MEDBOX || at === WD.INTERIOR_TILES.MATBOX) {
+                openInteriorBox(agx, agy);
+                return;
+            }
+        }
+    }
     // 2026-08-10 室内濒死交互（与室外同步）：靠近倒地主角按 F → 打开救助界面。
     // 室内 _downed.px/py 是室内坐标（与 it.px/it.py 同坐标系），直接判距即可。
     if (sv._downed) {
@@ -2929,12 +3423,27 @@ function doInteriorInteract() {
         }
     }
     // 3×3 内的箱子（2026-08-10 移到队员之前：跟随队员会抢占箱子交互，导致"围着箱子一圈都交互不了"）
+    // 2026-08-12 v3.46 准星优先（与室外一致）：准星指向的格若是箱子则优先，否则回退 3×3 顺序。
     const pgx = Math.floor(it.px / TS), pgy = Math.floor(it.py / TS);
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const gx = pgx + dx, gy = pgy + dy;
-        if (gx < 0 || gx >= it.w || gy < 0 || gy >= it.h) continue;
+    const isBoxTile = (gx, gy) => {
+        if (gx < 0 || gx >= it.w || gy < 0 || gy >= it.h) return false;
         const tile = it.tiles[gy * it.w + gx];
-        if (tile === WD.INTERIOR_TILES.BOX || tile === WD.INTERIOR_TILES.WBOX || tile === WD.INTERIOR_TILES.MEDBOX || tile === WD.INTERIOR_TILES.MATBOX) {
+        return tile === WD.INTERIOR_TILES.BOX || tile === WD.INTERIOR_TILES.WBOX || tile === WD.INTERIOR_TILES.MEDBOX || tile === WD.INTERIOR_TILES.MATBOX;
+    };
+    let aimPicked = false;
+    if (sv.mouse && sv.mouse.x != null) {
+        // 2026-08-12 v3.48 修复"室内准星未同步"：室内鼠标世界坐标 = sv.camX + m.x（sv.camX=-ox）
+        const agx = Math.floor(((sv.camX != null ? sv.camX : 0) + sv.mouse.x) / TS);
+        const agy = Math.floor(((sv.camY != null ? sv.camY : 0) + sv.mouse.y) / TS);
+        if (Math.abs(agx - pgx) <= 1 && Math.abs(agy - pgy) <= 1 && isBoxTile(agx, agy)) {
+            openInteriorBox(agx, agy);
+            aimPicked = true;
+        }
+    }
+    if (!aimPicked) {
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const gx = pgx + dx, gy = pgy + dy;
+            if (!isBoxTile(gx, gy)) continue;
             openInteriorBox(gx, gy);
             return;
         }
@@ -2957,44 +3466,24 @@ function doInteriorInteract() {
     }
     // 2026-08-10 室内尸体搜索（成员死亡留在房间的尸体，靠近 F 搜索遗物）
     // 2026-08-11 与室外统一：复用【容器搜索界面】（WSearch 面板逐件渐亮，用户定稿"与容器一样即可"）。
+    // 2026-08-12 v3.36 用户反馈"室内尸体搜索逻辑要和室外一致"——完全对齐室外 tg.corpse 分支：
+    //   ① 普通尸体（未尸变）：东西没拿完【不消失】（写回 _corpseContents 可续搜），掏空也不消失
+    //      （标记 _corpseSearched 可反复打开空界面），未尸变照样 15 分钟尸变；
+    //   ② 尸变尸体（_revivedCorpse，丧尸被击败掉落）：东西没拿完【不消失】（可续搜），掏空才彻底消失；
+    //   ③ 不再要求 `!_corpseSearched`（普通尸体搜完保留、可重开）；空内容也开界面（显示空）。
     // 室内坐标直接用 it.px/py（房间局部坐标，与 n.x/n.y 同坐标系）。
     if (sv.npcs && sv.npcs.length) {
         let best = null, bd = 1.9 * TS;
         for (const n of sv.npcs) {
-            if (!n || !n._corpse || n._corpseSearched) continue;
+            if (!n || !n._corpse || n.downed) continue;
+            // 2026-08-12 v3.36 只搜当前房间/楼层尸体（v3.27 规则）：其它房间/室外尸体不干扰当前交互
+            if (!(n.inInterior && n.interiorKey === it.key && (n.interiorFloor == null ? 1 : n.interiorFloor) === (it.floor || 1))) continue;
             const d = Math.hypot(n.x - it.px, n.y - it.py);
             if (d < bd) { bd = d; best = n; }
         }
         if (best) {
-            if (WSearch.isOpen() || sv.search) return;   // 已有搜索界面打开 → 忽略
-            const contents = best._corpseContents || [];
-            if (!contents.length) { best._corpseSearched = true; best._corpseSearchedDay = sv.day; return; }
-            const corpseFull = contents.map(o => ({ ...o, _rem: o.n || 1 }));
-            AudioSystem.playOpenBox && AudioSystem.playOpenBox();
-            WSearch.openSearch(sv, {
-                items: contents.map(o => ({ id: o.id, n: o.n || 1, done: false })),
-                name: `搜索 ${best.name} 的尸体`,
-                gx: Math.floor(best.x / TS), gy: Math.floor(best.y / TS),
-                cap: Math.max(6, contents.length),
-                corpseFull,
-                onClose: (remaining) => {
-                    // 2026-08-11 与室外一致：搜完尸体立即移除（详见室外尸体搜索 onClose 注释）
-                    const rest = (remaining || []).filter(o => o && o.n > 0).map(o => {
-                        const f = corpseFull.find(x => x && x.id === o.id);
-                        return f ? { ...f, n: o.n } : { id: o.id, n: o.n };
-                    });
-                    let taken = 0, dropped = 0;
-                    for (const s of rest) {
-                        const left = Panel.addItemObj(sv.inv, s);
-                        if (left < (s.n || 1)) taken++;
-                        else if (left > 0) { sv.drops.push({ ...s, x: best.x, y: best.y, n: left }); dropped++; }
-                    }
-                    const idx = sv.npcs.indexOf(best);
-                    if (idx >= 0) sv.npcs.splice(idx, 1);
-                    if (sv._legacyDrop && Math.abs(best.x - sv._legacyDrop.x) < TS && Math.abs(best.y - sv._legacyDrop.y) < TS) sv._legacyDrop = null;
-                    log(`搜索了 ${best.name} 的尸体${taken ? `（获得 ${taken} 件）` : ''}${dropped ? `，背包满掉了 ${dropped} 件在地上` : ''}`, '#9fd6ff');
-                },
-            }, { onUseItem: (idx) => useItem(idx) });
+            // 2026-08-12 v3.40 提取公共函数（与室外 tg.corpse 共用，长按扫描面板复用）
+            openCorpseSearchUI(best);
             return;
         }
     }
@@ -3063,27 +3552,39 @@ function rollBoxContents(boxType, gx, gy) {
     Math.random = rng;
     try {
         const items = [];
-        if (STREET_JUNK_SET.has(boxType)) {   // 街道杂物：给 1~2 件、可空手、不掺字块
-            const rolls = 1 + Math.floor(Math.random() * 2);
-            const rollFn = BOX_ROLL[boxType];
-            for (let i = 0; i < rolls; i++) {
-                const r = rollFn && rollFn();
-                if (r) { const [id, n] = r; items.push({ id, n }); }
-            }
-            return items;
-        }
-        const rolls = 2 + Math.floor(Math.random() * 2);
-        const rollFn = BOX_ROLL[boxType] || rollSupplyLoot;
+        const def = CONTAINER_LOOT_POOLS[boxType];
+        const isStreet = STREET_JUNK_SET.has(boxType);
+        // v3.19 用户定稿：物资全局权重 + 容器分池——从容器池按全局权重抽；街道 1~2 件可空手、不掺字块
+        const rolls = isStreet ? (1 + Math.floor(Math.random() * 2)) : (2 + Math.floor(Math.random() * 2));
         for (let i = 0; i < rolls; i++) {
-            const [id, n] = rollFn();
-            items.push({ id, n });
+            if (def && def.empty && Math.random() < def.empty) continue;
+            const id = def ? WW.rollGlobalLoot(def.items, Math.random) : null;
+            if (!id) continue;
+            items.push({ id, n: WW.globalLootQty(id, Math.random) });
         }
+        if (isStreet) return items;
         const source = boxType === T.WBOX ? 'weapon' : boxType === T.MEDBOX ? 'medical' : boxType === T.MATBOX ? 'material' : 'supply';
         items.push(...rollWordAddon(source, gx, gy));
+        // 2026-08-12 v3.8 箱子低概率掉落配方（优先未解锁；地图区域修正影响概率）
+        if (Math.random() < B.RECIPE_DROP_CHANCE_BOX) {
+            const recipe = WW.rollRecipeItem(recipeUnlockedSet(), Math.random);
+            if (recipe) items.push(recipe);
+        }
+        // 2026-08-12 v3.18 文字手术刀（用户定稿）：仅医疗箱 2% 掉落（唯一获取途径；普通容器不再掉落）
+        if (boxType === T.MEDBOX && Math.random() < B.SURGERY_MEDBOX_DROP_CHANCE) {
+            items.push({ id: 'tool:surgery', n: 1, dur: B.SURGERY_DUR });
+        }
         return items;
     } finally {
         Math.random = _mr;
     }
+}
+
+// 2026-08-12 v3.8 已解锁配方集合（初始基础配方 + 玩家已学习的配方）
+function recipeUnlockedSet() {
+    const set = new Set(['water', 'wood', 'stone', 'food', 'herb']);
+    if (sv && Array.isArray(sv.mods.recipes)) for (const id of sv.mods.recipes) set.add(id);
+    return set;
 }
 
 function wordRegionModifier(gx, gy) {
@@ -3096,96 +3597,33 @@ function wordRegionModifier(gx, gy) {
 function rollWordAddon(source, gx = 0, gy = 0) {
     const table = B.WORD_LOOT_SOURCE_TABLES[source];
     if (!table) return [];
-    const options = { modifier: wordRegionModifier(gx, gy) };
+    // v3.18 用户定稿：容器分主题字池（不同容器文字池不同）；池内每字概率按全局权重归一化（全局一致）。
+    const options = { modifier: wordRegionModifier(gx, gy), glyphPool: WW.GLYPH_SOURCE_POOLS[source] || WW.GLYPH_SOURCE_POOLS.supply };
     const result = WW.rollWordLootOutcome(source, table, options);
     return result.items;
 }
 
-// ---------- 搜刮掉落表（按箱型分表，不是所有资源都能从同一种箱子里开出来） ----------
-function rollSupplyLoot() {
-    const r = Math.random();
-    if (r < 0.36) return ['wood', 1 + Math.floor(Math.random() * 3)];
-    if (r < 0.44) return ['food', 1 + Math.floor(Math.random() * 2)];
-    if (r < 0.60) return ['herb', 1 + Math.floor(Math.random() * 2)];
-    if (r < 0.74) return ['stone', 1 + Math.floor(Math.random() * 2)];
-    if (r < 0.79) return ['part', 1];
-    if (r < 0.82) return ['tool:hoe', 1];
-    if (r < 0.87) return ['coin', 5 + Math.floor(Math.random() * 8)];
-    if (r < 0.90) return ['flag', 1];
-    const at = B.LOOT_AMMO[Math.floor(Math.random() * B.LOOT_AMMO.length)];
-    return ['ammo:' + at, 3 + Math.floor(Math.random() * 6)];
-}
-function rollWeaponLoot() {
-    const r = Math.random();
-    if (r < 0.35) {
-        const rr = Math.random();
-        const tier = rr < 0.60 ? 'common' : (rr < 0.90 ? 'rare' : 'epic');
-        const pool = B.LOOT_WEAPONS[tier];
-        return ['wpn:' + pool[Math.floor(Math.random() * pool.length)], 1];
-    }
-    if (r < 0.75) {
-        const at = B.LOOT_AMMO[Math.floor(Math.random() * B.LOOT_AMMO.length)];
-        const pack = (AMMO_INFO[at] || {}).pack || 20;
-        return ['ammo:' + at, Math.max(4, Math.round(pack * (0.5 + Math.random() * 0.5)))];
-    }
-    if (r < 0.90) return ['part', 1];
-    if (r < 0.95) return ['stone', 1 + Math.floor(Math.random() * 2)];
-    return ['flag', 1];   // 武器箱 5%：战利品里翻出一面领地旗帜
-}
-function rollMedicalLoot() {
-    const r = Math.random();
-    if (r < 0.22) return ['herb', 1 + Math.floor(Math.random() * 3)];
-    if (r < 0.36) return ['med:cold', 1];
-    if (r < 0.50) return ['med:wound', 1];
-    if (r < 0.60) return ['med:poison', 1];
-    if (r < 0.70) return ['med:dysentery', 1];
-    if (r < 0.78) return ['med:heat', 1];
-    if (r < 0.88) return ['med:pan', 1];
-    if (r < 0.93) return ['food', 1 + Math.floor(Math.random() * 2)];
-    if (r < 0.97) return ['water', 1];
-    return ['fert', 1];
-}
-function rollMaterialLoot() {
-    const r = Math.random();
-    if (r < 0.35) return ['wood', 2 + Math.floor(Math.random() * 3)];
-    if (r < 0.60) return ['stone', 1 + Math.floor(Math.random() * 3)];
-    if (r < 0.75) return ['part', 1];
-    if (r < 0.82) return ['tool:chopper', 1];
-    if (r < 0.89) return ['tool:pick', 1];
-    if (r < 0.93) return ['tool:wrench', 1];
-    const at = B.LOOT_AMMO[Math.floor(Math.random() * B.LOOT_AMMO.length)];
-    return ['ammo:' + at, 3 + Math.floor(Math.random() * 6)];
-}
-const BOX_ROLL = {
-    [T.BOX]: rollSupplyLoot, [T.WBOX]: rollWeaponLoot,
-    [T.MEDBOX]: rollMedicalLoot, [T.MATBOX]: rollMaterialLoot,
-    [T.TRASHBIN]: rollTrashLoot, [T.CARDBOX]: rollCardLoot,
-    [T.HYDRANT]: rollHydrantLoot, [T.NEWSSTAND]: rollNewsLoot, [T.TIRES]: rollTiresLoot,
+// v3.19 标准四箱/街道杂物统一走 CONTAINER_LOOT_POOLS 容器分池 + 全局权重（原 rollSupplyLoot 等按箱型硬编码表已移除）
+// ---------- v3.19 容器分池（用户定稿：容器 = 可出物资集合；池内按全局权重抽 → 全局概率一致） ----------
+// empty = 街道杂物每件空手概率（保持"可空手"特色）；汽车独立池 CAR_LOOT_POOL（不占 tile）
+const CONTAINER_LOOT_POOLS = {
+    [T.BOX]: { items: ['wood', 'stone', 'water', 'food', 'carrot', 'corn', 'potato', 'bread', 'apple', 'melon', 'herb', 'heal:bandage', 'heal:tonic', 'heal:kit', 'fert', 'sun', 'part', 'coin', 'fuel', 'tool:hoe', 'flag', 'ammo:pistolAmmo', 'ammo:arrowAmmo'] },
+    [T.WBOX]: { items: ['wpn:pistol', 'wpn:dagger', 'wpn:knife', 'wpn:shovel', 'wpn:sword', 'wpn:spear', 'wpn:bow', 'wpn:shotgun', 'wpn:axe', 'wpn:smg', 'wpn:rifle', 'wpn:sniper', 'ammo:pistolAmmo', 'ammo:smgAmmo', 'ammo:rifleAmmo', 'ammo:sniperAmmo', 'ammo:shellAmmo', 'ammo:arrowAmmo', 'ammo:knifeAmmo', 'part', 'stone', 'flag', 'coin'] },
+    [T.MEDBOX]: { items: ['herb', 'heal:bandage', 'heal:tonic', 'heal:kit', 'med:cold', 'med:wound', 'med:poison', 'med:dysentery', 'med:heat', 'med:pan', 'food', 'carrot', 'corn', 'potato', 'bread', 'apple', 'melon', 'water', 'fert', 'sun'] },
+    [T.MATBOX]: { items: ['wood', 'stone', 'part', 'tool:chopper', 'tool:pick', 'tool:wrench', 'tool:hoe', 'ammo:pistolAmmo', 'ammo:shellAmmo', 'ammo:knifeAmmo'] },
+    [T.TRASHBIN]: { items: ['food', 'carrot', 'corn', 'potato', 'bread', 'apple', 'melon', 'water', 'part', 'herb', 'heal:bandage', 'coin', 'fuel'], empty: 0.14 },
+    [T.CARDBOX]: { items: ['wood', 'food', 'carrot', 'corn', 'potato', 'bread', 'apple', 'melon', 'part', 'coin', 'ammo:pistolAmmo', 'ammo:arrowAmmo'], empty: 0.26 },
+    [T.HYDRANT]: { items: ['water', 'part'], empty: 0.15 },
+    [T.NEWSSTAND]: { items: ['food', 'carrot', 'corn', 'potato', 'bread', 'apple', 'melon', 'herb', 'heal:bandage', 'wood', 'part', 'coin'], empty: 0.30 },
+    [T.TIRES]: { items: ['part', 'ammo:pistolAmmo', 'ammo:shellAmmo', 'ammo:knifeAmmo'], empty: 0.38 },
 };
+const CAR_LOOT_POOL = ['wpn:pistol', 'wpn:dagger', 'wpn:knife', 'wpn:shovel', 'wpn:sword', 'wpn:spear', 'wpn:bow', 'wpn:shotgun', 'wpn:axe', 'wpn:smg', 'wpn:rifle', 'wpn:sniper', 'ammo:pistolAmmo', 'ammo:smgAmmo', 'ammo:rifleAmmo', 'ammo:sniperAmmo', 'ammo:shellAmmo', 'ammo:arrowAmmo', 'ammo:knifeAmmo', 'fuel', 'part', 'food', 'carrot', 'corn', 'potato', 'bread', 'apple', 'melon', 'wood', 'coin'];
 const BOX_NAME = {
     [T.BOX]: '物资箱', [T.WBOX]: '武器箱', [T.MEDBOX]: '医疗箱', [T.MATBOX]: '建材箱',
     [T.TRASHBIN]: '垃圾桶', [T.CARDBOX]: '纸箱', [T.HYDRANT]: '消防栓', [T.NEWSSTAND]: '报刊亭', [T.TIRES]: '废弃轮胎',
 };
 
-// 汽车搜刮：武器/弹药/零件为主
-function rollCarLoot() {
-    const r = Math.random();
-    if (r < 0.25) {
-        const rr = Math.random();
-        const tier = rr < 0.6 ? 'common' : (rr < 0.92 ? 'rare' : 'epic');
-        const pool = B.LOOT_WEAPONS[tier];
-        return ['wpn:' + pool[Math.floor(Math.random() * pool.length)], 1];
-    }
-    if (r < 0.70) {
-        const at = B.LOOT_AMMO[Math.floor(Math.random() * B.LOOT_AMMO.length)];
-        const pack = (AMMO_INFO[at] || {}).pack || 20;
-        return ['ammo:' + at, Math.max(6, Math.round(pack * (0.6 + Math.random() * 0.5)))];
-    }
-    if (r < 0.78) return ['fuel', 1];
-    if (r < 0.88) return ['part', 1];
-    if (r < 0.95) return ['food', 1 + Math.floor(Math.random() * 2)];
-    return ['wood', 1 + Math.floor(Math.random() * 2)];
-}
+// v3.19 汽车后备箱统一走 CAR_LOOT_POOL 分池 + 全局权重（原 rollCarLoot 硬编码表已移除）
 
 // 容器储物规格（差异化容量）：标准四类箱 12 格；路边小箱（纸箱/报刊亭）6 格；垃圾桶 4 格小储物；
 // 消防栓只取水不储物、轮胎纯障碍
@@ -3205,7 +3643,7 @@ function openContainer(boxType, gx, gy) {
         sv.mods.boxLoot[key] = [];
         Panel.addItem(sv, 'water', 1);
         AudioSystem.playCollect();
-        log('从消防栓里放了一点水 → 水×1');
+        log('从消防栓里取了一点水 → 水×1');
         return;
     }
     // 旧存档已转储物的箱子：仍可存取（新流程不再创建，箱子统一保留搜索界面形态）
@@ -3366,11 +3804,16 @@ function softRespawn(sv, dropTxt, deadName) {
         }
         if (rx === undefined) { rx = (SPAWN.x + 0.5) * TS; ry = (SPAWN.y + 0.5) * TS; }
     } else {
-        // 未设置床：随机地点复活（与初始出生一致：随机角度，距中心 10~16 区块）
-        const ang = Math.random() * Math.PI * 2;
-        const dist = (10 + Math.random() * 6) * CHUNK;
-        rx = Math.round(Math.cos(ang) * dist + 0.5) * TS;
-        ry = Math.round(Math.sin(ang) * dist + 0.5) * TS;
+        // v3.62 无床重生：随机到城区/郊区/废墟三选一（与创建账号苏醒区域规则一致）
+        const sp = randomZoneSpawn(sv.world.seed, sv);
+        if (sp) { rx = sp.x; ry = sp.y; }
+        else {
+            // 兜底：随机地点（原逻辑：随机角度，距中心 10~16 区块）
+            const ang = Math.random() * Math.PI * 2;
+            const dist = (10 + Math.random() * 6) * CHUNK;
+            rx = Math.round(Math.cos(ang) * dist + 0.5) * TS;
+            ry = Math.round(Math.sin(ang) * dist + 0.5) * TS;
+        }
     }
     // 重生点刷"玩家名"僵尸（用户 2026-08-09：重生后能看到位置，但过 3 天才刷）
     // 2026-08-11 v2.98 改为现实时间：15 分钟后在重生点生成"玩家名"僵尸（由 updatePzRespawn 每帧推进）
@@ -3389,6 +3832,14 @@ function softRespawn(sv, dropTxt, deadName) {
     sv.food = B.HUNGER_MAX; sv.water = B.WATER_MAX;
     sv.infection = 0; sv._sick = null;
     sv.px = rx; sv.py = ry;
+    // v3.65 重生后清理顶部提示（避免尸潮/announce/log 残留导致 UI 文字重叠/错位）
+    sv.announce = null; sv._lastHitBy = null;
+    // v3.65 重生后清理死亡地点指引（避免在复活点立即出现"死..."标记）
+    sv._lastDeathPos = null;
+    // v3.65 重生后天气粒子平滑重置（避免下雨/下雪突然一阵一阵出现）：
+    // _wxResetT 是天气系统专用淡入时长（秒），由 updateWeather 处理。
+    sv._wxResetT = 0.6;
+    sv._weatherFadeT = 0;   // 天气切换淡入淡出进度（0~1，0=全透明→1=完全显示）
     // 2026-08-10 修复"在车上死亡重生后角色仍被钉在车上/位置错乱"：
     // 车上死亡时 sv.driving 残留 → driveCommon 每帧把 sv.px 钉回车位置 → 重生点被覆盖。
     // 重生强制下车：清空 driving、所有 riding 成员下车（防止 driveCommon 继续钉坐标）。
@@ -3443,6 +3894,11 @@ function softRespawn(sv, dropTxt, deadName) {
     sv._lastHintHour = curHour;
     sv.announce = null;
     sv.dead = false;
+    // v3.65 重生天气粒子平滑：_weatherFadeT=0 → drawWeatherParticles 整体 alpha 0
+    // 在 1.5s 内渐变到 1；_wxDensityMul=0 同步让强度密度从 0 渐变到目标密度（1.4s）。
+    // 避免"刚重生时一阵一阵雨/雪突然出现 → 等一会才正常"的视觉错位（用户反馈）。
+    sv._weatherFadeT = 0;
+    sv._wxDensityMul = 0;
     // 2026-08-10 修复"软核全灭重生后还是原主控（满血却带濒死标记）"：
     // 当原主控记录（current controller / isPlayer）已死/倒地时，调用 initRoster 删除旧主控，
     // 重新创建一个"幸存者"作为新主控（全新能力/天赋/角色形象）。原主控的遗物尸体已在
@@ -3483,8 +3939,9 @@ function softRespawn(sv, dropTxt, deadName) {
     saveNow();
     // 2026-08-11 v2.99 用户需求：重生睁眼与开场"荒野中醒来"表现完全一致——复用 sv._wake
     // （drawWakeOverlay 渲染模糊+灰雾+单调变亮 + 文字随睁眼浮现/持续/淡出），仅文字内容
-    // 不同（画内 reborn 分支显示"你 醒 了 过 来"）。时长比开场 2.4s 略长（3s）。
-    sv._wake = { t: 0, dur: 3, reborn: true };
+    // 不同（画内 reborn 分支显示"你 醒 了 过 来"）。
+    // 2026-08-12 v3.58 时长恢复 2.4s（用户定稿：创建角色苏醒/游戏结束重生统一 2.4 秒）。
+    sv._wake = { t: 0, dur: 2.4, reborn: true };
 }
 
 // 延迟刷尸推进（2026-08-09）：软核重生/超时死亡后，过 DOWNED_PZ_DELAY_DAYS 天在重生点刷"玩家名"僵尸
@@ -3519,7 +3976,7 @@ function updatePzRespawn(sv) {
 //   ⑤ 尸变丧尸被击败 → 掉「XX（尸变）」尸体（标记 _revivedCorpse），搜索完彻底消失；
 //   ⑥ 重生点刷"玩家名"僵尸：3 天 → 现实 15 分钟（见 updatePzRespawn 新格式）。
 // 尸变丧尸生成（复用 WZ.spawnPlayerZombie，但背包用尸体未搜物品，物品守恒）
-function corpseReviveZombie(sv, n) {
+function corpseReviveZombie(sv, n, roomKey) {
     const contents = (n._corpseContents || []).filter(s => s && s.n > 0);
     const name = (n.name || '幸存者') + B.CORPSE_REVIVE_TAG;
     // 2026-08-11 v2.98 用户要求：**尸变僵尸攻击逻辑与正常僵尸完全一致**（室内室外、单机联机同步）。
@@ -3544,6 +4001,28 @@ function corpseReviveZombie(sv, n) {
     }
     z._reviveFromCorpse = true;          // 标记：尸变丧尸（被击败掉尸变尸体）
     z._reviveCorpseName = name;          // 尸变尸体名
+    // 2026-08-12 v3.31 室外模式下室内尸体尸变（roomKey 传入）：把活丧尸从世界数组移除，
+    // 序列化转存该房间存档 zombies——玩家进房时 windoor 反序列化，室内坐标正确、不瞬移。
+    if (roomKey) {
+        const zi = sv.zombies.indexOf(z);
+        if (zi >= 0) sv.zombies.splice(zi, 1);
+        if (!sv.mods.interiors) sv.mods.interiors = {};
+        const room = sv.mods.interiors[roomKey];
+        // v3.33 修复"出房后室外尸变，进房丧尸消失"：若房间曾标记 cleared（僵尸全灭才出房），
+        // 现在又有尸变丧尸转存进来——必须重置 cleared=0，否则 enterInterior `if(!cleared)` 不恢复 zombies。
+        if (room == null || room === 1) sv.mods.interiors[roomKey] = { v: 2, cleared: 0, zombies: [] };
+        else if (room.cleared) room.cleared = 0;
+        sv.mods.interiors[roomKey].zombies.push({
+            id: z.id, type: z.type, char: z.char, color: z.color, name: z.name,
+            x: z.x, y: z.y, tx: z.tx, ty: z.ty,
+            hp: z.hp, maxHp: z.maxHp, speed: z.speed, damage: z.damage,
+            wt: z.wt || 0, biteT: 0, hurt: 0, stunT: 0, horde: false,
+            infection: z.infection, textAbility: z.textAbility || null,
+            atkState: null, atkT: 0, atkCd: 0, atkAngle: 0, atkWindup: 0, hasHit: false,
+            _reviveFromCorpse: true, _reviveCorpseName: name,
+            inv: z.inv ? z.inv.map(s => ({ ...s })) : [],
+        });
+    }
     // 移除尸体记录（已尸变）
     const idx = sv.npcs.indexOf(n);
     if (idx >= 0) sv.npcs.splice(idx, 1);
@@ -3587,16 +4066,59 @@ function updateCorpseRevive(sv, dt, mode) {
         if (!n._corpse || n._revived) continue;   // 非尸体 / 已尸变跳过
         if (n._revivedCorpse) continue;           // 尸变尸体不二次尸变
         if (indoor) {
-            // 室内模式：只尸变当前房间内的尸体（interiorKey 匹配，避免 A 房间尸体在 B 房间尸变坐标错位）
-            if (!n.inInterior) continue;
-            if (n.interiorKey && sv.interior && sv.interior.key && n.interiorKey !== sv.interior.key) continue;
+            // 室内模式：当前房间+楼层的室内尸体按原逻辑处理；v3.30 室外尸体也放行（见下方生成时切室外数组）
+            if (n.inInterior) {
+                // 2026-08-11 v2.99 只尸变当前房间内的尸体（interiorKey 匹配，避免 A 房间尸体在 B 房间尸变坐标错位）
+                if (n.interiorKey && sv.interior && sv.interior.key && n.interiorKey !== sv.interior.key) continue;
+                // 2026-08-12 v3.58 用户反馈"1 楼等不到 2 楼尸变、上楼瞬间尸变"：
+                // 原 v3.27 逻辑只尸变当前楼层尸体 → 非当前楼层尸体的尸变计时被 continue 跳过，
+                // 等玩家上到该楼层时 `sv.now - at >= CORPSE_REVIVE_SECONDS` 立即成立 → 瞬间尸变，
+                // 与室外"到时间就尸变"不一致。修复：尸变计时全局推进（与室外一致），
+                // 非当前楼层尸体到时间用 roomKey 转存到对应楼层存档（corpseReviveZombie 的 roomKey 分支），
+                // 玩家进楼时 windoor 反序列化，坐标=该楼层局部坐标、不瞬移、不污染当前楼层。
+                if (sv.interior && sv.interior.floor != null) {
+                    const nf = n.interiorFloor == null ? 1 : n.interiorFloor;
+                    if (nf !== sv.interior.floor) {
+                        // 非当前楼层尸体：到时间转存对应楼层存档（与 v3.31 室外处理室内尸体同机制）
+                        const atI = n._corpseAtReal != null ? n._corpseAtReal : (sv.now || 0);
+                        if (sv.now - atI >= B.CORPSE_REVIVE_SECONDS) {
+                            n._revived = true;   // 防重入
+                            const fkey = (n.interiorKey || 'room') + ':' + nf;
+                            try { corpseReviveZombie(sv, n, fkey); } catch (e) { /* 生成失败不阻塞 */ }
+                        }
+                        continue;
+                    }
+                }
+            }
         } else {
-            if (n.inInterior) continue;           // 室外模式：室内尸体由室内循环负责
+            if (n.inInterior) {
+                // 2026-08-12 v3.31 用户定稿：室外时间加速时，室内等待尸变的尸体也照常尸变——
+                // 尸变丧尸转存该房间存档（玩家进房时反序列化，坐标=室内局部坐标不瞬移），log 提示（室外看得到）。
+                const atI = n._corpseAtReal != null ? n._corpseAtReal : (sv.now || 0);
+                if (sv.now - atI >= B.CORPSE_REVIVE_SECONDS) {
+                    n._revived = true;   // 防重入
+                    const fkey = (n.interiorKey || 'room') + ':' + (n.interiorFloor == null ? 1 : n.interiorFloor);
+                    try { corpseReviveZombie(sv, n, fkey); } catch (e) { /* 生成失败不阻塞 */ }
+                }
+                continue;
+            }
         }
         const at = n._corpseAtReal != null ? n._corpseAtReal : (sv.now || 0);
         if (sv.now - at >= B.CORPSE_REVIVE_SECONDS) {
             n._revived = true;   // 防重入
-            try { corpseReviveZombie(sv, n); } catch (e) { /* 生成失败不阻塞 */ }
+            if (indoor && !n.inInterior) {
+                // 2026-08-12 v3.30 用户反馈"室内时间加速时室外尸变卡住无提示，出去才一次性尸变"：
+                // 室外尸体在室内也照常尸变——临时切到室外世界数组生成（sv._worldZombies）并临时清 sv.interior，
+                // 让 spawnZombie 把尸变丧尸放进室外 sv.zombies、用尸体室外坐标 → 不瞬移、不污染当前房间，并照常 log 提示。
+                const savedZ = sv.zombies, savedI = sv.interior;
+                sv.zombies = sv._worldZombies || savedZ;
+                sv.interior = null;
+                try { corpseReviveZombie(sv, n); } catch (e) { /* 生成失败不阻塞 */ }
+                sv.zombies = savedZ;
+                sv.interior = savedI;
+            } else {
+                try { corpseReviveZombie(sv, n); } catch (e) { /* 生成失败不阻塞 */ }
+            }
         }
     }
 }
@@ -4062,17 +4584,31 @@ export const showAllDeadChoices = (sv, deadName, deadReason, dropTxt) => {
     // 当前还有活着 party NPC 队友——独狼复活后再死（历史尸体仍在 sv.npcs 但都已 alive=false）→ false，
     // 显示"你阵亡了"独狼标题而非"全员阵亡"（用户反馈"一个人生不该显示全员阵亡"）。
     const hadAnyMate = (sv.npcs || []).some(n => n && n.alive && n.party && !n.isPlayer);
-    Panel.showDeathChoices(
-        `<div class="wsl-death-title">${hadAnyMate ? '全员阵亡' : '你 阵 亡 了'}</div>` +
-        `<div class="wsl-death-sub">${hadAnyMate ? '队伍已无人幸存……' : '你独自一人倒在了荒原上……'}</div>` +
-        `<div class="wsl-death-details">${detailHtml}</div>` +
-        `<div class="wsl-death-hint">软核模式：你可以重生继续，或返回主菜单。</div>`,
-        [
+    // v3.64 用户规则：硬核模式 + 队伍全员阵亡 → 游戏结束（只有返回主菜单，无重生按钮）；
+    // 硬核单人 / 软核任何情况 → 维持原"重生 + 返回主菜单"两按钮。
+    const isHardcoreAllDead = (sv.diffKey === 'hardcore') && hadAnyMate;
+    const titleText = hadAnyMate ? '全员阵亡' : '你 阵 亡 了';
+    const subText = hadAnyMate ? '队伍已无人幸存……' : '你独自一人倒在了荒原上……';
+    const hintText = isHardcoreAllDead
+        ? `硬核模式：旅程结束，角色与世界存档已清除，无法重新进入。`
+        : `软核模式：你可以重生继续，或返回主菜单。`;
+    const buttons = isHardcoreAllDead
+        ? [
+            // v3.64 硬核全员阵亡：只显示"返回主菜单"按钮，无重生选项（与游戏结束硬核分支一致）
+            { label: '返回主菜单', cls: 'danger', onClick: () => { AudioSystem.playDefeat(); Panel.hideDeath(); sv.dead = true; exitWasteland(true); } },
+        ]
+        : [
             // 2026-08-11 v2.98 用户需求：死亡音效只在点击"重生/返回主菜单"时播放——
             // 重生按钮走 doRespawn → softRespawn 结尾播放（3437 行）；返回主菜单此处补播。
             { label: '重生', cls: 'primary', onClick: () => { Panel.hideDeath(); doRespawn(); } },
             { label: '返回主菜单', cls: 'danger', onClick: () => { AudioSystem.playDefeat(); Panel.hideDeath(); sv.dead = true; exitWasteland(true); } },
-        ]);
+        ];
+    Panel.showDeathChoices(
+        `<div class="wsl-death-title">${titleText}</div>` +
+        `<div class="wsl-death-sub">${subText}</div>` +
+        `<div class="wsl-death-details">${detailHtml}</div>` +
+        `<div class="wsl-death-hint">${hintText}</div>`,
+        buttons);
 };
 // 2026-08-11 兜底：当 showAllDeadChoices 不可用时（极端情况：模块未完整加载/被裁剪），
 // 走降级方案：直接软核重生，避免 ReferenceError 把游戏卡死。
@@ -4112,7 +4648,9 @@ function updateDowned(sv, dt, canStand) {
     // 2026-08-11 节流（0.25s）：避免每帧重建 DOM 导致"关闭按钮"点击丢失/卡顿（用户反馈关不掉）。
     if (rescueOpen()) {
         sv._rescueRefreshT = (sv._rescueRefreshT || 0) - dt;
-        if (sv._rescueRefreshT <= 0) { sv._rescueRefreshT = 0.25; renderRescue(); }
+        // 2026-08-12 v3.26 优化：仅更新存活倒计时文本，不再每 0.25s 重建整个界面——
+        // 重建 DOM 会让 hover 绿框反复闪烁、点击偶发丢失（用户反馈"按钮闪动/要点几次才有效"）。
+        if (sv._rescueRefreshT <= 0) { sv._rescueRefreshT = 0.25; if (rescueOpen()) updateRescueTimer(); }
     }
     // 玩家背人中：倒地主角跟随玩家移动（背到床旁/安全点），此时不触发队友自动背人
     if (sv._carryDowned) {
@@ -4258,7 +4796,8 @@ function updateDownedMembersTimeout(sv) {
     // 节流（0.25s，用 sv.now）：避免每帧重建 DOM 导致按钮点击丢失（与主控救援界面一致）。
     if (mateRescueId != null && typeof renderMateRescue === 'function') {
         const _now = sv.now != null ? sv.now : performance.now();
-        if (_now - (sv._mateRescueRefreshAt || 0) >= 0.25) { sv._mateRescueRefreshAt = _now; renderMateRescue(); }
+        // 2026-08-12 v3.26 优化：队友救助界面同样只更新倒计时文本（不重建 DOM）
+        if (_now - (sv._mateRescueRefreshAt || 0) >= 0.25) { sv._mateRescueRefreshAt = _now; updateMateRescueTimer(); }
     }
     // 2026-08-11 v2.97 队友背起（界面一致需求）：背起的倒地队友坐标跟随玩家，
     // 与主控背起 _carryDowned 完全一致（含室内跨场景坐标同步）。
@@ -4390,6 +4929,21 @@ function useItem(i) {
         if (!repairWeapon(sv, s)) log(`修复需要 扳手 + 零件×${B.WEAPON_REPAIR_PARTS}`, '#FFB347');
         return;
     }
+    // 2026-08-12 v3.8 配方：使用解锁到拼字台（v3.22 消耗 1 张，不自动跳转）
+    if (s.id.startsWith('recipe:')) {
+        useRecipe(s);
+        return;
+    }
+    // 2026-08-12 v3.10 文字手术刀：左键使用打开拆字台（净化/拆解）
+    if (s.id === 'tool:surgery') {
+        if (s.broken) {
+            if (!repairWeapon(sv, s)) log(`手术刀损坏了，修复需要 扳手 + 零件×${B.SURGERY_REPAIR_PARTS}`, '#FFB347');
+            return;
+        }
+        Panel.refresh(sv);
+        WW.openSurgery(sv, { onMessage: log, onCorrupt: onSurgeryCorrupt, consumeSurgery });
+        return;
+    }
     // 药品：治疗主控的对应疾病（抗生素可治任意）
     if (s.id.startsWith('med:')) {
         const cur = WNPC.controlledNpc(sv);
@@ -4425,14 +4979,96 @@ function useItem(i) {
     Panel.refresh(sv);
 }
 
-// ================= 武器修复（背包使用 / 损坏弹窗共用） =================
+// ================= 配方使用（2026-08-12 v3.8 解锁拼字台；v3.22 用户定稿：消耗 1 张 + 不跳转只提示） =================
+// 配方 = 一次性知识卡：使用后【消耗 1 张】并解锁到 sv.mods.recipes（存档持久化）。
+// 使用【不会】自动打开拼字台，只弹提示；按 K 打开拼字台查看已解锁配方，
+// 在配方列表点击配方（材料充足）即可快捷组装。
+// 解锁后拼字台显示该配方，字符颜色标出背包有无（有=白 / 缺=红）。
+function useRecipe(s) {
+    const r = WW.recipeByItemId(s.id);
+    if (!r) { log('这是一张无法识别的配方', '#FFB347'); return; }
+    if (!sv.mods.recipes) sv.mods.recipes = [];
+    const learned = sv.mods.recipes.includes(r.id);
+    if (!learned) {
+        sv.mods.recipes.push(r.id);
+        // 联机：配方解锁同步（host 权威 → outbox 事件）
+        if (sv.mp) (sv.mpOutbox = sv.mpOutbox || []).push({ type: 'recipe', id: r.id });
+    }
+    // 消耗配方物品 1 张（已学习再使用同样消耗）
+    const idx = sv.inv.findIndex(x => x === s);
+    if (idx >= 0) {
+        s.n--;
+        if (s.n <= 0) sv.inv[idx] = null;
+    }
+    log(learned
+        ? `「${r.name}」配方已学习过，消耗 1 张（按 K 打开拼字台查看）`
+        : `已学习配方「${r.name}」：${r.glyphs.join('')}。按 K 打开拼字台即可拼字`, learned ? '#8ad9ff' : '#C88AFF');
+    AudioSystem.playCollect();
+    Panel.refresh(sv);
+}
+// ============ 2026-08-12 v3.10 文字手术刀（拆字台） ============
+// 消耗手术刀 1 点耐久；损坏后不可用（用扳手+零件修复）；不足返回 false 并提示
+function consumeSurgery() {
+    const i = sv.inv.findIndex(x => x && x.id === 'tool:surgery');
+    if (i < 0) { log('需要背包里有文字手术刀（搜索容器掉落）', '#FFB347'); return false; }
+    const s = sv.inv[i];
+    if (s.broken) { log('手术刀已损坏，请用扳手 + 零件修复', '#FFB347'); return false; }
+    s.dur = (s.dur == null ? B.SURGERY_DUR : s.dur) - 1;
+    if (s.dur <= 0) {
+        s.dur = 0; s.broken = true;
+        log('手术刀损坏了！可用 扳手 + 零件 修复', '#FFB347');
+        Panel.refresh(sv);
+    }
+    return true;
+}
+// 拆字拆坏 → 生成错乱尸（复用琢磨拼字的错乱尸生成，室内/室外通用）
+function onSurgeryCorrupt(stats, word) {
+    if (!sv || sv.dead) return;
+    const ang = Math.random() * Math.PI * 2;
+    const d = TS * (1.2 + Math.random() * 1.2);
+    const x = sv.px + Math.cos(ang) * d;
+    const y = sv.py + Math.sin(ang) * d;
+    const z = WZ.spawnCorruptedZombie(sv, x, y, stats);
+    if (!z) return;
+    AudioSystem.playZombieSpawn();
+    if (sv.mp && !sv.interior) (sv.mpOutbox = sv.mpOutbox || []).push({
+        type: 'corruptz', id: z.id, x: z.x, y: z.y, name: z.name, chars: stats.chars,
+        hp: z.maxHp, speed: z.speed, damage: z.damage, armor: z.armor || 0,
+        ability: z.textAbility || null, abilityChar: z.corruptAbilityChar || null,
+        descs: z.corruptDescs || [],
+    });
+}
+// 2026-08-12 v3.9 琢磨拼字拼错 → 生成错乱僵尸（在拼字台旁 = 玩家附近；室内/室外通用；联机广播）
+function onPonderCorrupt(stats, word) {
+    if (!sv || sv.dead) return;
+    // 生成位置：玩家周围 1~2 格（避开不可走格由 spawnCorruptedZombie 内部安全化）
+    const ang = Math.random() * Math.PI * 2;
+    const d = TS * (1.2 + Math.random() * 1.2);
+    const x = sv.px + Math.cos(ang) * d;
+    const y = sv.py + Math.sin(ang) * d;
+    const z = WZ.spawnCorruptedZombie(sv, x, y, stats);
+    if (!z) return;
+    log(`「${word}」文字错乱！生成了 ${stats.name}`, '#ff8888');
+    AudioSystem.playZombieSpawn();
+    // 联机：广播错乱僵尸（guest 端 wsync 快照带僵尸数组自动同步；室内各自独立）
+    if (sv.mp && !sv.interior) (sv.mpOutbox = sv.mpOutbox || []).push({
+        type: 'corruptz', id: z.id, x: z.x, y: z.y, name: z.name, chars: stats.chars,
+        hp: z.maxHp, speed: z.speed, damage: z.damage, armor: z.armor || 0,
+        ability: z.textAbility || null, abilityChar: z.corruptAbilityChar || null,
+        descs: z.corruptDescs || [],
+    });
+}
 function repairWeapon(sv, s) {
-    if (!s || !String(s.id).startsWith('wpn:') || !s.broken) return false;
+    // 2026-08-12 v3.10 文字手术刀也可修复（扳手+零件，耐久回满；复用武器修复流程）
+    if (!s || !s.broken) return false;
+    const isTool = String(s.id).startsWith('tool:');
+    if (!String(s.id).startsWith('wpn:') && !isTool) return false;
     if (!hasTool('tool:wrench')) return false;
+    const needParts = isTool ? B.SURGERY_REPAIR_PARTS : B.WEAPON_REPAIR_PARTS;
     let partsN = 0;
     for (const x of sv.inv) if (x && x.id === 'part') partsN += x.n;
-    if (partsN < B.WEAPON_REPAIR_PARTS) return false;
-    let left = B.WEAPON_REPAIR_PARTS;
+    if (partsN < needParts) return false;
+    let left = needParts;
     for (let k = 0; k < sv.inv.length && left > 0; k++) {
         if (sv.inv[k] && sv.inv[k].id === 'part') {
             const t = Math.min(sv.inv[k].n, left);
@@ -4441,7 +5077,11 @@ function repairWeapon(sv, s) {
         }
     }
     s.broken = false;
-    s.dur = B.WEAPON_DUR[s.id.slice(4)] || 0;
+    if (isTool) {
+        s.dur = B.SURGERY_DUR;
+    } else {
+        s.dur = B.WEAPON_DUR[s.id.slice(4)] || 0;
+    }
     log(`${Panel.getItemInfo(s.id).name} 修复完成（耐久回满）`, '#7DFF7D');
     AudioSystem.playCollect();
     Panel.refresh(sv);
@@ -4660,10 +5300,12 @@ function openCarTrunk(key) {
     }
     const [gx, gy] = key.split(',').map(Number);
     const generated = [];
+    // v3.19 物资全局权重 + 汽车分池（与容器统一）
     const rolls = 2 + Math.floor(Math.random() * 2);
     for (let i = 0; i < rolls; i++) {
-        const [id, n] = rollCarLoot();
-        generated.push({ id, n });
+        const id = WW.rollGlobalLoot(CAR_LOOT_POOL, Math.random);
+        if (!id) continue;
+        generated.push({ id, n: WW.globalLootQty(id, Math.random) });
     }
     generated.push(...rollWordAddon('car', gx, gy));
     AudioSystem.playOpenBox();
@@ -4914,7 +5556,9 @@ export function summonTeammates() {
         log(`召唤冷却中：还需 ${Math.ceil(left)} 秒`, '#FFB347');
         return;
     }
-    const mates = sv.npcs.filter(n => n.alive && n.party && n.id !== sv.controllerId && !n.isPlayer && !n.riding);
+    // 2026-08-12 v2.104 用户定稿："谁是主控谁就可以召集"——只排除当前主控，其余队伍成员
+    //（含 isPlayer 原主控）都可被召唤。原 `!n.isPlayer` 会把原主控排除。
+    const mates = sv.npcs.filter(n => n.alive && n.party && n.id !== sv.controllerId && !n.riding);
     if (!mates.length) { log('队伍里没有其他队员', '#FFB347'); return; }
     // 在玩家周围找可站立落点（8 方向扇形展开，逐圈找）
     const findSpot = () => {
@@ -5370,12 +6014,17 @@ function npcMgrSyncCtrl(n) {
     }
 }
 function npcMgrFeed(n) {
-    const it = Panel.getItemInfo('food');
-    const gain = it && it.satiate ? it.satiate : 30;
-    if (!npcMgrTakeItem('food', 1)) { log('背包里没有食物', '#FFB347'); return; }
+    // 2026-08-12 v3.7 喂食支持任意具体食物（不限于泛称 food）；带水分的食物额外补水
+    const idx = sv.inv.findIndex(x => x && isFoodId(x.id));
+    if (idx < 0) { log('背包里没有食物', '#FFB347'); return; }
+    const it = Panel.getItemInfo(sv.inv[idx].id) || {};
+    const gain = it.satiate || 20;
+    sv.inv[idx].n--;
+    if (sv.inv[idx].n <= 0) sv.inv[idx] = null;
     n.food = Math.min(B.HUNGER_MAX, (n.food || 0) + gain);
+    if (it.drink) n.water = Math.min(B.WATER_MAX, (n.water || 0) + it.drink);
     npcMgrSyncCtrl(n);
-    log(`${n.name} 吃了食物，饱食 +${gain}`, '#FFD700');
+    log(`${n.name} 吃了${it.name || '食物'}，饱食 +${gain}${it.drink ? '、水分 +' + it.drink : ''}`, '#FFD700');
     renderNpcMgr();
 }
 function npcMgrDrink(n) {
@@ -5460,30 +6109,13 @@ function renderRescue() {
     const devInf = WDEV.isDev() && sv._devInf;   // 开发者无限资源：视为药品无限，可直接提交
     const hasMed = devInf || sv.inv.some(s => s && (s.id === B.DOWNED_RESCUE_MED || s.id === 'med:pan'));
     let herbs = 0; for (const s of sv.inv) if (s && s.id === 'herb') herbs += s.n;
-    rescueEl.innerHTML = '<div style="background:#141a22;border:2px solid #E8836A;border-radius:10px;padding:20px 26px;width:460px;position:relative;">' +
-        // 2026-08-11 v2.98 锦上添花：右上角 × 关闭按钮（点击关闭，不中止救治）
-        '<button data-act="close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;">✕</button>' +
-        `<div style="font-size:18px;color:#E8836A;letter-spacing:2px;margin-bottom:6px;text-align:center;">♨ 救治 ${name}</div>` +
-        `<div style="font-size:12px;color:#8a9aa2;text-align:center;margin-bottom:14px;">${name} 正处于<b style="color:#FF5544;">濒临死亡</b>状态，需要及时救治</div>` +
-        // 存活倒计时（v2.97 现实时间：20 分钟窗口，被攻击加速减少）
-        `<div style="font-size:14px;color:#FFD700;margin-bottom:4px;border:1px solid #3a3a24;background:#1a1a20;padding:8px 10px;border-radius:6px;">` +
-        `⏳ 还能存活：<b>${txt}</b> <span style="color:#8a9aa2;font-size:11px;">（现实 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟，被攻击每次伤害 -10 秒）${devInf ? ' · <b style="color:#39d98a;">开发者无限资源</b>' : ''}</span></div>` +
-        // 待提交药品
-        `<div style="font-size:14px;color:#e8e8e8;margin:12px 0 4px;">待提交药品：</div>` +
-        `<div style="font-size:12px;color:#ccd;margin-bottom:2px;">伤口药/抗生素 ${needMed > 0 ? '<b style="color:#7DFF7D;">' + needMed + '</b>' : '<span style="color:#39d98a;">已集齐 ✔</span>'}${needMed > 0 ? ' 瓶，或 草药 ' + needHerb + ' 株' : ''}</div>` +
-        `<div style="font-size:12px;color:#8a9aa2;">已提交：对症药/抗生素 <span style="color:#FFD700;">${dwn.med || 0}</span>/${B.DOWNED_NEED_MED} · 草药 <span style="color:#FFD700;">${dwn.herb || 0}</span>/${B.DOWNED_HERB_EQUIV}</div>` +
-        `<div style="font-size:12px;color:#8a9aa2;margin-top:6px;">药品集齐后即可救治${name}。对症药/抗生素各计 1 瓶，草药每 3 株计 1 进度。</div>` +
-        // 操作
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;">' +
-        // 2026-08-11 v2.97 修复"药品已集齐但点不动按钮"（主控版）：done 时按钮 enabled + 绿字"集齐·完成救治"，点击提交救活。
-        `<button class="menu-btn" data-act="submit" style="min-width:0;${done ? 'color:#39d98a;font-weight:bold;' : ''}">${done ? '集齐·完成救治' : (hasMed || herbs > 0 ? '提交药品' : '无药品')}</button>` +
-        // 2026-08-10 用户需求：救助界面加"背起"按钮（背起濒死玩家，移速减慢）
-        (sv._carryDowned
-            ? '<button class="menu-btn" data-act="putdown" style="min-width:0;">放下</button>'
-            : '<button class="menu-btn" data-act="carry" style="min-width:0;">背起</button>') +
-        '<button class="menu-btn" data-act="close" style="min-width:0;grid-column:1/3;">关闭（不中止救治）</button>' +
-        '</div>' +
-        '<div style="font-size:11px;color:#778;text-align:center;margin-top:10px;">提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间</div></div>';
+    rescueEl.innerHTML = buildRescuePanel({
+        name, txt, devInf, needMed, needHerb, done,
+        dwnMed: dwn.med || 0, dwnHerb: dwn.herb || 0,
+        hasMed, herbs,
+        carryAct: sv._carryDowned ? 'putdown' : 'carry',
+        carryLabel: sv._carryDowned ? '放下' : '背起',
+    });
     rescueEl.querySelectorAll('[data-act]').forEach(el => el.addEventListener('click', () => {
         const act = el.dataset.act;
         if (act === 'close') { closeRescue(); return; }
@@ -5502,8 +6134,42 @@ function renderRescue() {
             log(`你放下了 ${name}`, '#B8C4C8');
             return;
         }
-        submitRescueMed();   // 提交药品（集齐救活）
+        submitRescueMed();
     }));
+}
+// 2026-08-12 v3.29 共享救治面板模板（主控 + 队友统一）：保证两个界面的 HTML 字符级一致，
+// 消除"集齐时按钮 font-weight:bold"导致的视觉差异（用户反馈"两次界面不一样"）。
+// 差异只在数据（name/txt/done/needMed/herbs/dwnMed/dwnHerb/hasMed/devInf/carryAct/carryLabel）。
+function buildRescuePanel(p) {
+    return '<div style="background:#141a22;border:2px solid #E8836A;border-radius:10px;padding:20px 26px;width:460px;position:relative;">' +
+        // 2026-08-11 v2.98 锦上添花：右上角 × 关闭按钮（点击关闭，不中止救治）
+        '<button data-act="close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;">✕</button>' +
+        `<div style="font-size:18px;color:#E8836A;letter-spacing:2px;margin-bottom:6px;text-align:center;">♨ 救治 ${p.name}</div>` +
+        `<div style="font-size:12px;color:#8a9aa2;text-align:center;margin-bottom:14px;">${p.name} 正处于<b style="color:#FF5544;">濒临死亡</b>状态，需要及时救治</div>` +
+        // 存活倒计时（v2.97 现实时间：20 分钟窗口，被攻击加速减少）
+        `<div style="font-size:14px;color:#FFD700;margin-bottom:4px;border:1px solid #3a3a24;background:#1a1a20;padding:8px 10px;border-radius:6px;">` +
+        `⏳ 还能存活：<b id="wsl-rescue-timer">${p.txt}</b> <span style="color:#8a9aa2;font-size:11px;">（现实 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟，被攻击每次伤害 -10 秒）${p.devInf ? ' · <b style="color:#39d98a;">开发者无限资源</b>' : ''}</span></div>` +
+        // 待提交药品
+        `<div style="font-size:14px;color:#e8e8e8;margin:12px 0 4px;">待提交药品：</div>` +
+        `<div style="font-size:12px;color:#ccd;margin-bottom:2px;">伤口药/抗生素 ${p.needMed > 0 ? '<b style="color:#7DFF7D;">' + p.needMed + '</b>' : '<span style="color:#39d98a;">已集齐 ✔</span>'}${p.needMed > 0 ? ' 瓶，或 草药 ' + p.needHerb + ' 株' : ''}</div>` +
+        `<div style="font-size:12px;color:#8a9aa2;">已提交：对症药/抗生素 <span style="color:#FFD700;">${p.dwnMed}</span>/${B.DOWNED_NEED_MED} · 草药 <span style="color:#FFD700;">${p.dwnHerb}</span>/${B.DOWNED_HERB_EQUIV}</div>` +
+        `<div style="font-size:12px;color:#8a9aa2;margin-top:6px;">药品集齐后即可救治${p.name}。对症药/抗生素各计 1 瓶，草药每 3 株计 1 进度。</div>` +
+        // 操作（v3.29 统一：去掉 font-weight:bold；按钮字号永远一致，仅颜色提示已集齐）
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;">' +
+        // 2026-08-11 v2.97 修复"药品已集齐但点不动按钮"：done 时按钮 enabled + 绿字"集齐·完成救治"，点击提交救活。
+        `<button class="menu-btn" data-act="submit" style="min-width:0;${p.done ? 'color:#39d98a;' : ''}">${p.done ? '集齐·完成救治' : (p.hasMed || p.herbs > 0 ? '提交药品' : '无药品')}</button>` +
+        // 2026-08-10 用户需求：救助界面加"背起"按钮（背起濒死玩家/队友，移速减慢）
+        `<button class="menu-btn" data-act="${p.carryAct}" style="min-width:0;">${p.carryLabel}</button>` +
+        '<button class="menu-btn" data-act="close" style="min-width:0;grid-column:1/3;">关闭（不中止救治）</button>' +
+        '</div>' +
+        '<div style="font-size:11px;color:#778;text-align:center;margin-top:10px;">提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间</div></div>';
+}
+// 2026-08-12 v3.26 优化：仅更新主控存活倒计时文本（不重建 DOM，避免 hover 闪烁/点击丢失）
+function updateRescueTimer() {
+    if (!rescueEl || !sv._downed) return;
+    const t = rescueEl.querySelector('#wsl-rescue-timer');
+    if (!t) return;
+    t.textContent = downedRemainTxt(sv).txt;
 }
 // 提交救治药品：逐份提交累计；集齐触发 downedMedSubmit 救活
 function submitRescueMed() {
@@ -5588,32 +6254,20 @@ function renderMateRescue() {
     const devInfM = WDEV.isDev() && sv._devInf;   // 开发者无限资源：视为药品无限，可直接提交
     const hasMed = devInfM || sv.inv.some(s => s && (s.id === B.DOWNED_RESCUE_MED || s.id === 'med:pan'));
     let herbs = 0; for (const s of sv.inv) if (s && s.id === 'herb') herbs += s.n;
-    rescueEl.innerHTML = '<div style="background:#141a22;border:2px solid #E8836A;border-radius:10px;padding:20px 26px;width:460px;position:relative;">' +
-        // 2026-08-11 v2.98 锦上添花：右上角 × 关闭按钮（点击关闭，不中止救治）
-        '<button data-act="close" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#8a9aa2;font-size:18px;cursor:pointer;line-height:1;">✕</button>' +
-        `<div style="font-size:18px;color:#E8836A;letter-spacing:2px;margin-bottom:6px;text-align:center;">♨ 救治 ${name}</div>` +
-        `<div style="font-size:12px;color:#8a9aa2;text-align:center;margin-bottom:14px;">${name} 正处于<b style="color:#FF5544;">濒临死亡</b>状态，需要及时救治</div>` +
-        `<div style="font-size:14px;color:#FFD700;margin-bottom:4px;border:1px solid #3a3a24;background:#1a1a20;padding:8px 10px;border-radius:6px;">⏳ 还能存活：<b>${txt}</b> <span style="color:#8a9aa2;font-size:11px;">（现实 ${Math.round(B.DOWNED_LIMIT_SECONDS / 60)} 分钟，被攻击每次伤害 -10 秒）${devInfM ? ' · <b style="color:#39d98a;">开发者无限资源</b>' : ''}</span></div>` +
-        `<div style="font-size:14px;color:#e8e8e8;margin:12px 0 4px;">待提交药品：</div>` +
-        `<div style="font-size:12px;color:#ccd;margin-bottom:2px;">伤口药/抗生素 ${needMed > 0 ? '<b style="color:#7DFF7D;">' + needMed + '</b>' : '<span style="color:#39d98a;">已集齐 ✔</span>'}${needMed > 0 ? ' 瓶，或 草药 ' + needHerb + ' 株' : ''}</div>` +
-        `<div style="font-size:12px;color:#8a9aa2;">已提交：对症药/抗生素 <span style="color:#FFD700;">${m.med || 0}</span>/${B.DOWNED_NEED_MED} · 草药 <span style="color:#FFD700;">${m.herb || 0}</span>/${B.DOWNED_HERB_EQUIV}</div>` +
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;">' +
-        // 2026-08-11 v2.97 修复"药品已集齐但点不动按钮，救不了队友"：之前 `done` 时按钮 disabled，
-        // 玩家看到"药品已集齐"灰按钮不知道已自动救活——改为"集齐·完成救治"enabled 按钮，
-        // 点击调 mateSubmitRescueMed（内部走 mateMedSubmit 救活+关闭），交互明确。
-        `<button class="menu-btn" data-act="submit" style="min-width:0;${done ? 'color:#39d98a;font-weight:bold;' : ''}">${done ? '集齐·完成救治' : (hasMed || herbs > 0 ? '提交药品' : '无药品')}</button>` +
-        // 2026-08-11 v2.97 界面一致（用户要求：两次救助界面统一）：队友救助补上与主控 renderRescue
-        // 相同的"背起/放下"按钮（背起倒地队友跟随玩家，updateDownedMembersTimeout 同步坐标）。
-        (sv._carryMateId === m.id
-            ? '<button class="menu-btn" data-act="putdown" style="min-width:0;">放下</button>'
-            : '<button class="menu-btn" data-act="carrymate" style="min-width:0;">背起</button>') +
-        '<button class="menu-btn" data-act="close" style="min-width:0;grid-column:1/3;">关闭（不中止救治）</button>' +
-        '</div>' +
-        '<div style="font-size:11px;color:#778;text-align:center;margin-top:10px;">提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间</div></div>';
+    // 2026-08-12 v3.29 队友界面与主控共用 buildRescuePanel（HTML 字符级一致；去掉 font-weight:bold 视觉差异）
+    rescueEl.innerHTML = buildRescuePanel({
+        name, txt, devInf: devInfM, needMed, needHerb, done,
+        dwnMed: m.med || 0, dwnHerb: m.herb || 0,
+        hasMed, herbs,
+        // 队友按钮 data-act 保留 'carrymate'（兼容事件命名 + smoke-test 断言）；UI 视觉与主控完全一致
+        carryAct: sv._carryMateId === m.id ? 'putdown' : 'carrymate',
+        carryLabel: sv._carryMateId === m.id ? '放下' : '背起',
+    });
+    // v3.29 修：timer id 统一为 wsl-rescue-timer（与主控一致）；updateMateRescueTimer 内部仍按此 id 更新
     rescueEl.querySelectorAll('[data-act]').forEach(el => el.addEventListener('click', () => {
         const act = el.dataset.act;
         if (act === 'close') { closeMateRescue(); return; }
-        if (act === 'carrymate') {
+        if (act === 'carry') {
             // 背起倒地队友（移动时队友坐标跟随玩家，与主控背起 _carryDowned 一致）
             sv._carryMateId = m.id;
             closeMateRescue();
@@ -5628,6 +6282,21 @@ function renderMateRescue() {
         }
         mateSubmitRescueMed();
     }));
+}
+// 2026-08-12 v3.26 优化：仅更新队友存活倒计时文本（不重建 DOM，避免 hover 闪烁/点击丢失）
+function updateMateRescueTimer() {
+    if (!rescueEl || !mateRescueId) return;
+    const m = mateRescueTarget(sv, mateRescueId);
+    if (!m || !m.alive || !m.downed) return;
+    const t = rescueEl.querySelector('#wsl-rescue-timer');
+    if (!t) return;
+    if (m._downedAtReal == null) m._downedAtReal = (sv.now != null ? sv.now : 0);
+    if (m._penaltySec == null) m._penaltySec = 0;
+    const spentM = Math.max(0, (sv.now != null ? sv.now : 0) - m._downedAtReal) + (m._penaltySec || 0);
+    const mLimit = m.limitSec || B.DOWNED_LIMIT_SECONDS;
+    const remainSecM = Math.max(0, mLimit - spentM);
+    const mm = Math.floor(remainSecM / 60), ss = Math.floor(remainSecM % 60);
+    t.textContent = `${mm} 分 ${String(ss).padStart(2, '0')} 秒`;
 }
 function closeMateRescue() {
     mateRescueId = null;
@@ -5908,14 +6577,28 @@ function initInput() {
     if (inited) return;
     inited = true;
 
+    // v4.3 加载/过渡动画期间：capture 阶段吞掉所有键盘事件（含各弹窗独立绑定的 keydown）
+    window.addEventListener('keydown', (e) => {
+        if (window.__wslAnimBlocked) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
     window.addEventListener('keydown', (e) => {
         if (!sv || !sv.active) return;
+        // v4.3 动画期间直接忽略（capture 已拦截，此处双保险）
+        if (window.__wslAnimBlocked) { e.preventDefault(); return; }
         const k = e.key.toLowerCase();
-        if (['w', 'a', 's', 'd', ' ', 'f', 'b', 'j', 'escape', 'p', 'r', 'v', 'g', 'q', 'e', 'x', 'h', 'm', 'control', 'f1', 'f9', 'f11',
-            'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
+        // 2026-08-12 v3.41 键位设置：自定义键位也 preventDefault（覆盖任意绑定键）
+        const kbs = KEYBIND_DEFS.map(d => getBind(d.act));
+        if (['w', 'a', 's', 'd', ' ', 'escape', 'p', 'f1', 'f9', 'f11', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']
+            .concat(kbs).includes(k)) e.preventDefault();
         sv.keys[k] = true;
+        // 2026-08-12 v3.41 键位录制状态：拦截按键（回车=结束录制；任意其它键=绑定）
+        if (keybindRecording) {
+            if (k === 'enter' || k === 'escape') { keybindRecording = null; renderKeybinds(); log('键位录制已取消', '#8a9aa2'); }
+            else { finishKeybindRecord(k); }
+            return;
+        }
         // 2026-08-10 Ctrl 蹲下：按住 Ctrl 潜伏（屏幕变暗、敌对感知范围减半、移速 -30%）
-        if (k === 'control') sv.squatting = true;
+        if (k === getBind('squat')) sv.squatting = true;
         // 2026-08-10 搜索界面打开时屏蔽移动键：角色静止，仅可关闭界面（世界时间照常流逝）
         if (WSearch.isOpen() && (k === 'w' || k === 'a' || k === 's' || k === 'd'
             || k === 'arrowup' || k === 'arrowdown' || k === 'arrowleft' || k === 'arrowright')) sv.keys[k] = false;
@@ -5935,6 +6618,20 @@ function initInput() {
         if (k === 'f9') { e.preventDefault(); WDEV.toggle(sv); return; }
         if (k === 'f11') { e.preventDefault(); toggleFullscreen(); return; }
         if (sv.dead) return;
+        // 2026-08-12 v3.41 键位设置面板：ESC 关闭（模态，优先于其它面板）
+        if (keybindOpen()) {
+            if (k === 'escape') { closeKeybinds(); return; }
+            return;
+        }
+        // 2026-08-12 v3.40 长按扫描面板：ESC 关闭（模态，优先于其它面板）。
+        // v3.75 加 typeof 守卫（旧版 / hot reload 时 scanPanelOpen 可能未定义，避免 "is not a function" 报错）
+        if (typeof scanPanelOpen === 'function' && scanPanelOpen()) {
+            if (k === 'escape' || k === getBind('interact')) { closeScanPanel(); return; }
+            if (k === 'arrowup') { scanSelMove(-1); return; }
+            if (k === 'arrowdown') { scanSelMove(1); return; }
+            if (k === 'enter') { scanSelConfirm(); return; }
+            return;
+        }
         // 汽车菜单打开：数字键选项 / ESC 关闭
         if (carMenuOpen()) {
             if (k === 'escape' || k === 'f') { closeCarMenu(); return; }
@@ -6022,15 +6719,19 @@ function initInput() {
             if (k === 'escape' || k === 'f' || k === 'b') WSearch.closeSearch(sv, true);
             return;
         }
+        if (WW.isSurgeryOpen()) {
+            if (k === 'escape' || k === 'k') WW.closeSurgery();
+            return;
+        }
         if (WW.isOpen()) {
             if (k === 'escape' || k === 'k') WW.close();
             return;
         }
-        if (k === 'k') { WW.open(sv, { onMessage: log }); return; }
+        if (k === getBind('craft')) { WW.open(sv, { onMessage: log, onPonderCorrupt }); return; }
         // 2026-08-09 修复"打开 NPC 物品栏查看物品后 UI 关不掉"：B 键本应关闭储物柜
         // （界面提示 B/F/ESC 关闭），但此处无条件 toggleBag，储物柜(含 NPC 只读查看)打开时
         // 按 B 只会切换背包、储物柜永远关不掉。改为：储物柜打开时 B 先关闭储物柜。
-        if (k === 'b') {
+        if (k === getBind('bag')) {
             if (Panel.isChestOpen()) { Panel.hideChest(); return; }
             Panel.toggleBag(sv); return;
         }
@@ -6056,8 +6757,8 @@ function initInput() {
             }
             return;
         }
-        if (k === 'm') { if (!sv.interior) WMAP.toggle(sv); return; }   // 2026-08-10 世界地图（仅室外）
-        if (k === 'g') {
+        if (k === getBind('map')) { if (!sv.interior) WMAP.toggle(sv); return; }   // 2026-08-10 世界地图（仅室外）
+        if (k === getBind('build')) {
             // 2026-08-10 领地旗帜待放置：按 G 在当前脚下位置插旗建立营地（旗帜回收/重放见 F 收起）
             if (sv._flagPlace && sv._flagPlace.active) {
                 const it = sv.inv.find(s => s && s.id === 'flag');
@@ -6077,16 +6778,16 @@ function initInput() {
             return;
         }
         // 2026-08-11 v2.99 用户要求：任何用键盘键位打开的 UI，都能再次按对应键关闭
-        if (k === 'c') {
-            if (charPanelOpen()) { closeCharPanel(); return; }   // C 再按关闭属性面板
+        if (k === getBind('char')) {
+            if (charPanelOpen()) { closeCharPanel(); return; }   // 对应键再按关闭属性面板
             openCharPanel(sv.controllerId); return;
         }
-        if (k === 'h') {
-            if (npcMgrOpen()) { closeNpcMgr(); return; }   // H 再按关闭队伍管理
+        if (k === getBind('team')) {
+            if (npcMgrOpen()) { closeNpcMgr(); return; }   // 对应键再按关闭队伍管理
             openNpcMgr(); return;
         }
-        // 背起/放下倒地主角（2026-08-09）：靠近倒地主角时按 V 背起，背起后再按 V 放下
-        if (k === 'v' && sv._downed) {
+        // 背起/放下倒地主角（2026-08-09）：靠近倒地主角时按对应键背起，背起后再按放下
+        if (k === getBind('carry') && sv._downed) {
             if (sv._carryDowned) {
                 // 背起状态：V = 放下（当前位置放下，室内用房间坐标）
                 sv._carryDowned = false;
@@ -6126,11 +6827,14 @@ function initInput() {
                 return;
             }
         }
-        // 2026-08-11 集合信号（按 T，非倒地切视角时）：所有 NPC 队友转为跟随、缓慢向你走来。
+        // 2026-08-11 集合信号（按 T，非倒地切视角时）：所有队伍成员转为跟随、缓慢向你走来。
         // 队友离得远时屏幕边缘已有指向箭头+名字+距离（render.drawMateGuide），发出信号后
         // 他们沿寻路（moveToward/followAI）过来；卡碰撞体由 npcUnstick/寻路兜底自动脱离。
-        if (k === 't' && !sv._waitDowned) {
-            const mates = (sv.npcs || []).filter(n => n.alive && n.party && !n.downed && !n.isPlayer && n.id !== sv.controllerId && !n.riding);
+        // 2026-08-12 v2.104 用户定稿："谁是主控谁就可以召集"——切视角后的新主控也要能召集
+        // 原主控（isPlayer）。原过滤 `!n.isPlayer` 会排除原主控，导致新主控召集不了它。
+        // 改为只排除当前主控（n.id === sv.controllerId），其余队伍成员（含 isPlayer 原主控）都可被召集。
+        if (k === getBind('rally') && !sv._waitDowned) {
+            const mates = (sv.npcs || []).filter(n => n.alive && n.party && !n.downed && n.id !== sv.controllerId && !n.riding);
             if (!mates.length) { log('队伍里没有其他队员', '#FFB347'); return; }
             let n2 = 0;
             const near = [], far = [];
@@ -6149,25 +6853,57 @@ function initInput() {
         }
         if (sv.build && k >= '1' && k <= '5') { sv.buildSel = parseInt(k) - 1; AudioSystem.playClick(); return; }
         if (!sv.build && k >= '1' && k <= '6') { useHotbar(parseInt(k) - 1); return; }
-        if (k === 'f') {
+        if (k === getBind('interact')) {
             if (sv.interior) { doInteriorInteract(); return; }
             doInteract(); return;
         }
-        if (k === 'q') { WA.startDash(sv); return; }
-        if (k === 'e') { WA.startGuard(sv); return; }
-        if (k === ' ') { WA.tryJump(sv); return; }
-        if (k === 'j') { const r = withInteriorZombies(() => WG.meleeAttack(sv)); if (r && r.msg) log(r.msg); return; }
-        if (k === 'r') { const r = WG.startReload(sv); if (r && r.msg) log(r.msg); return; }
-        if (k === 'x') { const r = WG.swapSlot(sv); if (r && r.msg) log(r.msg); return; }
-        if (k === 'v') { const r = WG.toggleFireMode(sv); if (r && r.msg) log(r.msg); return; }
+        if (k === getBind('dash')) { WA.startDash(sv); return; }
+        // 2026-08-12 v3.40 长按扫描周围可交互目标：keydown 记录按下时刻，keyup 判断是否长按。
+        // 已打开的扫描面板按对应键关闭（与其它键位 UI 同语义：对应键再按关闭）。
+        if (k === getBind('scan')) {
+            if (typeof scanPanelOpen === 'function' && scanPanelOpen()) { closeScanPanel(); return; }
+            // 2026-08-12 v3.47 开门后 0.5s 冷却：按住不放 auto-repeat 时面板刚打开不立即被关闭重开
+            if (sv._scanCooldownUntil && performance.now() < sv._scanCooldownUntil) return;
+            // 2026-08-12 v3.42 长按扫描：按下记录时间，进度环（render 绘制）0.8s 满后开门
+            // 2026-08-12 v3.47 修复"无视觉反馈 + 触发后隔很久"：浏览器长按键盘会 auto-repeat 重复触发
+            // keydown（每 ~30ms 一次），若每次都重置 _scanHeldAt → 进度环计时被反复清零，prog 永远接近 0
+            // 圆环不动、永不自动开门；松手时 held 也只计最后一次 auto-repeat 的 ~30ms → keyup 兜底也失配。
+            // 修复：仅首次按下（!_scanHeld）才记录时刻，auto-repeat 重复 keydown 直接忽略。
+            if (!sv._scanHeld) {
+                sv._scanKeyDownT = performance.now();
+                sv._scanHeldAt = sv._scanKeyDownT;
+                sv._scanHeld = true;
+            }
+            return;
+        }
+        if (k === getBind('guard')) { WA.startGuard(sv); return; }
+        if (k === getBind('jump')) { WA.tryJump(sv); return; }
+        if (k === getBind('attack')) { const r = withInteriorZombies(() => WG.meleeAttack(sv)); if (r && r.msg) log(r.msg); return; }
+        if (k === getBind('reload')) { const r = WG.startReload(sv); if (r && r.msg) log(r.msg); return; }
+        if (k === getBind('swap')) { const r = WG.swapSlot(sv); if (r && r.msg) log(r.msg); return; }
+        if (k === getBind('carry')) { const r = WG.toggleFireMode(sv); if (r && r.msg) log(r.msg); return; }
     });
 
     window.addEventListener('keyup', (e) => {
         if (!sv) return;
         const k = e.key.toLowerCase();
         sv.keys[k] = false;
-        if (k === 'control') sv.squatting = false;   // 松开 Ctrl → 解除蹲下
-        if (k === 'e') WA.endGuard(sv);
+        if (k === getBind('squat')) sv.squatting = false;   // 松开蹲下键 → 解除蹲下
+        if (k === getBind('guard')) WA.endGuard(sv);
+        // 2026-08-12 v3.45 长按扫描键：进度环满时帧循环已自动开门（_scanDone）；
+        // 松手时若仍未开门（短按/未满）则补一次兜底；已自动开门则不重复开。
+        if (k === getBind('scan') && sv._scanKeyDownT) {
+            const held = performance.now() - sv._scanKeyDownT;
+            sv._scanKeyDownT = 0;
+            sv._scanHeld = false;
+            const auto = sv._scanDone;
+            sv._scanDone = false;
+            // 2026-08-12 v3.50 长按最大时间 0.35s → 0.8s（与进度环填充时间一致）
+            if (!auto && held >= 800 && !scanPanelOpen() && !(sv._scanCooldownUntil && performance.now() < sv._scanCooldownUntil)) {
+                sv._scanCooldownUntil = performance.now() + 500;
+                openScanPanel();
+            }
+        }
     });
 
     window.addEventListener('blur', () => { if (!sv) return; sv.aiming = false; sv.mouseDown = false; });
@@ -6183,13 +6919,38 @@ function initInput() {
     canvas.addEventListener('mouseleave', () => { if (sv) sv.mouse.inside = false; });
 
     canvas.addEventListener('mousedown', (e) => {
+        // 2026-08-12 v3.41 键位录制：鼠标按键（含侧键）也可绑定
+        if (keybindRecording) {
+            const mb = 'mouse' + e.button;
+            e.preventDefault();
+            finishKeybindRecord(mb);
+            return;
+        }
         if (!sv || !sv.active || sv.dead || Panel.anyOpen() || WSearch.isOpen()) return;   // 搜索界面打开：禁止攻击
         if (e.button === 2) {
+            // 2026-08-12 v3.41 右键=瞄准（可自定义绑定；若改绑为其它功能则跳过）
+            if (getBind('scope') !== 'mouse2') return;
             e.preventDefault();
             if (!sv.build) { const r = WG.toggleScope(sv); if (r && r.msg) log(r.msg); }
             return;
         }
-        if (e.button !== 0) return;
+        if (e.button !== 0) {
+            // 2026-08-12 v3.41 鼠标侧键（button 1/3/4）：可作为"交互/攻击/扫描"等绑定触发
+            const mb = 'mouse' + e.button;
+            if (mb === getBind('interact')) { e.preventDefault(); if (sv.interior) doInteriorInteract(); else doInteract(); }
+            else if (mb === getBind('attack')) { e.preventDefault(); const r = withInteriorZombies(() => WG.meleeAttack(sv)); if (r && r.msg) log(r.msg); }
+            else if (mb === getBind('scan')) { e.preventDefault(); if (typeof scanPanelOpen === 'function' && scanPanelOpen()) closeScanPanel(); else openScanPanel(); }
+            // 2026-08-12 v3.58 鼠标中键（button 1）长按扫描（与长按 N 同效果）：按住开始计时（圆环中心在鼠标处），
+            // 按住 0.8s 松开 → 打开扫描面板；短按中键仍是开/关扫描面板。与 N 共用 _scanHeld/_scanHeldAt。
+            else if (e.button === 1 && sv) {
+                e.preventDefault();
+                if (!sv._scanHeld) {
+                    sv._scanHeld = true;
+                    sv._scanHeldAt = performance.now();
+                }
+            }
+            return;
+        }
         e.preventDefault();
         if (sv.build) {
             const gx = Math.floor((sv.camX + sv.mouse.x) / TS), gy = Math.floor((sv.camY + sv.mouse.y) / TS);
@@ -6209,8 +6970,23 @@ function initInput() {
     });
 
     window.addEventListener('mouseup', (e) => {
-        if (e.button !== 0 || !sv) return;
-        sv.mouseDown = false;
+        if (!sv) return;
+        const isMain = e.button === 0;
+        const isMid = e.button === 1;
+        if (!isMain && !isMid) return;
+        if (isMain) sv.mouseDown = false;
+        // 2026-08-12 v3.58 鼠标长按扫描判定（左键或中键，与长按 N 同效果）：
+        // 按住 ≥0.8s 松开 → 打开扫描面板；短按左键走攻击/射击、短按中键无攻击副作用。
+        if (sv._scanHeld) {
+            const heldMs = performance.now() - sv._scanHeldAt;
+            sv._scanHeld = false;
+            if (heldMs >= 800 && !sv.dead && !(typeof scanPanelOpen === 'function' && scanPanelOpen())
+                && !(sv._scanCooldownUntil && performance.now() < sv._scanCooldownUntil)) {
+                sv._scanCooldownUntil = performance.now() + 500;
+                openScanPanel();
+            }
+        }
+        if (!isMain) return;   // 中键仅用于长按扫描，不触发攻击/弓蓄力
         if (!sv.active || sv.dead) { if (sv.wpn) sv.wpn.charging = false; return; }
         if (Panel.anyOpen()) {
             if (sv.wpn && sv.wpn.charging) { sv.wpn.charging = false; sv.wpn.chargeT = 0; AudioSystem.stopBowCharge(); }
@@ -6290,7 +7066,12 @@ function enterWastelandSP(opts) {
     };
 
     if (!charSaved) {
-        // 创建角色：命名 → 捏脸 → 落角色档
+        // 创建角色：命名 + 捏脸合并界面 → 落角色档
+        // v3.76 返回：恢复创意工坊/主菜单 screen（bg-fx 隐藏的那层），否则全屏遮罩残留
+        const backToMenu = () => {
+            const vis = [...document.querySelectorAll('.screen')].find(s => !s.classList.contains('hidden'));
+            if (vis && vis.id !== 'game-screen') vis.classList.remove('hidden');
+        };
         showCreateCharacter((name, look) => {
             const cd = {
                 name,
@@ -6305,7 +7086,7 @@ function enterWastelandSP(opts) {
             setStorage(charKey(name), cd);
             updateCharList(name);
             finish(cd);
-        });
+        }, backToMenu);
         return;
     }
     finish(charSaved);
@@ -6323,14 +7104,26 @@ export function showGameStartDialog(cb) {
     renderStartDialog();
 }
 function buildStartDialog() {
+    // v3.67 提前预热粒子背景（避免进入捏脸/创建角色界面时第一帧卡顿）
+    preloadBgFxParts();
+    // v3.81 提前预热捏脸 sprite（walk 帧 PNG）：首次点「创建绑定角色」不再卡顿/预览空白
+    loadThumbSprites();
+    // v3.83 预热捏脸 DOM 骨架模板（脱离文档、不渲染）
+    preloadLookSkeleton();
+    // v3.86/v3.88 预挂载完整捏脸实例（visibility:hidden 挂载在 bg-fx，首次 layout 此刻完成）：
+    // 点击「创建绑定角色」直接复用 DOM，点击路径只剩状态更新 → 彻底消除 clone/挂载/样式计算的同步卡顿（背景动画不再顿一下）
+    preloadLookCreator();
     const el = document.createElement('div');
     el.id = 'wsl-start';
-    el.style.cssText = 'position:fixed;inset:0;z-index:1240;background:rgba(5,8,12,0.94);display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei",monospace;';
+    // v3.75 弹窗外层遮罩改透明：让 bg-fx（末世废土粒子）透出（之前 rgba(5,8,12,0.94) 盖住粒子，
+    // 只有过渡动画淡出时才看到背景 → 用户反馈"背景替换错了位置"）
+    el.style.cssText = 'position:fixed;inset:0;z-index:1240;background:transparent;display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei",monospace;';
+    el.dataset.wslCard = '1';   // v3.80 内容卡片标记：弹窗切换动画作用于该元素（向上弹出/淡入）
     // 2026-08-09 重构：左右布局 —— 左侧角色捏脸预览动画（跟捏脸界面一样循环走步 + tintSprite），
     // 右侧选择器。世界 ↔ 角色【强绑定】：选世界 → 只读显示该世界绑定的角色（角色选择权限关闭，
     // 不可自由切换）；世界无绑定角色 → 显示「创建绑定角色」。创建新世界 → 紧接着创建角色绑定。
     el.innerHTML = `
-        <div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:20px;width:640px;box-shadow:0 0 40px rgba(57,217,138,0.25);display:flex;gap:16px;">
+        <div data-wsl-card="1" style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:20px;width:640px;box-shadow:0 0 40px rgba(57,217,138,0.25);display:flex;gap:16px;">
             <div style="display:flex;flex-direction:column;align-items:center;padding:10px;background:#0a0e12;border:1px solid #1d2d1d;border-radius:8px;min-width:120px;">
                 <div style="color:#9fb3ab;font-size:11px;letter-spacing:2px;margin-bottom:6px;">角色预览</div>
                 <div style="width:96px;height:192px;background:#05080c;border:1px solid #2a3a33;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;">
@@ -6350,6 +7143,12 @@ function buildStartDialog() {
                     <div id="wsl-start-char" style="flex:2;background:#0e1318;border:1px solid #2a3a33;border-radius:6px;padding:8px;color:#dce6e2;font-size:14px;min-height:20px;display:flex;align-items:center;">—</div>
                     <button id="wsl-start-charnew" style="flex:1;background:#1a2a3a;border:1px solid #4da3ff;color:#4da3ff;border-radius:6px;padding:8px;cursor:pointer;">创建绑定角色</button>
                 </div>
+                <!-- v3.66 游玩模式：单/多合并到开始游戏界面（与软核/硬核同款按钮组，初始全未选，必选） -->
+                <div style="color:#9fb3ab;font-size:13px;">③ 游玩模式（必选，可中途变更）：</div>
+                <div style="display:flex;gap:8px;">
+                    <button class="wsl-start-mode" data-mode="sp" style="flex:1;background:#141c22;border:2px solid #2a3a33;color:#7a8a92;border-radius:6px;padding:8px;cursor:pointer;font-size:13px;">单人模式</button>
+                    <button class="wsl-start-mode" data-mode="mp" style="flex:1;background:#141c22;border:2px solid #2a3a33;color:#7a8a92;border-radius:6px;padding:8px;cursor:pointer;font-size:13px;">多人联机</button>
+                </div>
                 <div style="display:flex;gap:8px;justify-content:center;margin-top:auto;">
                     <button id="wsl-start-cancel" style="flex:1;background:#241c1c;border:1px solid #8a5a5a;color:#e0a0a0;border-radius:6px;padding:10px;cursor:pointer;">取消</button>
                     <button id="wsl-start-ok" style="flex:2;background:#123d2c;border:1px solid #39d98a;color:#39d98a;border-radius:6px;padding:10px;cursor:pointer;">开始游戏 ▶</button>
@@ -6358,18 +7157,52 @@ function buildStartDialog() {
             </div>
         </div>`;
     document.body.appendChild(el);
-    el.querySelector('#wsl-start-cancel').addEventListener('click', () => { cancelStartPreview(); el.remove(); });
-    el.querySelector('#wsl-start-charnew').addEventListener('click', () => startBoundCharacter());
-    el.querySelector('#wsl-start-worldnew').addEventListener('click', () => startNewWorld());
+    // v3.62 开始游戏界面背景粒子 + 动画 + 渐变（同一风格抽象粒子层，弹窗关闭自动清理）
+    attachParticleBg(el);
+    el.querySelector('#wsl-start-cancel').addEventListener('click', () => { cancelStartPreview(); el.remove(); destroyBgFx(); });
+    // v3.80 弹窗切换动画：当前弹窗向上淡出 → 创建世界/角色界面在屏幕中央缓缓显现
+    // v3.80 创建绑定角色：开始弹窗向上弹出 → 捏脸淡入（捏脸淡入由 wlook.js 内部处理）
+    el.querySelector('#wsl-start-charnew').addEventListener('click', () => {
+        // v3.93 点击瞬间立即显示加载遮罩：盖住点击后的构建卡顿（不再"先卡一下再出遮罩"），
+        // 上弹动画在遮罩下进行，遮罩淡出时直接露出已就绪的捏脸界面。
+        showWslLoading();
+        animateDialogSwap(null, startBoundCharacter);
+    });
+    el.querySelector('#wsl-start-worldnew').addEventListener('click', () => {
+        animateDialogSwap(null, startNewWorld);
+    });
+    // v3.66 游玩模式按钮：与软核/硬核同款（初始全未选 + 选中变色 + 单选）
+    el.dataset.startMode = '';
+    const paintMode = () => {
+        const cur = el.dataset.startMode || '';
+        el.querySelectorAll('.wsl-start-mode').forEach(x => {
+            const on = x.dataset.mode === cur;
+            if (on) { x.style.background = '#123d2c'; x.style.borderColor = '#39d98a'; x.style.color = '#8dffc4'; x.style.boxShadow = '0 0 10px rgba(57,217,138,0.4)'; }
+            else { x.style.background = '#141c22'; x.style.borderColor = '#2a3a33'; x.style.color = '#7a8a92'; x.style.boxShadow = 'none'; }
+        });
+    };
+    // v3.80 游玩模式前置校验：未创建世界/角色时【不能选择模式】，提示"请先创建世界/角色"
+    el.querySelectorAll('.wsl-start-mode').forEach(b => b.addEventListener('click', () => {
+        const seed = Number(el.querySelector('#wsl-start-world')?.value || 0);
+        const charName = boundCharName(seed);
+        if (!seed || !charName) {
+            showToast('请先创建世界/角色，再选择游玩模式', '#FFB347');
+            el.querySelectorAll('.wsl-start-mode').forEach(x => { x.style.borderColor = '#ff5544'; });
+            setTimeout(() => paintModeOn(el), 1200);
+            return;
+        }
+        el.dataset.startMode = b.dataset.mode; paintMode();
+    }));
     // 继续游戏 / 开始游戏共用同一按钮位置（2026-08-09 用户要求）：
-    // 旧存档（该世界游玩过）显示「继续游戏」直接进入；新创建（未游玩）显示「开始游戏」弹单机/联机选择
     el.querySelector('#wsl-start-ok').addEventListener('click', () => {
         const ok = el.querySelector('#wsl-start-ok');
         if (ok.dataset.mode === 'continue') continueGameConfirm();
-        else startGameConfirm();
+        else startGameConfirm(el.dataset.startMode || '');
     });
     // 世界选择 → 显示该世界绑定的角色（只读）→ 刷新预览
-    el.querySelector('#wsl-start-world').addEventListener('change', () => updateStartPreview());
+    // v4.8 切换世界实时刷新"开始游戏/继续游戏"按钮：按所选存档新旧自动切换
+    //（renderStartDialog 内部已调用 updateStartPreview 刷新角色预览）
+    el.querySelector('#wsl-start-world').addEventListener('change', () => renderStartDialog());
 }
 // 开始游戏弹窗的左侧角色预览动画：循环播放选中角色的捏脸动画（跟捏脸界面一样用 walk-front 帧 + tintSprite）
 let _startPrevRaf = 0;
@@ -6401,6 +7234,7 @@ function updateStartPreview() {
         // 已选世界且未绑定角色 → 可创建；否则（未选世界或已绑定）禁用
         charNewBtn.disabled = !(seed && !name);
         charNewBtn.style.opacity = charNewBtn.disabled ? 0.4 : 1;
+        charNewBtn.style.cursor = charNewBtn.disabled ? 'not-allowed' : 'pointer';
         charNewBtn.textContent = (seed && !name) ? '创建绑定角色' : '创建绑定角色';
     }
     const cd = name ? getStorage(charKey(name), null) : null;
@@ -6446,14 +7280,33 @@ function startCharOptionsHtml() {
     return out.join('');
 }
 // 世界列表选项（名称/难度/天数）
+// v3.66 修复"绑定成功返回后存档预览界面显示'暂无存档'"：原实现依赖 namespace 推断（u:<username>:wasteland_world_），
+// 一旦 session 在创建/读取之间变化（登录态切换/__guest__ 与真实用户互转）就找不到刚才创建的世界。
+// 改为用独立索引 `wasteland_worlds_index` 直接按 worldKey(seed) 读取，不再依赖 namespace 推断；
+// 创建世界时调用 addWorldToIndex 同步追加。
 function startWorldOptionsHtml() {
-    const user = (getSession && getSession() && getSession().username) || '__guest__';
-    const prefix = 'u:' + user + ':wasteland_world_';
     const list = [];
+    // ① 优先：读 wasteland_worlds_index（独立索引，可靠）
+    const idx = getStorage('wasteland_worlds_index', null);
+    const tried = new Set();
+    if (idx && Array.isArray(idx.list)) {
+        for (const seed of idx.list) {
+            tried.add(seed);
+            const wd = getStorage(worldKey(seed), null);
+            if (wd && typeof wd.seed === 'number') {
+                list.push({ seed: wd.seed, name: wd.name || ('世界 #' + wd.seed), diff: wd.difficulty || 'normal', day: wd.day || 1 });
+            }
+        }
+    }
+    // ② Fallback：遍历 localStorage 找任意 namespace 下的 wasteland_world_（兜底"老档" / 索引缺失）
     for (let i = 0; i < localStorage.length; i++) {
         const full = localStorage.key(i);
-        if (!full || !full.startsWith(prefix)) continue;
-        const seedStr = full.slice(prefix.length);
+        if (!full || !full.includes('wasteland_world_')) continue;
+        // 提取 seed（key 最后一段数字）
+        const m = full.match(/wasteland_world_(\d+)$/);
+        if (!m) continue;
+        const seed = Number(m[1]);
+        if (tried.has(seed) || !seed) continue;
         try {
             const d = JSON.parse(localStorage.getItem(full));
             if (!d || typeof d.seed !== 'number') continue;
@@ -6461,9 +7314,18 @@ function startWorldOptionsHtml() {
         } catch { /* 损坏键跳过 */ }
     }
     list.sort((a, b) => (b.seed - a.seed));
-    const diffName = { normal: '正常', hardcore: '硬核' };
+    const diffName = { normal: '软核', hardcore: '硬核' };   // v3.62 正常改名软核
     return list.map(w =>
-        `<option value="${w.seed}">${escHtml(w.name)} · 第${w.day}天 · ${diffName[w.diff] || '正常'}</option>`).join('');
+        `<option value="${w.seed}">${escHtml(w.name)} · 第${w.day}天 · ${diffName[w.diff] || '软核'}</option>`).join('');
+}
+// v3.66 独立索引：创建世界时追加 seed 到 wasteland_worlds_index 索引（不依赖 namespace 推断）
+function addWorldToIndex(seed) {
+    const idx = getStorage('wasteland_worlds_index', { list: [] });
+    if (!Array.isArray(idx.list)) idx.list = [];
+    if (!idx.list.includes(seed)) {
+        idx.list.push(seed);
+        setStorage('wasteland_worlds_index', idx);
+    }
 }
 function escHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 // 2026-08-09 修复"删除所有存档后开始游戏仍显示痕迹"：清理指向已不存在存档的残留缓存
@@ -6502,6 +7364,11 @@ function renderStartDialog() {
         const keep = ws.value && [...ws.options].some(o => o.value === ws.value) ? ws.value : (selWorld != null ? String(selWorld) : null);
         ws.innerHTML = startWorldOptionsHtml();
         if (keep && [...ws.options].some(o => o.value === keep)) ws.value = keep;
+        // v3.94 一个世界都没有时下拉框与创建绑定角色按钮禁用（仅创建新世界按钮可点 → 引导用户去创建）：
+        const noWorld = ws.options.length === 0;
+        ws.disabled = noWorld;
+        ws.style.opacity = noWorld ? 0.45 : 1;
+        ws.style.cursor = noWorld ? 'not-allowed' : '';
     }
     const ok = el.querySelector('#wsl-start-ok');
     const hint = el.querySelector('#wsl-start-hint');
@@ -6547,66 +7414,230 @@ function continueGameConfirm() {
     const charName = boundCharName(seed);
     if (!seed || !charName) { log('请先选择世界（须已绑定角色）', '#FFB347'); return; }
     cancelStartPreview();
-    el.remove();
+    // v3.66 继续游戏也走淡出（保持视觉一致性）
+    el.style.transition = 'opacity 0.6s ease';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+    // v3.78 进入游戏默认全屏（点击手势内请求，与开始游戏一致）
+    if (document.documentElement && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+    }
     const worldData = getStorage(worldKey(seed), null);
     const diff = (worldData && worldData.difficulty) || 'normal';
-    const baseOpts = { characterName: charName, seed, difficulty: diff };
-    if (_startDialogCb && _startDialogCb.onLaunch) _startDialogCb.onLaunch(baseOpts);
-    else enterWasteland(baseOpts);
+    // 继续游戏复用上次模式（若 worldData 有 multiplayer 字段，否则默认单人）
+    const baseOpts = { characterName: charName, seed, difficulty: diff, multiplayer: !!(worldData && worldData.multiplayer) };
+    // v3.78 与开始游戏同一套平滑流程：bg-fx 淡出 + 显示 game-screen + 清除 _bgFxPrevScreen
+    // （避免 bg-fx 淡出结束时恢复创意工坊 screen 弹出）+ 加载动画淡入/淡出衔接游戏画面。
+    // v3.78 全面加固：点击瞬间就清空记录，杜绝任何时机恢复创意工坊 screen。
+    clearBgFxPrevScreen();
+    destroyBgFx(1.4);
+    setTimeout(() => {
+        el.remove();
+        document.querySelectorAll('.screen').forEach(s => { if (s.id !== 'game-screen') s.classList.add('hidden'); });
+        const gsEl = document.getElementById('game-screen');
+        if (gsEl) gsEl.classList.remove('hidden');
+        document.getElementById('top-bar')?.classList.add('hidden');
+        document.getElementById('bot-bar')?.classList.add('hidden');
+        document.getElementById('tr-sidebar')?.classList.add('hidden');
+        // v3.78 关键：显示 game-screen 后立即强制销毁 bg-fx——守卫（inGame=true）保证
+        // 不恢复被隐藏的创意工坊 screen；同时清除记录，杜绝"创意工坊 UI 弹出一下"。
+        clearBgFxPrevScreen();
+        destroyBgFxNow();
+        // v3.100 提前进入局内：世界在加载动画【一开始】就构建并渲染（睁眼延迟 deferWake），
+        // 加载层淡出时直接露出已渲染好的世界 + 睁眼动画衔接 → 草地不再"进去才变色"。
+        // 单人路径提前启动；联机路径保持原时序（需要握手，不提前）。
+        if (!baseOpts.multiplayer) {
+            if (_startDialogCb && _startDialogCb.onLaunch) _startDialogCb.onLaunch({ ...baseOpts, deferWake: true });
+            else enterWasteland({ ...baseOpts, deferWake: true });
+        }
+        // v4.2 加载层【立即黑屏不透明】（fadeIn:0）：v4.1 已把世界提前渲染在加载层底下，
+        // 若 fadeIn 从透明淡入会在 0.5s 内透出游戏画面（用户看到"闪过游戏内画面"）。
+        // 改为黑屏直接盖住 → 点击开始 → 全屏 → 黑屏 → 沙漠过渡动画（睁眼抬头看太阳）。
+        showLoadingOverlay({
+            durMs: 10000,
+            variant: 'sandstorm',
+            scope: document.getElementById('game'),
+            fadeIn: 0,
+            fadeOut: 0.6,
+            onDone: () => {
+                if (baseOpts.multiplayer) {
+                    if (_startDialogCb && _startDialogCb.onLaunch) _startDialogCb.onLaunch(baseOpts);
+                    else enterWasteland(baseOpts);
+                } else {
+                    startWakeAfterLoad();   // v3.100 加载层淡出前启动睁眼动画
+                }
+            },
+        });
+    }, 600);
 }
-function startGameConfirm() {
+function startGameConfirm(mode) {
+    // v3.66 游玩模式合并到开始游戏界面：mode 来自 buildStartDialog 中按钮（'sp' / 'mp'）；
+    // 未选必弹提示（不再弹 showPlayModeDialog）。
     const el = document.getElementById('wsl-start');
     if (!el) return;
     const seed = Number(el.querySelector('#wsl-start-world').value);
     const charName = boundCharName(seed);
-    if (!seed || !charName) { log('请先选择世界（须已绑定角色）', '#FFB347'); return; }
+    if (!seed || !charName) {
+        log('请先创建世界/角色', '#FFB347');
+        showToast('请先创建世界/角色，再选择游玩模式', '#FFB347');
+        return;
+    }
+    if (!mode || (mode !== 'sp' && mode !== 'mp')) {
+        showToast('请选择游玩模式（单人 / 多人联机）', '#FFB347');
+        el.querySelectorAll('.wsl-start-mode').forEach(x => { x.style.borderColor = '#ff5544'; });
+        setTimeout(() => paintModeOn(el), 1200);
+        return;
+    }
     cancelStartPreview();
-    el.remove();
+    // v3.66 开始游戏界面缓慢淡出 → 过渡到睁眼效果（粒子背景在过渡完后销毁，避免遮挡游戏画面）
+    el.style.transition = 'opacity 0.6s ease';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+    // v3.78 用户要求"进入游戏默认全屏"：在点击手势同步栈内立即请求全屏（全屏 API 必须在
+    // 用户手势中调用，10 秒加载动画后再调会被浏览器拒绝）——加载动画与游戏画面全程全屏一致。
+    if (document.documentElement && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+    }
     // 读世界档难度（锁定）
     const worldData = getStorage(worldKey(seed), null);
     const diff = (worldData && worldData.difficulty) || 'normal';
-    const baseOpts = { characterName: charName, seed, difficulty: diff };
-    // 弹出「单人 / 多人联机」选择
-    showPlayModeDialog(baseOpts);
+    const baseOpts = { characterName: charName, seed, difficulty: diff, multiplayer: mode === 'mp' };
+    // v3.76 点开始游戏过渡：背景层立刻开始"散开变淡"（粒子加速 + 渐白蒙层 0.6s），
+    // 600ms 后进入加载动画，动画结束进入游戏 → 睁眼动画衔接。
+    // v3.78 平滑过渡：bg-fx 粒子淡出延长到 1.4s，与加载层 fadeIn(0.5s) 重叠——
+    // "粒子背景渐隐 + 加载画面渐显"消除硬切；加载层结束 fadeOut(0.6s) 从白色渐隐露出游戏画面。
+    // v3.78 全面加固：点击瞬间就清空 bg-fx 的"被隐藏 screen"记录——此后无论 bg-fx 在
+    // 何时、以何种方式（淡出自然结束/强制销毁/异常）销毁，都【不会】恢复创意工坊 screen。
+    clearBgFxPrevScreen();
+    destroyBgFx(1.4);
+    setTimeout(() => {
+        el.remove();
+        // v3.78 用户要求"登录界面和游戏界面画布一样大"：先显示游戏画面容器（黑底 16:9 画布），
+        // 并隐藏上下栏使其与游戏画面最终布局一致，加载动画贴合 #game 画布显示区域 →
+        // 动画结束时切入游戏画面尺寸/位置一致，无跳变。
+        // 手动切 hidden 而不走 showScreen('game')，避免提前停掉菜单 BGM。
+        document.querySelectorAll('.screen').forEach(s => { if (s.id !== 'game-screen') s.classList.add('hidden'); });
+        const gsEl = document.getElementById('game-screen');
+        if (gsEl) gsEl.classList.remove('hidden');
+        document.getElementById('top-bar')?.classList.add('hidden');
+        document.getElementById('bot-bar')?.classList.add('hidden');
+        document.getElementById('tr-sidebar')?.classList.add('hidden');
+        // v3.78 关键：显示 game-screen 后立即强制销毁 bg-fx——守卫（inGame=true）保证
+        // 不恢复被隐藏的创意工坊 screen；同时清除记录，杜绝"创意工坊 UI 弹出一下"。
+        clearBgFxPrevScreen();
+        destroyBgFxNow();
+        // v3.100 提前进入局内：世界在加载动画【一开始】就构建并渲染（睁眼延迟 deferWake），
+        // 加载层淡出时直接露出已渲染好的世界 + 睁眼动画衔接 → 草地不再"进去才变色"。
+        // 单人路径提前启动；联机路径保持原时序（需要握手，不提前）。
+        if (!baseOpts.multiplayer) {
+            if (_startDialogCb && _startDialogCb.onLaunch) _startDialogCb.onLaunch({ ...baseOpts, deferWake: true });
+            else enterWasteland({ ...baseOpts, deferWake: true });
+        }
+        // v4.2 加载层【立即黑屏不透明】（fadeIn:0）：同上，防止 v4.1 提前渲染的世界透出。
+        showLoadingOverlay({
+            durMs: 10000,
+            variant: 'sandstorm',
+            scope: document.getElementById('game'),
+            fadeIn: 0,    // v4.2 立即黑屏（v4.1 提前渲染世界后不可淡入透出）
+            fadeOut: 0.6,   // 结束后加载层淡出露出已渲染好的游戏画面
+            onDone: () => {
+                if (baseOpts.multiplayer) {
+                    if (_startDialogCb && _startDialogCb.onLaunch) _startDialogCb.onLaunch(baseOpts);
+                    else enterWasteland(baseOpts);
+                } else {
+                    startWakeAfterLoad();   // v3.100 加载层淡出前启动睁眼动画
+                }
+            },
+        });
+    }, 600);
+}
+// 重新绘制模式按钮样式（用于必选校验后清除红框提示）
+function paintModeOn(el) {
+    const cur = el.dataset.startMode || '';
+    el.querySelectorAll('.wsl-start-mode').forEach(x => {
+        const isOn = (x.dataset.mode === cur);
+        if (isOn) { x.style.background = '#123d2c'; x.style.borderColor = '#39d98a'; x.style.color = '#8dffc4'; x.style.boxShadow = '0 0 10px rgba(57,217,138,0.4)'; }
+        else { x.style.background = '#141c22'; x.style.borderColor = '#2a3a33'; x.style.color = '#7a8a92'; x.style.boxShadow = 'none'; }
+    });
+}
+// ================= v3.92 加载遮罩（掩盖创建绑定角色切换卡顿） =================
+// 每次点击「创建绑定角色」：reveal 前先显示全屏加载遮罩（盖住开始弹窗与 bg-fx 背景 → 卡顿
+// 过程用户只看到"加载中"而看不到背景掉帧），捏脸在遮罩下完成显示（layout/paint），
+// 加载动画展示后再淡出遮罩 → 露出已就绪的角色创建界面。
+let _wslLoadingMask = null;
+let _wslLoadingTimer = null;
+function ensureWslLoadingStyles() {
+    if (document.getElementById('wsl-loading-style')) return;
+    const st = document.createElement('style');
+    st.id = 'wsl-loading-style';
+    st.textContent = `
+        @keyframes wslLoadSpin { to { transform: rotate(360deg); } }
+        @keyframes wslLoadDots { 0%,20% { opacity:.2; } 50% { opacity:1; } 100% { opacity:.2; } }
+        .wsl-load-ring { width:54px;height:54px;border:3px solid rgba(216,168,106,.22);border-top-color:#d8a86a;border-radius:50%;animation:wslLoadSpin .9s linear infinite;box-shadow:0 0 14px rgba(216,168,106,.25); }
+        .wsl-load-dots span { animation:wslLoadDots 1.2s infinite; }
+        .wsl-load-dots span:nth-child(2){ animation-delay:.2s; }
+        .wsl-load-dots span:nth-child(3){ animation-delay:.4s; }
+        .wsl-load-dots span:nth-child(4){ animation-delay:.6s; }`;
+    document.head.appendChild(st);
+}
+function showWslLoading() {
+    ensureWslLoadingStyles();
+    window.__wslAnimBlocked = true;   // v4.3 加载遮罩期间锁定所有操作
+    if (_wslLoadingMask && _wslLoadingMask.isConnected) { _wslLoadingMask.style.opacity = '1'; return; }
+    const m = document.createElement('div');
+    m.id = 'wsl-loading-mask';
+    m.style.cssText = 'position:fixed;inset:0;z-index:1300;background:rgba(9,7,5,.97);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;';
+    m.innerHTML = `
+        <div class="wsl-load-ring"></div>
+        <div style="color:#e8c48a;font-size:22px;letter-spacing:8px;font-weight:600;text-shadow:0 0 10px rgba(216,168,106,.45);">正在唤醒捏脸台</div>
+        <div class="wsl-load-dots" style="color:#c89454;font-size:16px;letter-spacing:6px;"><span>·</span><span>·</span><span>·</span><span>·</span></div>
+        <div style="color:#8a6a42;font-size:13px;letter-spacing:3px;margin-top:6px;">尘沙翻涌 · 雕刻你的轮廓</div>`;
+    document.body.appendChild(m);
+    _wslLoadingMask = m;
+}
+function hideWslLoading(delay, onFadeStart) {
+    clearTimeout(_wslLoadingTimer);
+    _wslLoadingTimer = setTimeout(() => {
+        const m = _wslLoadingMask;
+        if (!m || !m.isConnected) {
+            window.__wslAnimBlocked = false;
+            if (typeof onFadeStart === 'function') onFadeStart();
+            return;
+        }
+        _wslLoadingMask = null;
+        // v4.4 遮罩【开始淡出】时立即回调 onFadeStart（新界面同时淡入，无缝重叠过渡）：
+        // 不再等遮罩完全移除才触发（否则"遮罩消失→空屏→捏脸啪地弹出"很生硬）。
+        if (typeof onFadeStart === 'function') onFadeStart();
+        m.style.transition = 'opacity .35s ease';
+        m.style.opacity = '0';
+        setTimeout(() => {
+            if (m.parentNode) m.parentNode.removeChild(m);
+            window.__wslAnimBlocked = false;   // 遮罩完全移除后才解除锁
+        }, 360);
+    }, delay || 0);
 }
 // 创建绑定角色：为当前选中的世界创建角色并绑定（世界↔角色强绑定）
-// 世界无绑定角色 → 点「创建绑定角色」；创建成功后写 world.characterName 并回弹窗选中该世界
+// v3.76 合并命名+捏脸为一个界面：直接打开捏脸（顶部带角色名输入框），
+// 确认时校验名字 → 保存角色 → 绑定世界 → 回开始弹窗（可直接点"开始游戏"）
 function startBoundCharacter() {
     const el = document.getElementById('wsl-start');
     const ws = el && el.querySelector('#wsl-start-world');
     const seed = ws ? Number(ws.value) : 0;
-    if (!seed) { log('请先选择世界', '#FFB347'); return; }
-    if (el) el.style.display = 'none';
-    const nameInput = document.createElement('div');
-    nameInput.innerHTML = `
-        <div style="position:fixed;inset:0;z-index:1260;background:rgba(5,8,12,0.94);display:flex;align-items:center;justify-content:center;font-family:'Microsoft YaHei',monospace;">
-        <div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:24px 28px;width:420px;box-shadow:0 0 40px rgba(57,217,138,0.25);">
-            <div style="text-align:center;color:#39d98a;font-size:20px;letter-spacing:4px;margin-bottom:6px;">◈ 创建绑定角色 ◈</div>
-            <div style="text-align:center;color:#7a8a92;font-size:12px;margin-bottom:12px;">创建后自动绑定到当前世界（一个世界对应一个角色）</div>
-            <div style="color:#9fb3ab;font-size:13px;margin-bottom:6px;">角色名字（可留空随机）：</div>
-            <div style="display:flex;gap:8px;margin-bottom:14px;">
-                <input id="wsl-bc-name" maxlength="12" placeholder="点击 🎲 随机生成" style="flex:2;background:#0e1318;border:1px solid #2a3a33;border-radius:6px;padding:8px;color:#dce6e2;font-size:15px;">
-                <button id="wsl-bc-rnd" style="flex:1;background:#1a2a3a;border:1px solid #4da3ff;color:#4da3ff;border-radius:6px;cursor:pointer;">🎲 随机</button>
-            </div>
-            <div style="display:flex;gap:8px;justify-content:center;">
-                <button id="wsl-bc-back" style="flex:1;background:#241c1c;border:1px solid #8a5a5a;color:#e0a0a0;border-radius:6px;padding:9px;cursor:pointer;">返回</button>
-                <button id="wsl-bc-next" style="flex:2;background:#123d2c;border:1px solid #39d98a;color:#39d98a;border-radius:6px;padding:9px;cursor:pointer;">下一步：捏脸 ▶</button>
-            </div>
-        </div></div>`;
-    document.body.appendChild(nameInput);
-    nameInput.querySelector('#wsl-bc-rnd').addEventListener('click', () => { nameInput.querySelector('#wsl-bc-name').value = randomName(''); });
-    const back = () => { nameInput.remove(); const s = document.getElementById('wsl-start'); if (s) s.style.display = 'flex'; };
-    nameInput.querySelector('#wsl-bc-back').addEventListener('click', back);
-    nameInput.querySelector('#wsl-bc-next').addEventListener('click', () => {
-        const raw = (nameInput.querySelector('#wsl-bc-name').value || '').trim();
-        const name = raw || randomName('');
-        let finalName = name;
-        const list = getStorage(CHAR_LIST_KEY, { names: [] });
-        let k = 2;
-        while (list.names.includes(finalName)) finalName = name + '_' + (k++);
-        nameInput.remove();
-        // 捏脸 → 保存角色 → 绑定到当前世界
-        showLookCreator((look) => {
+    if (!seed) { log('请先选择世界', '#FFB347'); return null; }
+    cancelStartPreview();   // v3.81 停掉隐藏开始弹窗的预览 RAF，避免捏脸界面卡顿
+    // v3.82 预构建模式：构建捏脸 DOM（隐藏）并返回 reveal 函数，由 animateDialogSwap
+    // 在旧弹窗上弹结束后调用 → 同步构建卡顿被藏进上弹动画时段（此处不再隐藏开始弹窗）。
+    // v3.90 showLookCreator 返回本次 reveal 闭包（精确引用实例，不依赖 querySelector 选实例）
+    const revealLook = showLookCreator(null, randomLook(), {
+        name: '',
+        onCancel: () => { const s = document.getElementById('wsl-start'); if (s) { s.style.display = 'flex'; revealDialog(s); } },   // 返回 → 恢复开始弹窗（缓缓显现）
+        onDone: (name, look) => {
+            // 重名检查：重名则加后缀
+            let finalName = name;
+            const list = getStorage(CHAR_LIST_KEY, { names: [] });
+            let k = 2;
+            while (list.names.includes(finalName)) finalName = name + '_' + (k++);
+            showToast('角色定制成功');   // v3.62 反馈 UI：捏脸完成后
             const cd = {
                 name: finalName, character: look,
                 inv: Array(Panel.BAG_SIZE).fill(null), hotbar: Array(HOTBAR_SIZE).fill(null),
@@ -6617,6 +7648,8 @@ function startBoundCharacter() {
             };
             setStorage(charKey(finalName), cd);
             updateCharList(finalName);
+            // v3.80 创建角色后立刻刷新创意工坊存档管理列表（无需刷新页面）
+            if (typeof window.__wslWorkshopRefresh === 'function') window.__wslWorkshopRefresh();
             // 绑定到当前世界
             const wd = getStorage(worldKey(seed), null);
             if (wd) {
@@ -6626,45 +7659,44 @@ function startBoundCharacter() {
             } else {
                 log(`角色「${finalName}」已创建`, '#7DFF7D');
             }
+            showToast('角色创建并绑定成功');   // v3.62 反馈 UI：绑定完成（存档已落盘）
+            // v3.64 反馈 UI：再次提示存档已自动保存（点取消时可在开始界面看到该存档）
+            // showToast 内部排队显示，两个反馈依次淡入淡出
+            showToast('存档已自动保存');
             const s = document.getElementById('wsl-start');
-            if (s) { s.style.display = 'flex'; renderStartDialog(); }
-        }, randomLook());
-    });
+            if (s) { s.style.display = 'flex'; revealDialog(s); renderStartDialog(); }
+        },
+    }, { deferReveal: true });
+    // v3.82/v3.90 返回 reveal：旧弹窗上弹结束后隐藏开始弹窗 + 触发本次捏脸淡入
+    //（用 showLookCreator 返回的闭包引用，杜绝 querySelector 多实例/时序选错 → 界面消失）
+    // v3.92/v3.93 遮罩已由点击瞬间 showWslLoading() 显示（t=0），此处 ensure 幂等。
+    // v4.3 加载动画期间全锁；v4.4 遮罩【开始淡出】的瞬间就 reveal 捏脸（onFadeStart）——
+    // 捏脸 0.32s 淡入与遮罩 0.35s 淡出【重叠过渡】，无缝衔接不再"啪地弹出"。
+    // 锁仍在遮罩完全移除后才解除（v4.3）。
+    return () => {
+        const s = document.getElementById('wsl-start');
+        if (s) s.style.display = 'none';
+        showWslLoading();                        // 幂等：遮罩已存在则保持不透明（并锁定）
+        hideWslLoading(400, () => {              // 遮罩开始淡出的瞬间：
+            if (typeof revealLook === 'function') revealLook();   // 捏脸同时淡入
+        });
+    };
 }
-// 创建新角色：命名/随机 → 捏脸 → 保存（不进游戏）→ 回弹窗
+// 创建新角色：命名+捏脸合并为一个界面 → 保存（不进游戏）→ 回弹窗
+// v3.76 与 startBoundCharacter 同款合并：直接打开带名字输入框的捏脸界面
 function startNewCharacter() {
+    cancelStartPreview();   // v3.81 停掉隐藏开始弹窗的预览 RAF
     const el = document.getElementById('wsl-start');
     if (el) el.style.display = 'none';
-    const nameInput = document.createElement('div');
-    nameInput.innerHTML = `
-        <div style="position:fixed;inset:0;z-index:1260;background:rgba(5,8,12,0.94);display:flex;align-items:center;justify-content:center;font-family:'Microsoft YaHei',monospace;">
-        <div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:24px 28px;width:420px;box-shadow:0 0 40px rgba(57,217,138,0.25);">
-            <div style="text-align:center;color:#39d98a;font-size:20px;letter-spacing:4px;margin-bottom:14px;">◈ 创建新角色 ◈</div>
-            <div style="color:#9fb3ab;font-size:13px;margin-bottom:6px;">角色名字（可留空随机）：</div>
-            <div style="display:flex;gap:8px;margin-bottom:14px;">
-                <input id="wsl-nc-name" maxlength="12" placeholder="点击 🎲 随机生成" style="flex:2;background:#0e1318;border:1px solid #2a3a33;border-radius:6px;padding:8px;color:#dce6e2;font-size:15px;">
-                <button id="wsl-nc-rnd" style="flex:1;background:#1a2a3a;border:1px solid #4da3ff;color:#4da3ff;border-radius:6px;cursor:pointer;">🎲 随机</button>
-            </div>
-            <div style="display:flex;gap:8px;justify-content:center;">
-                <button id="wsl-nc-back" style="flex:1;background:#241c1c;border:1px solid #8a5a5a;color:#e0a0a0;border-radius:6px;padding:9px;cursor:pointer;">返回</button>
-                <button id="wsl-nc-next" style="flex:2;background:#123d2c;border:1px solid #39d98a;color:#39d98a;border-radius:6px;padding:9px;cursor:pointer;">下一步：捏脸 ▶</button>
-            </div>
-        </div></div>`;
-    document.body.appendChild(nameInput);
-    nameInput.querySelector('#wsl-nc-rnd').addEventListener('click', () => { nameInput.querySelector('#wsl-nc-name').value = randomName(''); });
-    const back = () => { nameInput.remove(); const s = document.getElementById('wsl-start'); if (s) s.style.display = 'flex'; };
-    nameInput.querySelector('#wsl-nc-back').addEventListener('click', back);
-    nameInput.querySelector('#wsl-nc-next').addEventListener('click', () => {
-        const raw = (nameInput.querySelector('#wsl-nc-name').value || '').trim();
-        const name = raw || randomName('');
-        // 重名检查：重名则加后缀
-        let finalName = name;
-        const list = getStorage(CHAR_LIST_KEY, { names: [] });
-        let k = 2;
-        while (list.names.includes(finalName)) finalName = name + '_' + (k++);
-        nameInput.remove();
-        // 捏脸 → 保存（不进游戏）→ 回弹窗
-        showLookCreator((look) => {
+    showLookCreator(null, randomLook(), {
+        name: '',
+        onCancel: () => { const s = document.getElementById('wsl-start'); if (s) s.style.display = 'flex'; },   // 返回 → 恢复开始弹窗
+        onDone: (name, look) => {
+            // 重名检查：重名则加后缀
+            let finalName = name;
+            const list = getStorage(CHAR_LIST_KEY, { names: [] });
+            let k = 2;
+            while (list.names.includes(finalName)) finalName = name + '_' + (k++);
             const cd = {
                 name: finalName, character: look,
                 inv: Array(Panel.BAG_SIZE).fill(null), hotbar: Array(HOTBAR_SIZE).fill(null),
@@ -6673,79 +7705,228 @@ function startNewCharacter() {
                 stamina: 100, maxStamina: 100, wpnMag: {}, _devInfBag: false,
                 day: 1, _deathCount: 0,
             };
+            showToast('角色定制成功');   // v3.62 反馈 UI：捏脸完成后
             setStorage(charKey(finalName), cd);
             updateCharList(finalName);
             log(`角色「${finalName}」已创建（物品与属性随角色保留）`, '#7DFF7D');
             const s = document.getElementById('wsl-start');
             if (s) { s.style.display = 'flex'; renderStartDialog(); }
-        }, randomLook());
+        },
     });
+}
+// ================= v3.80 弹窗切换动画 =================
+// 点按钮弹出下一个 UI：当前弹窗【向上弹出】（opacity 淡出 + 卡片上移）→
+// 下一个弹窗在屏幕中央【缓缓淡入】。
+// 动画施加在【内容卡片】上（而非全屏遮罩外层）——避免 transform 让外层成为 containing block、
+// 破坏弹窗内 position:fixed 子元素定位。
+// 约定：弹窗元素用 [data-wsl-card] 标记内容卡片（可被 transform 动画），外层遮罩不带 transform。
+function animateDialogSwap(hideFn, showFn) {
+    // v3.81 修复：原实现固定优先 #wsl-start（它即使 display:none 仍在 DOM），
+    // 导致"创建世界→返回开始界面"时对【隐藏的】开始弹窗播动画，而当前【可见的】
+    // 创建世界弹窗没有任何上弹动画、直接消失 → 表现为"没有界面过渡动画"。
+    // 改为优先当前【可见】弹窗（跳过 display:none 节点）。
+    const visible = el => !!(el && el.isConnected && el.style.display !== 'none');
+    const wc = document.getElementById('wsl-world-create');
+    const look = document.querySelector('[data-wsl-dialog]');
+    const start = document.getElementById('wsl-start');
+    const cur = (visible(wc) && wc) || (visible(look) && look) || (visible(start) && start) || null;
+    const box = cur;
+    // v3.82 预构建状态：showFn 是否已在动画期间执行 + 是否返回 reveal 函数
+    let showCalled = false;
+    let prebuilt = null;
+    if (box) {
+        // 找内容卡片（若弹窗结构有卡片标记则动画卡片；否则整体 opacity 淡出）
+        const card = box.querySelector('[data-wsl-card]') || box;
+        card.style.transition = 'opacity 0.24s ease, transform 0.24s ease';
+        card.style.opacity = '0';
+        card.style.transform = 'translateY(-26px)';   // 向上弹出
+        // v3.82 上弹动画期间【预构建】新界面（隐藏）：把同步 DOM 构建卡顿藏进动画时段，
+        // 动画结束后直接 reveal（淡入）→ 根治"开始游戏→捏脸界面卡卡的"。
+        // showFn 若返回函数（如 startBoundCharacter 返回 reveal）则用其淡入；
+        // 不返回（如 startNewWorld 自带 revealDialog）则已构建完毕，doShow 不再重复执行。
+        if (typeof showFn === 'function') {
+            setTimeout(() => {
+                const r = showFn();
+                showCalled = true;
+                if (typeof r === 'function') prebuilt = r;
+            }, 30);
+        }
+        setTimeout(() => {
+            if (box.id === 'wsl-start') box.style.display = 'none';   // 开始弹窗保留节点
+            else if (box.parentNode) box.parentNode.removeChild(box); // 其它弹窗移除
+            doShow();
+        }, 260);
+    } else {
+        doShow();
+    }
+    function doShow() {
+        if (typeof hideFn === 'function') hideFn();
+        if (showCalled) {
+            // 已预构建：返回了 reveal 则调用（隐藏旧弹窗 + 新界面淡入）
+            if (typeof prebuilt === 'function') prebuilt();
+        } else if (typeof showFn === 'function') {
+            // 无旧弹窗分支（直接切换）：让出主线程一帧再构建
+            setTimeout(() => showFn(), 30);
+        }
+    }
+}
+// 让刚创建的弹窗内容卡片在屏幕中央缓缓淡入（opacity 0→1 + 轻微上浮归位）
+function revealDialog(el) {
+    if (!el) return;
+    el.style.display = 'flex';
+    el.style.opacity = '1';   // v3.84 防御：确保外层遮罩可见（曾有路径残留外层 opacity:0 → 弹窗透明无界面）
+    const card = el.querySelector('[data-wsl-card]') || el;
+    card.style.opacity = '0';
+    card.style.transition = 'opacity 0.32s ease, transform 0.32s ease';
+    card.style.transform = 'translateY(14px)';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (!el || !el.isConnected) return;
+        card.style.opacity = '1';
+        card.style.transform = 'translateY(0)';
+    }));
 }
 // 创建新世界：命名/随机 + 选难度 → 保存记录（不进游戏）→ 回弹窗（难度锁定）
 function startNewWorld() {
-    const el = document.getElementById('wsl-start');
-    if (el) el.style.display = 'none';
     const wInput = document.createElement('div');
+    wInput.dataset.wslDialog = '1';   // 标记弹窗，便于切换动画定位
+    wInput.id = 'wsl-world-create';
     wInput.innerHTML = `
-        <div style="position:fixed;inset:0;z-index:1260;background:rgba(5,8,12,0.94);display:flex;align-items:center;justify-content:center;font-family:'Microsoft YaHei',monospace;">
-        <div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:24px 28px;width:440px;box-shadow:0 0 40px rgba(57,217,138,0.25);">
-            <div style="text-align:center;color:#39d98a;font-size:20px;letter-spacing:4px;margin-bottom:14px;">◈ 创建新世界 ◈</div>
-            <div style="color:#9fb3ab;font-size:13px;margin-bottom:6px;">世界名称（可留空随机）：</div>
-            <div style="display:flex;gap:8px;margin-bottom:14px;">
-                <input id="wsl-nw-name" maxlength="16" placeholder="点击 🎲 随机生成" style="flex:2;background:#0e1318;border:1px solid #2a3a33;border-radius:6px;padding:8px;color:#dce6e2;font-size:15px;">
-                <button id="wsl-nw-rnd" style="flex:1;background:#1a2a3a;border:1px solid #4da3ff;color:#4da3ff;border-radius:6px;cursor:pointer;">🎲 随机</button>
+        <div data-wsl-card="1" style="position:fixed;inset:0;z-index:1260;background:transparent;display:flex;align-items:center;justify-content:center;font-family:'Microsoft YaHei',monospace;">
+        <div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:24px 32px;width:640px;box-shadow:0 0 40px rgba(57,217,138,0.25);max-width:94vw;">
+            <div style="text-align:center;color:#39d98a;font-size:22px;letter-spacing:6px;margin-bottom:18px;">◈ 创建新世界 ◈</div>
+            <div style="color:#9fb3ab;font-size:13px;margin-bottom:8px;">世界名称（必填，可点 🎲 随机）：</div>
+            <div style="display:flex;gap:10px;margin-bottom:16px;">
+                <input id="wsl-nw-name" maxlength="16" placeholder="输入名称或点 🎲 随机" style="flex:2;background:#0e1318;border:1px solid #2a3a33;border-radius:6px;padding:10px;color:#dce6e2;font-size:15px;">
+                <button id="wsl-nw-rnd" style="flex:1;background:#1a2a3a;border:1px solid #4da3ff;color:#4da3ff;border-radius:6px;cursor:pointer;font-size:14px;padding:10px;">🎲 随机</button>
             </div>
-            <div style="color:#9fb3ab;font-size:13px;margin-bottom:6px;">世界难度（创建后锁定，不可修改）：</div>
-            <div style="display:flex;gap:8px;margin-bottom:20px;">
-                <button class="wsl-nw-diff" data-diff="normal" style="flex:1;background:#123d2c;border:2px solid #39d98a;color:#39d98a;border-radius:6px;padding:9px;cursor:pointer;">正常</button>
-                <button class="wsl-nw-diff" data-diff="hardcore" style="flex:1;background:#241c1c;border:2px solid #8a5a5a;color:#e0a0a0;border-radius:6px;padding:9px;cursor:pointer;">硬核</button>
+            <div style="color:#9fb3ab;font-size:13px;margin-bottom:8px;">世界种子（必填，可点 🎲 随机）：</div>
+            <div style="display:flex;gap:10px;margin-bottom:16px;">
+                <input id="wsl-nw-seed" type="number" placeholder="请输入种子数字（如 20260813）" style="flex:2;background:#0e1318;border:1px solid #2a3a33;border-radius:6px;padding:10px;color:#dce6e2;font-size:15px;">
+                <button id="wsl-nw-seed-rnd" style="flex:1;background:#1a2a3a;border:1px solid #4da3ff;color:#4da3ff;border-radius:6px;cursor:pointer;font-size:14px;padding:10px;">🎲 随机种子</button>
             </div>
-            <div style="display:flex;gap:8px;justify-content:center;">
-                <button id="wsl-nw-back" style="flex:1;background:#241c1c;border:1px solid #8a5a5a;color:#e0a0a0;border-radius:6px;padding:9px;cursor:pointer;">返回</button>
-                <button id="wsl-nw-ok" style="flex:2;background:#123d2c;border:1px solid #39d98a;color:#39d98a;border-radius:6px;padding:9px;cursor:pointer;">创建世界 ✓</button>
+            <div style="color:#9fb3ab;font-size:13px;margin-bottom:8px;">世界难度（创建后锁定，不可修改）：</div>
+            <div style="display:flex;gap:10px;margin-bottom:22px;">
+                <button class="wsl-nw-diff" data-diff="normal" style="flex:1;background:#141c22;border:2px solid #2a3a33;color:#7a8a92;border-radius:6px;padding:12px;cursor:pointer;font-size:15px;">软核</button>
+                <button class="wsl-nw-diff" data-diff="hardcore" style="flex:1;background:#141c22;border:2px solid #2a3a33;color:#7a8a92;border-radius:6px;padding:12px;cursor:pointer;font-size:15px;">硬核</button>
+            </div>
+            <div style="display:flex;gap:10px;justify-content:center;">
+                <button id="wsl-nw-back" style="flex:1;background:#241c1c;border:1px solid #8a5a5a;color:#e0a0a0;border-radius:6px;padding:10px;cursor:pointer;font-size:14px;">返回</button>
+                <button id="wsl-nw-ok" style="flex:2;background:#123d2c;border:1px solid #39d98a;color:#39d98a;border-radius:6px;padding:10px;cursor:pointer;font-size:14px;">创建世界 ✓</button>
             </div>
         </div></div>`;
     document.body.appendChild(wInput);
-    let diff = 'normal';
-    wInput.querySelector('#wsl-nw-rnd').addEventListener('click', () => { wInput.querySelector('#wsl-nw-name').value = randomName(''); });
+    attachParticleBg(wInput);   // v3.62 创建世界弹窗同风格粒子背景
+    revealDialog(wInput);       // v3.80 屏幕中央缓缓显现
+    let diff = '';
+    // v3.62 难度按钮：初始全未选（中性样式）；点击软核变绿、硬核变红（单选高亮+变色）
+    // v3.67 难度必选：未选时点"创建世界"弹「请选择游戏难度」
+    const paintDiff = () => {
+        wInput.querySelectorAll('.wsl-nw-diff').forEach(x => {
+            const on = x.dataset.diff === diff;
+            if (x.dataset.diff === 'hardcore') {
+                x.style.background = on ? '#2a1414' : '#141c22';
+                x.style.borderColor = on ? '#ff5544' : '#2a3a33';
+                x.style.color = on ? '#ff8a7a' : '#7a8a92';
+                x.style.boxShadow = on ? '0 0 12px rgba(255,85,68,0.45)' : 'none';
+            } else {
+                x.style.background = on ? '#123d2c' : '#141c22';
+                x.style.borderColor = on ? '#39d98a' : '#2a3a33';
+                x.style.color = on ? '#8dffc4' : '#7a8a92';
+                x.style.boxShadow = on ? '0 0 12px rgba(57,217,138,0.45)' : 'none';
+            }
+        });
+    };
+    wInput.querySelector('#wsl-nw-rnd').addEventListener('click', () => {
+        wInput.querySelector('#wsl-nw-name').value = randomName('');
+        wInput.querySelector('#wsl-nw-name').style.borderColor = '#2a3a33';
+    });
+    // v3.80 世界种子：随机种子按钮 → 填入随机种子数字
+    wInput.querySelector('#wsl-nw-seed-rnd').addEventListener('click', () => {
+        wInput.querySelector('#wsl-nw-seed').value = String(Math.floor(Math.random() * 0x7fffffff));
+    });
     wInput.querySelectorAll('.wsl-nw-diff').forEach(b => b.addEventListener('click', () => {
         diff = b.dataset.diff;
-        wInput.querySelectorAll('.wsl-nw-diff').forEach(x => { x.style.borderColor = x === b ? '#39d98a' : '#2a3a33'; x.style.color = x === b ? '#39d98a' : '#7a8a92'; });
+        paintDiff();
     }));
-    const back = () => { wInput.remove(); const s = document.getElementById('wsl-start'); if (s) s.style.display = 'flex'; };
+    const back = () => {
+        // v3.80 返回也走动画：创建世界弹窗向上淡出 → 开始游戏弹窗缓缓显现
+        // v3.84 修复"返回后没有任何界面弹出"：去掉 s.style.opacity='0'（外层 opacity 一旦为 0
+        // 整个 #wsl-start 透明，而 revealDialog 只恢复内层卡片的 opacity，外层永远不会复原 →
+        // 返回后开始游戏 UI 完全不可见）。淡入由 revealDialog 内部完成，外层无需也不应设 0。
+        animateDialogSwap(() => {
+            wInput.remove();
+            const s = document.getElementById('wsl-start');
+            if (s) { s.style.display = 'flex'; revealDialog(s); }
+        }, null);
+    };
     wInput.querySelector('#wsl-nw-back').addEventListener('click', back);
     wInput.querySelector('#wsl-nw-ok').addEventListener('click', () => {
         const raw = (wInput.querySelector('#wsl-nw-name').value || '').trim();
-        const name = raw || randomName('');
-        // 随机种子 + 建空世界档（记录名称/难度，未游玩）
-        const seed = Math.floor(Math.random() * 0x7fffffff);
+        if (!raw) {
+            // v3.62 世界名称必填或随机：留空弹提示，不自动随机
+            showToast('请输入世界名称', '#FFB347');
+            const inp = wInput.querySelector('#wsl-nw-name');
+            inp.style.borderColor = '#ff5544';
+            inp.focus();
+            return;
+        }
+        // v3.80/v3.96 世界种子校验【优先于难度】：
+        // 用户要求：名称已填但种子与难度都缺时，优先弹出「请输入世界种子」（然后才是难度）。
+        const seedRaw = (wInput.querySelector('#wsl-nw-seed')?.value || '').trim();
+        if (!seedRaw) {
+            showToast('请输入世界种子', '#FFB347');
+            const seedInp = wInput.querySelector('#wsl-nw-seed');
+            if (seedInp) { seedInp.style.borderColor = '#ff5544'; seedInp.focus(); }
+            return;
+        }
+        // v3.67 难度必选：未选软核/硬核时弹「请选择游戏难度」+ 按钮红框提示
+        if (!diff || (diff !== 'normal' && diff !== 'hardcore')) {
+            showToast('请选择游戏难度', '#FFB347');
+            wInput.querySelectorAll('.wsl-nw-diff').forEach(x => { x.style.borderColor = '#ff5544'; });
+            setTimeout(() => paintDiff(), 1200);
+            return;
+        }
+        const seed = (Number(seedRaw) >>> 0) || Math.floor(Math.random() * 0x7fffffff);
+        const name = raw;
         setStorage(worldKey(seed), {
             seed, name, difficulty: diff,
             t: B.DAY_LEN * 0.35, day: 1, playT: 0,
             mods: { tiles: {}, chests: {}, boxLoot: {} },
             npcs: null, px: 0, py: 0, characterName: null,   // 创建世界后立即创建角色绑定（2026-08-09）
         });
-        log(`世界「${name}」已创建（${diff === 'normal' ? '正常' : '硬核'}难度 · 锁定不可改）`, '#7DFF7D');
-        wInput.remove();
-        // 2026-08-09 用户要求：创建世界后必须接着创建角色绑定 → 直接弹「创建绑定角色」
+        addWorldToIndex(seed);   // v3.66 同步独立索引（存档预览界面不依赖 namespace 推断）
+        // v3.80 创建世界后立刻刷新创意工坊存档管理列表（无需刷新页面即可看见新世界）
+        if (typeof window.__wslWorkshopRefresh === 'function') window.__wslWorkshopRefresh();
+        log(`世界「${name}」已创建（${diff === 'normal' ? '软核' : '硬核'}难度 · 锁定不可改）`, '#7DFF7D');
+        showToast('世界创建成功');   // v3.62 反馈 UI 淡入淡出
+        // v3.80 创建世界成功 → 回到开始游戏 UI（不自动弹创建角色）：
+        // 创建世界弹窗【向上弹出】→ 开始游戏弹窗【缓缓淡入】（世界下拉已选中新世界）。
+        // 用户手动点「创建绑定角色」再进捏脸。
         const s = document.getElementById('wsl-start');
         if (s) {
-            // 把刚建的世界设为目标，弹绑定角色创建
-            const ws = s.querySelector('#wsl-start-world');
-            // 先刷新世界下拉并选中新世界
             renderStartDialog();
             const ws2 = document.getElementById('wsl-start') && document.getElementById('wsl-start').querySelector('#wsl-start-world');
             if (ws2 && [...ws2.options].some(o => o.value === String(seed))) ws2.value = String(seed);
             updateStartPreview();
-            startBoundCharacter();
+            s.style.display = 'flex';
         }
+        // 创建世界弹窗向上弹出
+        const wCard = wInput.querySelector('[data-wsl-card]') || wInput;
+        wCard.style.transition = 'opacity 0.24s ease, transform 0.24s ease';
+        wCard.style.opacity = '0';
+        wCard.style.transform = 'translateY(-26px)';
+        setTimeout(() => {
+            if (wInput.parentNode) wInput.parentNode.removeChild(wInput);
+            // 开始游戏弹窗缓缓淡入
+            if (s) revealDialog(s);
+        }, 250);
     });
 }
 // 游玩模式选择（点「开始游戏」后）：单人 / 多人联机
 function showPlayModeDialog(baseOpts) {
     const el = document.createElement('div');
     el.id = 'wsl-playmode';
-    el.style.cssText = 'position:fixed;inset:0;z-index:1270;background:rgba(5,8,12,0.94);display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei",monospace;';
+    el.style.cssText = 'position:fixed;inset:0;z-index:1270;background:transparent;display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei",monospace;';
     el.innerHTML = `
         <div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:24px 30px;width:400px;box-shadow:0 0 40px rgba(57,217,138,0.25);">
             <div style="text-align:center;color:#39d98a;font-size:20px;letter-spacing:4px;margin-bottom:16px;">◈ 选择游玩模式 ◈</div>
@@ -6753,9 +7934,10 @@ function showPlayModeDialog(baseOpts) {
                 <button id="wsl-pm-solo" style="flex:1;background:#123d2c;border:2px solid #39d98a;color:#39d98a;border-radius:8px;padding:14px;cursor:pointer;font-size:15px;">单人游玩</button>
                 <button id="wsl-pm-mp" style="flex:1;background:#1a2a3a;border:2px solid #4da3ff;color:#4da3ff;border-radius:8px;padding:14px;cursor:pointer;font-size:15px;">多人联机</button>
             </div>
-            <div style="text-align:center;color:#7a8a92;font-size:12px;margin-top:12px;">选择角色：${escHtml(baseOpts.characterName)} · 世界难度：${baseOpts.difficulty === 'hardcore' ? '硬核' : '正常'}</div>
+            <div style="text-align:center;color:#7a8a92;font-size:12px;margin-top:12px;">选择角色：${escHtml(baseOpts.characterName)} · 世界难度：${baseOpts.difficulty === 'hardcore' ? '硬核' : '软核'}</div>
         </div>`;
     document.body.appendChild(el);
+    attachParticleBg(el);   // v3.62 游玩模式弹窗同风格粒子背景
     el.querySelector('#wsl-pm-solo').addEventListener('click', () => {
         el.remove();
         if (_startDialogCb && _startDialogCb.onLaunch) _startDialogCb.onLaunch(baseOpts);
@@ -6768,34 +7950,17 @@ function showPlayModeDialog(baseOpts) {
     });
 }
 
-// 角色创建弹窗：命名 → 确认后进捏脸
-export function showCreateCharacter(onDone) {
-    const el = document.createElement('div');
-    el.id = 'wsl-char-create';
-    el.style.cssText = 'position:fixed;inset:0;z-index:1250;background:rgba(5,8,12,0.92);display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei",monospace;';
-    el.innerHTML = `
-        <div style="background:#141a22;border:2px solid #39d98a;border-radius:10px;padding:24px 28px;width:420px;box-shadow:0 0 40px rgba(57,217,138,0.25);">
-            <div style="text-align:center;color:#39d98a;font-size:22px;letter-spacing:6px;margin-bottom:6px;">◈ 创建幸存者 ◈</div>
-            <div style="text-align:center;color:#7a8a92;font-size:12px;margin-bottom:16px;">物品与属性将随角色带入任何世界（泰拉瑞亚式）</div>
-            <div style="color:#9fb3ab;font-size:13px;margin-bottom:6px;">角色名字：</div>
-            <input id="wsl-char-name" maxlength="8" placeholder="例如：阿远" style="width:100%;box-sizing:border-box;background:#0e1318;border:1px solid #2a3a33;border-radius:6px;padding:8px;color:#dce6e2;font-size:16px;">
-            <div style="display:flex;gap:8px;margin-top:14px;justify-content:center;">
-                <button id="wsl-char-cancel" style="flex:1;background:#241c1c;border:1px solid #8a5a5a;color:#e0a0a0;border-radius:6px;padding:9px;cursor:pointer;">取消</button>
-                <button id="wsl-char-ok" style="flex:2;background:#123d2c;border:1px solid #39d98a;color:#39d98a;border-radius:6px;padding:9px;cursor:pointer;">下一步：捏脸 ▶</button>
-            </div>
-        </div>`;
-    document.body.appendChild(el);
-    el.querySelector('#wsl-char-cancel').addEventListener('click', () => { el.remove(); });
-    const ok = () => {
-        const name = (el.querySelector('#wsl-char-name').value || '').trim() || ('幸存者' + Math.floor(Math.random() * 900 + 100));
-        el.remove();
-        // 新建角色：以"全新随机多彩配色"为捏脸起点（而非继承上次外观），
-        // 避免每次新建都看到同一套配色，也呼应"色板应有多姿多彩"。
-        showLookCreator((look) => onDone(name, look), randomLook());
-    };
-    el.querySelector('#wsl-char-ok').addEventListener('click', ok);
-    el.querySelector('#wsl-char-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
-    setTimeout(() => el.querySelector('#wsl-char-name').focus(), 50);
+// 角色创建弹窗：命名 + 捏脸合并为一个界面（v3.76），确认后回调 onDone(name, look)
+// onCancel（可选）：返回时恢复上一个界面（缺省仅关闭，调用方自行处理）
+export function showCreateCharacter(onDone, onCancel) {
+    showLookCreator(null, randomLook(), {
+        name: '',
+        onCancel: onCancel || (() => {}),
+        onDone: (name, look) => {
+            showToast('角色定制成功');   // v3.62 反馈 UI：捏脸完成后
+            onDone(name, look);
+        },
+    });
 }
 
 function startRun(opts) {
@@ -6806,9 +7971,19 @@ function startRun(opts) {
     // easy→normal（软）、hard/hell→hardcore（硬核一条命）
     const DIFF_LEGACY = { easy: 'normal', normal: 'normal', hard: 'hardcore', hell: 'hardcore' };
     sv.diffKey = B.DIFF_TABLE[opts.difficulty] ? opts.difficulty : (DIFF_LEGACY[opts.difficulty] || 'normal');
+    // v4.5 进入局内立即按 day 同步季节：sv._season 默认 1（夏），若沿用默认会在第一次
+    // updateWeather 时变更为 seasonAt(sv.day) 的真实季节 → 地面缓存 key(g.season) 变化 →
+    // 草地重建颜色跳变（用户反馈"睁开眼才渲染完成、颜色跳变突兀"）。提前同步后首次渲染即正确。
+    const seasonNow = B.seasonAt(sv.day);
+    if (sv._season !== seasonNow) sv._season = seasonNow;
     WG.initWpn(sv, sv._savedMag);
 
-    Panel.initPanel({ onUse: useItem, onDrop: dropItem, onChestDrop: dropChestItem, onBatchOpen: batchOpenLoot });
+    // 2026-08-12 v3.8 配方右键"使用"：解锁到拼字台（与左键 useItem 同一逻辑）
+    Panel.initPanel({ onUse: useItem, onDrop: dropItem, onChestDrop: dropChestItem, onBatchOpen: batchOpenLoot,
+        onRecipeUse: (i) => {
+            const s = sv.inv[i];
+            if (s && s.id.startsWith('recipe:')) useRecipe(s);
+        } });
     showScreen('game');
     document.getElementById('top-bar')?.classList.add('hidden');
     document.getElementById('bot-bar')?.classList.add('hidden');
@@ -6842,24 +8017,64 @@ function startRun(opts) {
     }
     WDEV.init(sv);
     // 2026-08-11 v2.99 新存档开场流程：先在荒野中醒来（睁眼动画），文字消失后再弹新手教程。
-    // 老存档（playT>0 或已看过教程）仍直接按原逻辑显示教程。
-    if (sv._legacyNote) log('检测到旧版荒原存档（已备份），已为你开启全新无限荒原！');
-    else if (sv.playT > 0 || sv.day > 1) {
-        log(`欢迎回到荒原 · 第 ${sv.day} 天`);
-        TUT.showIfFirst(sv);   // 老存档：直接显示（首次看教程场景）
+    // v4.7 统一开场：老存档（playT>0 / day>1）与旧版迁移档（_legacyNote）同样播睁眼动画，
+    // 教程一律等"你在荒野中醒来…"文字消失后再弹出（时机与首次进档完全一致）。
+    // v4.8 老档/迁移档的顶部欢迎提示（"欢迎回到荒原…"/"检测到旧版荒原存档…"）不再立即显示，
+    // 改为存 _welcomeMsg，等睁眼动画（文字消失约 2.4s）结束后再显示——先睁眼、后欢迎提示。
+    // 注：showIfFirstAfterWake 内部对已看过教程的存档零开销返回（v4.8 起按世界+角色粒度），
+    // 因此老玩家继续游戏只播睁眼仪式、不会重复弹教程；新存档首次进局必弹教程（修复"新档不弹"）。
+    if (sv._legacyNote) {
+        sv._welcomeMsg = '检测到旧版荒原存档（已备份），已为你开启全新无限荒原！';
+    } else if (sv.playT > 0 || sv.day > 1) {
+        sv._welcomeMsg = `欢迎回到荒原 · 第 ${sv.day} 天`;
     } else {
         log('你醒来时，发现自己躺在一片荒原上……'); AudioSystem.playGameStart();
-        // 2026-08-09 昏迷苏醒过渡：刚醒来黑灰眨眼几次，期间不能移动，像素氛围更有代入感
+    }
+    // 2026-08-09 昏迷苏醒过渡：刚醒来黑灰眨眼几次，期间不能移动，像素氛围更有代入感
+    // 2026-08-12 v3.58 时长恢复 2.4s（用户定稿：创建角色苏醒/游戏结束重生统一 2.4 秒）
+    // v3.100 提前加载：进入局内时世界已在加载动画期间构建渲染，睁眼动画延迟到
+    // 加载层淡出前由 startWakeAfterLoad 启动（加载动画期间不播睁眼）。
+    if (opts.deferWake) {
+        sv._deferWake = true;
+    } else {
         sv._wake = { t: 0, dur: 2.4 };
-        // 2026-08-11 v2.99 新存档：教程等睁眼动画（文字消失，约 2.4s）结束后再弹出
+        // 2026-08-11 v2.99 教程等睁眼动画（文字消失，约 2.4s）结束后再弹出
         TUT.showIfFirstAfterWake(sv, 2500);
+        showWelcomeAfterWake();
+    }
+
+    // v3.100 进局出生点周边无敌对生物：清掉出生点安全区内已有的僵尸（读档还原/初始残留），
+    // 配合 nearSpawnScreen 安全区扩大（约 1.5 屏宽），保证玩家进局后周边安全。
+    if (sv.zombies && sv.zombies.length) {
+        sv.zombies = sv.zombies.filter(z => z && !B.nearSpawnScreen(SPAWN, z.x, z.y));
     }
 
     sv.last = performance.now();
     sv.raf = requestAnimationFrame(loop);
     startBgKeepAlive();
-    const rootEl = document.documentElement;
-    if (rootEl && rootEl.requestFullscreen) rootEl.requestFullscreen().catch(() => {});
+    // 全屏说明：v3.61 曾移除自动全屏（用户当时要求）；v3.78 用户改回"进入游戏默认全屏"——
+    // 全屏请求放在 startGameConfirm 的点击手势内执行（浏览器要求手势触发），
+    // 加载动画与游戏画面全程全屏一致；此处仍可用 F11 或暂停菜单"切换全屏"手动控制。
+}
+
+// v3.100 加载动画结束（加载层开始淡出）时启动睁眼动画：世界已在加载期间构建渲染，
+// 睁眼从此刻开始（2.4s 苏醒过渡），教程在睁眼结束后再弹出。
+function startWakeAfterLoad() {
+    if (!sv) return;
+    sv._deferWake = false;
+    sv._wake = { t: 0, dur: 2.4 };
+    TUT.showIfFirstAfterWake(sv, 2500);
+    showWelcomeAfterWake();   // v4.8 老档/迁移档欢迎提示等睁眼结束后再显示
+}
+
+// v4.8 老档/迁移档的顶部欢迎提示延迟到睁眼文字消失后（约 2.5s）再显示：
+// 先播"你在荒野中醒来…"睁眼动画，文字结束后才出现"欢迎回到荒原 · 第 X 天"。
+// 若延迟期间已退出游戏（sv.active=false）则不再显示，避免主菜单弹出残留提示。
+function showWelcomeAfterWake() {
+    if (!sv || !sv._welcomeMsg) return;
+    const m = sv._welcomeMsg;
+    sv._welcomeMsg = null;
+    setTimeout(() => { if (sv && sv.active) log(m); }, 2500);
 }
 
 export function exitWasteland(skipSave) {
@@ -6872,6 +8087,28 @@ export function exitWasteland(skipSave) {
     WDEV.destroy();
     WW.destroy();
     Panel.destroyPanel();
+    // v3.65 用户要求"游戏结束后会关闭游戏中打开的所有UI界面"：
+    // 关闭 WSearch 搜索框、扫描面板、拾取提示、死亡提示、死亡地点指引、announce、状态提示、拼字台、建造模式等。
+    if (typeof WSearch !== 'undefined' && WSearch.closeSearch) { try { WSearch.closeSearch(sv, true); } catch(_){} }
+    if (typeof Panel !== 'undefined' && Panel.hideDeath) { try { Panel.hideDeath(); } catch(_){} }
+    if (typeof scanPanelOpen !== 'undefined') { try { scanPanelOpen = false; } catch(_){} }
+    const _scanPanelEl = document.getElementById('wsl-scan-panel');
+    if (_scanPanelEl) _scanPanelEl.remove();
+    const _wsrchEl = document.getElementById('wsl-wsearch');
+    if (_wsrchEl) _wsrchEl.remove();
+    const _pickupEl = document.getElementById('wsl-pickup');
+    if (_pickupEl) _pickupEl.remove();
+    const _dwEl = document.getElementById('wsl-death-window');
+    if (_dwEl) _dwEl.remove();
+    // 清理 sv 上的 UI 临时态（避免下次开局残留）
+    if (sv) {
+        sv.announce = null;
+        sv._lastDeathPos = null;
+        sv.prompt = null;
+        sv._wake = null;
+        sv._scanHeld = false; sv._scanHeldAt = 0; sv._scanDone = false; sv._scanCooldownUntil = 0;
+        sv.build = false;
+    }
     if (pauseEl) { pauseEl.remove(); pauseEl = null; pauseOpen = false; }
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     document.getElementById('top-bar')?.classList.remove('hidden');
@@ -7207,6 +8444,119 @@ export function hostGuestBiteCheck(dt) {
     }
 }
 
+// ================= 2026-08-12 v3.41 键位设置（用户需求：自定义键位/鼠标侧键/录制/保存/恢复默认） =================
+// 可自定义功能键映射表（不含移动 WASD/方向键/数字快捷栏/系统键 F1/F9/F11/P 暂停等固定键）。
+// 每个功能绑定单一键位；mouse0=左键 mouse1=中键 mouse2=右键 mouse3/mouse4=侧键。
+const KEYBIND_DEFS = [
+    { act: 'interact', name: '交互 / 搜索 / 救治', def: 'f' },
+    { act: 'attack', name: '攻击', def: 'j' },
+    { act: 'dash', name: '闪现', def: 'q' },
+    { act: 'guard', name: '格挡', def: 'e' },
+    { act: 'jump', name: '跳跃', def: ' ' },
+    { act: 'reload', name: '换弹', def: 'r' },
+    { act: 'swap', name: '切换武器', def: 'x' },
+    { act: 'bag', name: '背包', def: 'b' },
+    { act: 'char', name: '角色属性', def: 'c' },
+    { act: 'build', name: '建造 / 旗帜', def: 'g' },
+    { act: 'craft', name: '拼字台', def: 'k' },
+    { act: 'map', name: '世界地图', def: 'm' },
+    { act: 'team', name: '队伍管理', def: 'h' },
+    { act: 'rally', name: '集合信号 / 倒地切主控', def: 't' },
+    { act: 'carry', name: '背起 / 射击模式', def: 'v' },
+    { act: 'squat', name: '蹲下', def: 'control' },
+    { act: 'run', name: '奔跑', def: 'shift' },
+    { act: 'scope', name: '瞄准', def: 'mouse2' },
+    { act: 'scan', name: '长按扫描周围', def: 'n' },
+];
+const KEYBIND_NAMES = {
+    ' ': '空格', control: 'Ctrl', shift: 'Shift', escape: 'ESC', mouse0: '鼠标左键',
+    mouse1: '鼠标中键', mouse2: '鼠标右键', mouse3: '鼠标侧键', mouse4: '鼠标侧键2',
+    arrowup: '↑', arrowdown: '↓', arrowleft: '←', arrowright: '→',
+    enter: '回车', backspace: '退格', tab: 'Tab', capslock: 'CapsLock',
+};
+function bindLabel(key) {
+    if (KEYBIND_NAMES[key]) return KEYBIND_NAMES[key];
+    if (/^f\d+$/.test(key)) return key.toUpperCase();
+    if (key.length === 1) return key.toUpperCase();
+    return key;
+}
+function getBind(act) {
+    const d = KEYBIND_DEFS.find(x => x.act === act);
+    if (!d) return null;
+    const kb = saveData.keybinds && saveData.keybinds[act];
+    return (kb && kb !== '') ? kb : d.def;
+}
+function setBind(act, key) {
+    if (!saveData.keybinds) saveData.keybinds = {};
+    saveData.keybinds[act] = key;
+    writeSave(saveData);
+    return getBind(act);
+}
+function resetKeybinds() {
+    if (saveData.keybinds) delete saveData.keybinds;
+    writeSave(saveData);
+}
+
+// 键位设置面板
+let keybindEl = null;
+let keybindRecording = null;   // 当前录制中的 { act, labelEl, keyEl }
+function keybindOpen() { return !!(keybindEl && keybindEl.style.display !== 'none'); }
+function closeKeybinds() { if (keybindEl) keybindEl.style.display = 'none'; keybindRecording = null; }
+function renderKeybinds() {
+    if (!keybindEl) return;
+    const list = keybindEl.querySelector('#wsl-kb-list');
+    list.innerHTML = KEYBIND_DEFS.map((d, i) => {
+        const cur = getBind(d.act);
+        const rec = keybindRecording && keybindRecording.act === d.act;
+        return `<div style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid #252d36;">
+            <div style="flex:1;font-size:13px;color:#c9d2db;">${d.name}</div>
+            <div class="wsl-kb-key" data-act="${d.act}" style="min-width:96px;text-align:center;padding:5px 10px;border-radius:6px;border:1px solid ${rec ? '#FFD700' : '#3a4451'};background:${rec ? 'rgba(255,215,0,.12)' : '#212833'};color:${rec ? '#FFD700' : '#e8ecf1'};font-size:13px;cursor:pointer;">${rec ? '请按键…' : bindLabel(cur)}</div>
+        </div>`;
+    }).join('');
+    list.querySelectorAll('.wsl-kb-key').forEach(el => el.addEventListener('click', () => startKeybindRecord(el.dataset.act)));
+}
+function startKeybindRecord(act) {
+    keybindRecording = { act };
+    renderKeybinds();
+    log(`键位录制：为「${KEYBIND_DEFS.find(d => d.act === act).name}」按下新键（回车取消，任意键/鼠标侧键绑定）`, '#FFD700');
+}
+function finishKeybindRecord(key) {
+    if (!keybindRecording) return;
+    const act = keybindRecording.act;
+    keybindRecording = null;
+    setBind(act, key);
+    renderKeybinds();
+    log(`键位已设置：「${KEYBIND_DEFS.find(d => d.act === act).name}」→ ${bindLabel(key)}`, '#7DFF7D');
+}
+function openKeybinds() {
+    if (!keybindEl) {
+        keybindEl = document.createElement('div');
+        keybindEl.id = 'wsl-keybinds';
+        keybindEl.style.cssText = 'position:fixed;inset:0;z-index:950;background:rgba(0,0,0,.78);display:none;align-items:center;justify-content:center;';
+        keybindEl.innerHTML =
+            '<div class="wsl-scaler" style="position:relative;width:420px;max-width:92vw;">' +
+            // 2026-08-11 v2.99 用户要求：所有弹窗都有叉号关闭按钮（右上角）
+            '<button id="wsl-kb-close" style="position:absolute;top:6px;right:10px;background:none;border:none;color:#8a9aa2;font-size:20px;cursor:pointer;line-height:1;padding:2px;z-index:2;" title="关闭">✕</button>' +
+            '<div style="font-size:20px;color:#FFD700;margin-bottom:8px;letter-spacing:3px;text-align:center;">键 位 设 置</div>' +
+            '<div style="color:#8a9aa2;font-size:12px;margin-bottom:10px;text-align:center;">点击右侧键位框 → 按下新键（含鼠标侧键）→ 回车结束录制</div>' +
+            '<div id="wsl-kb-list" style="max-height:52vh;overflow-y:auto;"></div>' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">' +
+            '<button id="wsl-kb-reset" style="background:#2a313c;border:1px solid #4a5a66;color:#ccd;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:13px;">恢复默认</button>' +
+            '<button id="wsl-kb-save" style="background:#1d5c3f;border:1px solid #39d98a;color:#bff5d8;padding:7px 24px;border-radius:6px;cursor:pointer;font-size:13px;">保 存</button>' +
+            '</div></div>';
+        document.body.appendChild(keybindEl);
+        keybindEl.querySelector('#wsl-kb-close').addEventListener('click', closeKeybinds);
+        keybindEl.querySelector('#wsl-kb-save').addEventListener('click', () => { closeKeybinds(); log('键位设置已保存', '#7DFF7D'); });
+        keybindEl.querySelector('#wsl-kb-reset').addEventListener('click', () => {
+            resetKeybinds();
+            renderKeybinds();
+            log('键位已恢复默认', '#7DFF7D');
+        });
+    }
+    renderKeybinds();
+    keybindEl.style.display = 'flex';
+}
+
 let pauseEl = null;
 let pauseOpen = false;
 
@@ -7297,6 +8647,7 @@ function togglePause(silent) {
                 '<button class="menu-btn" id="wsl-p-full" style="min-width:200px;">切换全屏 (F11 / 全屏时 ALT+ESC 退出)</button>' +
                 (sv && sv.camp ? '<button class="menu-btn" id="wsl-p-tpcamp" style="min-width:200px;border-color:#39d98a;color:#7ee08a;">传送回营地 ◈</button>' : '') +
                 '<button class="menu-btn" id="wsl-p-unstuck" style="min-width:200px;border-color:#FFB347;color:#FFD080;">脱离卡死（10 秒）</button>' +
+                '<button class="menu-btn" id="wsl-p-keybinds" style="min-width:200px;border-color:#7fd6ff;color:#a8dcff;">键位设置</button>' +
                 '<button class="menu-btn" id="wsl-p-exit" style="min-width:200px;border-color:#FF5555;color:#FF8888;">退出荒原（进度已保存）</button>' +
                 '</div>';
             document.getElementById('game-container').appendChild(pauseEl);
@@ -7310,6 +8661,9 @@ function togglePause(silent) {
             // 2026-08-10 脱离卡死（兜底）：关闭暂停，进入 10 秒倒计时，期满自动传送到最近可站位置
             pauseEl.querySelector('#wsl-p-unstuck').addEventListener('click', () => { togglePause(); startUnstick(); });
             pauseEl.querySelector('#wsl-p-exit').addEventListener('click', () => { togglePause(); exitWasteland(); });
+            // 2026-08-12 v3.41 键位设置入口：暂停面板内打开（关闭暂停不退出游戏）
+            const kbBtn = pauseEl.querySelector('#wsl-p-keybinds');
+            if (kbBtn) kbBtn.addEventListener('click', () => { openKeybinds(); });
             const bEl = pauseEl.querySelector('#wsl-vol-bgm'), bV = pauseEl.querySelector('#wsl-vol-bgm-v');
             const sEl = pauseEl.querySelector('#wsl-vol-sfx'), sV = pauseEl.querySelector('#wsl-vol-sfx-v');
             bEl.addEventListener('input', () => {

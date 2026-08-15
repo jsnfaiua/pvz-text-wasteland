@@ -153,8 +153,11 @@ export function damageObstacle(sv, gx, gy, dmg) {
         sv.effects.push({ kind: 'hit', x: (gx + 0.5) * TS, y: (gy + 0.5) * TS, life: 0.5, maxLife: 0.5, label: '破' });
         AudioSystem.playStoneBreak();
         if (t === T.BARRICADE) {
-            sv.mods.tiles[key] = { t: T.GROUND };
-            setTile(sv, gx, gy, T.GROUND);
+            // 2026-08-12 v3.61 修复"打坏路障破坏马路地形"：路障只生成在马路格（world.js 在 T.ROAD
+            // 基础上按 rr<0.012 替换为 BARRICADE），原地形一定是马路。打坏后恢复为 ROAD 而非 GROUND，
+            // 马路/人行道地形不再被破坏（废弃车打爆已变残骸不破坏地形）。
+            sv.mods.tiles[key] = { t: T.ROAD };
+            setTile(sv, gx, gy, T.ROAD);
             log(sv, '路障被摧毁了！');
         } else {
             // 汽车被打爆：就地变残骸（可拆解还原地面），不覆盖破坏地形；

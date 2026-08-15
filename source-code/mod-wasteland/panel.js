@@ -9,14 +9,26 @@ import { WEAPONS, AMMO_INFO } from '../core/constants.js';
 import AudioSystem from '../systems/audio.js';
 import { saveData } from '../core/state.js';
 import * as MSG from './wmsg.js';
-import { WEDGE_INFO, parseFragmentId } from './wwordcraft-rules.js';
+import { WEDGE_INFO, parseFragmentId, recipeByItemId, isConfusingGlyph } from './wwordcraft-rules.js';
 import { isGradeable, itemGrade, gradeColor, gradeMul } from './wgrade.js';   // 2026-08-11 v2.98 品级系统：背包/详情显示品级
 import * as WG from './wgrade.js';   // 2026-08-11 v2.98 品级系统：强化（灵石消耗/成功率）
+import { designItemInfo } from './wdesign.js';   // 2026-08-12 v3.17 未实装物品模子表（proto: 前缀识别）
 
 export const ITEMS = {
-    herb:  { name: '草药',     char: '草', color: '#46C846', heal: 15, satiate: 12, desc: '使用恢复 15 生命 / 12 饱食' },
+    // ===== 回血药物（只回血，不加饱食/水分）=====
+    herb:  { name: '草药',       char: '草', color: '#46C846', heal: 15, satiate: 0, desc: '使用恢复 15 生命（草药只回血，不回饱食）' },
+    'heal:bandage': { name: '绷带', char: '绷', color: '#E8836A', heal: 20, satiate: 0, desc: '包扎伤口，恢复 20 生命（只回血）' },
+    'heal:tonic':   { name: '强心针', char: '针', color: '#FF6688', heal: 40, satiate: 0, desc: '注射强心剂，恢复 40 生命（只回血）' },
+    'heal:kit':     { name: '急救包', char: '急', color: '#D2691E', heal: 60, satiate: 0, desc: '完整急救装备，恢复 60 生命（只回血）' },
+    // ===== 食物（只加饱食；带水分的食物额外补水；不回血）=====
+    food:  { name: '应急干粮', char: '食', color: '#FFB347', satiate: 30, drink: 5, desc: '罐头干粮：饱食 +30、水分 +5（食物只加饱食，不回血）' },
+    carrot:{ name: '胡萝卜',   char: '卜', color: '#FF7A3C', satiate: 20, drink: 10, desc: '多汁蔬菜：饱食 +20、水分 +10' },
+    corn:  { name: '玉米',     char: '玉', color: '#FFD24A', satiate: 25, drink: 0, desc: '淀粉主食：饱食 +25' },
+    potato:{ name: '土豆',     char: '土', color: '#C8A06A', satiate: 30, drink: 0, desc: '耐储存主食：饱食 +30' },
+    bread: { name: '面包',     char: '包', color: '#E0C08A', satiate: 25, drink: 0, desc: '烘焙面包：饱食 +25' },
+    apple: { name: '苹果',     char: '苹', color: '#FF5A5A', satiate: 18, drink: 8, desc: '多汁水果：饱食 +18、水分 +8' },
+    melon: { name: '西瓜',     char: '瓜', color: '#4DD24D', satiate: 15, drink: 20, desc: '含水量极高：饱食 +15、水分 +20' },
     wood:  { name: '木材',     char: '木', color: '#C89060', heal: 0,  desc: '基础建材：建造木墙/木门/储物柜/木床/种植盆' },
-    food:  { name: '食物',     char: '食', color: '#FFB347', heal: 30, satiate: 30, desc: '使用恢复 30 生命 / 30 饱食' },
     part:  { name: '修车零件', char: '件', color: '#66CCFF', heal: 0,  desc: '载具修复材料（后续阶段用途）' },
     stone: { name: '石块',     char: '石', color: '#999999', heal: 0,  desc: '基础建材（后续阶段用途）' },
     gem:   { name: '宝石',     char: '钻', color: '#7DF9FF', heal: 0,  desc: '尸潮战利品：稀有的高价值物（后续阶段用途）' },
@@ -33,6 +45,8 @@ export const ITEMS = {
     'tool:pick':    { name: '石镐',   char: '镐', color: '#999999', heal: 0, desc: '对碎石按 F 开采石块；工具不叠加' },
     'tool:hoe':     { name: '锄头',   char: '锄', color: '#AA8844', heal: 0, desc: '对荒地按 F 开垦种植盆（不耗木材）；工具不叠加' },
     'tool:wrench':  { name: '扳手',   char: '扳', color: '#66CCFF', heal: 0, desc: '修理建筑耐久（载具修理 · 后续阶段）；工具不叠加' },
+    // 2026-08-12 v3.10 文字手术刀：拆字工具（净化污染字块/字楔 / 自由拆解物品成字）
+    'tool:surgery': { name: '文字手术刀', char: '刀', color: '#8A6BC8', heal: 0, desc: '拆字工具：左键使用打开拆字台（仅医疗箱 2% 掉落）。可净化污染/不稳字块与字楔（拆掉形容词变普通），也可自由拆解物品成组成字——必定成功，拆错无惩罚' },
 
     'med:cold':     { name: '感冒药',   char: '药', color: '#FFB08A', heal: 0, desc: '治疗感冒' },
     'med:wound':    { name: '消炎药',   char: '消', color: '#E8836A', heal: 0, desc: '治疗伤口感染' },
@@ -73,9 +87,26 @@ export const LOOT_TIERS = {
     npcbag: { name: '战利品包裹', color: '#ff6b6b' },   // 2026-08-10 恶意 NPC 击杀掉落（含其背包全部物品）
 };
 
-// 统一物品信息查询（材料 / 武器 / 弹药 / 种子）
+// 统一物品信息查询（材料 / 武器 / 弹药 / 种子 / 配方）
 export function getItemInfo(id) {
     if (ITEMS[id]) return ITEMS[id];
+    // 2026-08-12 v3.17 未实装物品模子（proto: 前缀）：显示名称/字符/颜色与【模子·未实装】说明
+    if (typeof id === 'string' && id.startsWith('proto:')) {
+        const d = designItemInfo(id);
+        if (d) return { name: d.name, char: d.char, color: d.color, desc: d.desc, unimplemented: true };
+    }
+    // 2026-08-12 v3.8 配方物品：recipe:<recipeId>，显示目标物品名与所需字符
+    if (typeof id === 'string' && id.startsWith('recipe:')) {
+        const r = recipeByItemId(id);
+        if (r) {
+            return {
+                name: `配方·${r.name}`, char: '配', color: '#C88AFF',
+                recipe: true, recipeId: r.id,
+                desc: `文字配方「${r.name}」：${r.glyphs.join('')}。背包中右键点击使用，可在拼字台解锁该配方。`,
+            };
+        }
+        return { name: '未知配方', char: '配', color: '#C88AFF', recipe: true };
+    }
     if (id.startsWith('frag:')) {
         const info = parseFragmentId(id);
         if (info) {
@@ -97,6 +128,10 @@ export function getItemInfo(id) {
     }
     if (id.startsWith('glyph:')) {
         const char = id.slice(6);
+        // 2026-08-12 v3.15 混淆字机制：不在任何配方中的字 = 无用字/混淆字（灰色，标注"暂无实际用途"）
+        if (isConfusingGlyph(char)) {
+            return { name: `无用字「${char}」`, char, color: '#8a8a8a', glyph: true, confusing: true };
+        }
         return { name: `字块「${char}」`, char, color: '#d8d2bd', glyph: true };
     }
     if (id.startsWith('wedge:')) {
@@ -132,6 +167,11 @@ export function getItemInfo(id) {
 // 物品介绍（名称 + 描述 + 属性行），背包/柜子选中时展示
 export function itemDesc(id) {
     if (ITEMS[id]) return ITEMS[id].desc || '';
+    // 2026-08-12 v3.17 未实装物品模子（proto: 前缀）：返回【模子·未实装】说明
+    if (typeof id === 'string' && id.startsWith('proto:')) {
+        const d = designItemInfo(id);
+        if (d) return d.desc;
+    }
     if (id.startsWith('frag:')) {
         const info = parseFragmentId(id);
         if (info) {
@@ -143,7 +183,12 @@ export function itemDesc(id) {
     }
     if (id.startsWith('glyph-infected:')) return '来自感染体的危险字块；当前不会自动填入日常具现配方，等待净化系统处理。';
     if (id.startsWith('glyph-unstable:')) return '现实结构不稳定的字块；当前不会自动填入日常具现配方，等待鉴定或净化。';
-    if (id.startsWith('glyph:')) return '携带现实信息的残缺字块；必须与相容字块及字楔一起放入拼字台。';
+    if (id.startsWith('glyph:')) {
+        // 2026-08-12 v3.15 混淆字：未装载任何实际功能的字，拼不出物品（拼了也是错乱尸）
+        const ch = id.slice(6);
+        if (isConfusingGlyph(ch)) return '无用字：当前没有装载任何实际功能，拼不出任何物品（强行拼字只会文字错乱生成错乱尸）。等待后续功能加入将其"转正"为可用字。';
+        return '携带现实信息的残缺字块；必须与相容字块及字楔一起放入拼字台。';
+    }
     if (id.startsWith('wedge:')) {
         if (id === 'wedge:clean') return '隔离污染并固定精密概念；用于阳光、狙击枪和高精度弹药。';
         if (id === 'wedge:stable') return '稳定复杂字符连接；用于工具、武器、枪械和机械部件。';
@@ -193,6 +238,8 @@ export const CAT_INFO = {
 };
 export function itemCategory(id) {
     if (id.startsWith('frag:')) return 'fragment';
+    // 2026-08-12 v3.8 配方物品：归入"字块"类视觉（紫色配方卡）
+    if (typeof id === 'string' && id.startsWith('recipe:')) return 'glyph';
     if (id.startsWith('glyph:') || id.startsWith('glyph-unstable:') || id.startsWith('glyph-infected:')) return 'glyph';
     if (id.startsWith('wedge:')) return 'wedge';
     if (id.startsWith('loot:')) return 'loot';
@@ -201,7 +248,20 @@ export function itemCategory(id) {
     if (id.startsWith('ammo:')) return 'ammo';
     if (id.startsWith('seed:')) return 'seed';
     if (id.startsWith('tool:')) return 'tool';
-    if (id === 'food' || id === 'herb') return 'supply';
+    // 2026-08-12 v3.17 未实装模子物品：按模子分类给边框色（weapon→武器 / tool→工具 / resource→材料 / food+med→补给）
+    if (typeof id === 'string' && id.startsWith('proto:')) {
+        const d = designItemInfo(id);
+        if (d) {
+            if (d.kind === 'weapon') return 'weapon';
+            if (d.kind === 'tool') return 'tool';
+            if (d.kind === 'resource') return 'mat';
+            if (d.kind === 'food' || d.kind === 'med') return 'supply';
+        }
+        return 'misc';
+    }
+    // 2026-08-12 v3.7 食物（含具体食物）+ 回血药物归为补给类
+    if (id === 'food' || id === 'carrot' || id === 'corn' || id === 'potato' || id === 'bread' || id === 'apple' || id === 'melon') return 'supply';
+    if (id === 'herb' || id.startsWith('heal:')) return 'supply';
     if (id === 'water' || id === 'fert' || id === 'sun') return 'cult';
     if (id === 'wood' || id === 'stone' || id === 'part') return 'mat';
     if (id === 'gem') return 'gem';
@@ -398,6 +458,10 @@ function cellHtml(s, i, tag) {
     const it = getItemInfo(s.id);
     const eq = s.eq ? '<span class="wsl-cell-eq">装</span>' : '';
     const broken = !!s.broken;   // 损坏武器：灰色 + 损标
+    // 2026-08-12 v3.17 未实装模子物品：格子左上角"未"角标
+    const unimpl = it.unimplemented
+        ? '<span class="wsl-cell-unimpl" style="position:absolute;top:1px;left:2px;font-size:9px;color:#FF8844;font-weight:bold;background:rgba(0,0,0,0.55);border-radius:2px;padding:0 2px;line-height:11px;">未</span>'
+        : '';
     const catColor = CAT_INFO[itemCategory(s.id)].color;
     const dragAttr = tag === 'i' ? ` data-drag-i="${i}"` : '';
     const name = it.name;
@@ -412,9 +476,15 @@ function cellHtml(s, i, tag) {
         gradeBadge = `<span class="wsl-cell-grade" style="color:${gradeColor(g)};position:absolute;top:1px;right:2px;font-size:9px;font-weight:bold;">${g}</span>`;
         gradeAttr = ` data-grade="${g}"`;
     }
+    // 2026-08-12 v3.10 具象词条徽标：文字具现的武器/工具显示词条标签（火=灼烧/冰=冰封等）
+    let manifestBadge = '';
+    if (s._manifested && Array.isArray(s.manifestAffixes) && s.manifestAffixes.length) {
+        manifestBadge = `<span class="wsl-cell-affix" style="position:absolute;bottom:1px;left:2px;font-size:8px;color:#C88AFF;font-weight:bold;">${s.manifestAffixes.map(a => a.label).join('+')}</span>`;
+        if (tip) tip = `${name} · 具象（${s.manifestAffixes.map(a => a.label).join('+')}） · ${itemDesc(s.id)}`;
+    }
     return `<div class="wsl-cell" data-${tag}="${i}" data-item="${s.id}"${gradeAttr}${dragAttr} style="border-color:${catColor}" title="${tip}">` +
         `<span class="wsl-cell-char" style="color:${broken ? '#666666' : it.color};font-size:${fs}px">${name}</span>` +
-        `<span class="wsl-cell-n">${s.n}</span>${eq}${broken ? '<span class="wsl-cell-broken">损</span>' : ''}${gradeBadge}</div>`;
+        `<span class="wsl-cell-n">${s.n}</span>${eq}${unimpl}${broken ? '<span class="wsl-cell-broken">损</span>' : ''}${gradeBadge}${manifestBadge}</div>`;
 }
 
 function infoHtml() {
@@ -468,20 +538,24 @@ export function hideBag() {
 
 export function renderBag(sv) {
     if (!bagEl) return;
-    // 背包格数补齐（2026-08-09 修复"死亡后背包只剩 4 格"）：sv.inv 可能因旧档/死亡流程
-    // 长度不足 BAG_SIZE，渲染前补 null 到 BAG_SIZE，保证显示满格、可正常拾取。
+    // 背包格数补齐：保证显示满格、可正常拾取。
     if (!sv.inv) sv.inv = [];
     while (sv.inv.length < BAG_SIZE) sv.inv.push(null);
     const used = sv.inv.filter(Boolean).length;
-    const cap = (saveData.devMode && sv._devInfBag) ? sv.inv.length : BAG_SIZE;
-    const cells = sv.inv.map((s, i) => cellHtml(s, i, 'i')).join('');
+    // v3.68 无限背包：HUD 标题 + B 背包面板都显示 ∞，超过 24 自动扩容（每多一个物品多一个格子）。
+    // 原 v3.65 逻辑：HUD 显示 ∞ 但背包面板仍固定 24 → 用户反馈"打开 B 背包没有变化"。
+    const infBag = !!(saveData.devMode && sv._devInfBag);
+    const cap = infBag ? '∞' : BAG_SIZE;
+    // 无限背包模式下：渲染所有 sv.inv 项（按当前实际长度自动扩容；超过 6 行启用垂直滚动）
+    const cellN = infBag ? sv.inv.length : BAG_SIZE;
+    const cells = sv.inv.slice(0, cellN).map((s, i) => cellHtml(s, i, 'i')).join('');
     bagEl.innerHTML =
-        `<div class="wsl-bag-head"><span>背 包 ${used}/${cap}${cap > BAG_SIZE ? ' · 无限' : ''}</span>` +
+        `<div class="wsl-bag-head"><span>背 包 ${used}/${cap}${infBag ? ' · 无限' : ''}</span>` +
         `<span class="wsl-bag-tip">左键使用/装备 · 右键查看详情/丢弃 · 拖到下方丢弃区 · 选中后按 1-6 绑定快捷栏</span>` +
         `<button class="wsl-sort-btn" id="wsl-bag-sort" title="同类合并 + 排序（战利品袋独立保留）">整 理</button>` +
         `<button class="wsl-close-btn" id="wsl-bag-close" title="关闭 (B)">×</button></div>` +
         legendHtml() +
-        `<div class="wsl-bag-grid">${cells}</div>` +
+        `<div class="wsl-bag-grid${infBag && cellN > 24 ? ' wsl-bag-infinite' : ''}">${cells}</div>` +
         `<div class="wsl-discard" id="wsl-bag-discard">拖到此处丢弃</div>` +
         infoHtml();
     const bagClose = bagEl.querySelector('#wsl-bag-close');
@@ -510,7 +584,13 @@ export function renderBag(sv) {
             const onUpgrade = (it2 && isGradeable(it2.id))
                 ? () => upgradeItemFromBag(sv, it2)
                 : null;
-            showItemDetail(id, (slot != null && host && host.onDrop) ? () => host.onDrop(slot) : null, batchFn, el.dataset.grade || null, onUpgrade);
+            // 2026-08-12 v3.8 配方物品：右键详情弹窗显示"使用"按钮（学习/解锁配方）
+            const onRecipeUse = (typeof id === 'string' && id.startsWith('recipe:') && slot != null && host && host.onRecipeUse)
+                ? () => host.onRecipeUse(slot)
+                : null;
+            // 2026-08-12 v3.10 具象词条（详情弹窗显示）：文字具现物品的词条 + 韧性
+            const manifestAffixes = (it2 && it2._manifested && Array.isArray(it2.manifestAffixes)) ? it2.manifestAffixes : null;
+            showItemDetail(id, (slot != null && host && host.onDrop) ? () => host.onDrop(slot) : null, batchFn, el.dataset.grade || null, onUpgrade, onRecipeUse, manifestAffixes);
         });
     });
     bindBagDrag(sv);
@@ -550,7 +630,17 @@ function bindBagDrag(sv) {
             if (!bagDrag) return;
             if (bagDrag.moved) {
                 const over = document.elementFromPoint(e.clientX, e.clientY);
-                if (over && over.closest('#wsl-bag-discard') && host && host.onDrop) host.onDrop(bagDrag.slot);
+                // v3.99 丢弃判定：①拖到丢弃区（#wsl-bag-discard）；或
+                // ②拖到弹窗外的区域（不在 #wsl-bag 内）= 同样视为丢弃。
+                // 排除拖到背包网格格子上（那是"交换"操作，由交换逻辑处理，不走 onDrop）。
+                const inBag = over && over.closest('#wsl-bag');
+                const inDiscard = over && over.closest('#wsl-bag-discard');
+                const inBagCell = over && over.closest('.wsl-cell[data-drag-i]');
+                if (inBagCell) {
+                    // 拖到背包格子上 = 交换，不丢弃（交换逻辑由其他流程处理）
+                } else if ((inDiscard || !inBag) && host && host.onDrop) {
+                    host.onDrop(bagDrag.slot);
+                }
             }
             if (bagGhost) { bagGhost.remove(); bagGhost = null; }
             bagDrag = null;
@@ -573,11 +663,21 @@ function onBagClick(sv, i) {
         }
     } else if (s.id.startsWith('loot:') || s.id.startsWith('looted:')) {
         if (host && host.onUse) host.onUse(i);   // 战利品袋：打开搜索
-    } else if ((ITEMS[s.id] || {}).heal) {
-        if (host && host.onUse) host.onUse(i);   // 回血类交给主控（改 HP）
+    } else if (ITEMS[s.id] && (ITEMS[s.id].heal || ITEMS[s.id].satiate || ITEMS[s.id].drink)) {
+        // 2026-08-12 v3.7 食物（只加饱食/补水）与回血药物都可在背包点击使用
+        if (host && host.onUse) host.onUse(i);
+    } else if (String(s.id).startsWith('recipe:')) {
+        // 2026-08-12 v3.8 配方：左键点击 = 学习/使用（解锁到拼字台）
+        if (host && host.onUse) host.onUse(i);
+    } else if (s.id === 'tool:surgery') {
+        // 2026-08-12 v3.10 文字手术刀：左键点击 = 打开拆字台
+        if (host && host.onUse) host.onUse(i);
     } else if (s.id === 'flag') {
         // 2026-08-10 领地旗帜：左键使用进入"待放置"状态（按 G 插旗，ESC 取消；旗帜处 F 可收起重放）
         if (host && host.onUse) host.onUse(i);
+    } else if (String(s.id).startsWith('proto:')) {
+        // 2026-08-12 v3.17 未实装模子物品：左键点击仅提示，不产生任何效果（攻击/特效/数值待后续开发）
+        MSG.pushMsg(sv, `「${getItemInfo(s.id).name}」尚未实装（模子阶段）：攻击、特效与数值待后续开发`, '#FF8844');
     }
     renderBag(sv);
 }
@@ -621,7 +721,7 @@ export function renderChest(sv) {
         legendHtml() +
         `<div class="wsl-chest-cols">` +
         `<div><div class="wsl-chest-title">${sv.chestName || '容器'} ${chest.filter(Boolean).length}/${chest.length}</div><div class="wsl-bag-grid wsl-chest-grid">${chestCells}</div></div>` +
-        `<div><div class="wsl-chest-title">背包 ${sv.inv.filter(Boolean).length}/${(saveData.devMode && sv._devInfBag) ? sv.inv.length : BAG_SIZE}</div><div class="wsl-bag-grid">${bagCells}</div></div>` +
+        `<div><div class="wsl-chest-title">背包 ${sv.inv.filter(Boolean).length}/${(saveData.devMode && sv._devInfBag) ? '∞' : BAG_SIZE}</div><div class="wsl-bag-grid">${bagCells}</div></div>` +
         `</div>` + infoHtml();
     const chestClose = chestEl.querySelector('#wsl-chest-close');
     if (chestClose) chestClose.addEventListener('click', () => hideChest());
@@ -726,7 +826,7 @@ export function hideDeath() { if (deathEl) { deathEl.classList.add('hidden'); de
 
 // ---------- 物品详情弹窗（右键查看：名称/类别/稀有度/介绍/属性；背包/储物柜/搜索界面可丢弃） ----------
 let detailEl = null;
-export function showItemDetail(id, discardFn, batchFn, grade, onUpgrade) {
+export function showItemDetail(id, discardFn, batchFn, grade, onUpgrade, onRecipeUse, manifestAffixes) {
     const it = getItemInfo(id);
     const cat = CAT_INFO[itemCategory(id)];
     if (!detailEl) {
@@ -749,6 +849,14 @@ export function showItemDetail(id, discardFn, batchFn, grade, onUpgrade) {
             stats = gradeLine + `<div class="wsl-detail-stats">${rows.map(r => `<span>${r}</span>`).join('')}</div>`;
         }
     }
+    // 2026-08-12 v3.10 具象词条展示（文字具现物品：火=灼烧/冰=冰封等）
+    let manifestHtml = '';
+    if (manifestAffixes && manifestAffixes.length) {
+        manifestHtml = `<div style="margin-top:8px;padding:8px 10px;background:rgba(200,138,255,0.08);border:1px solid #C88AFF;border-radius:6px;">` +
+            `<div style="font-size:12px;color:#C88AFF;margin-bottom:4px;">✦ 文字具象 · 词条强化</div>` +
+            manifestAffixes.map(a => `<div style="font-size:11px;color:#e8d4ff;">▸ <b>${a.label}</b> — ${a.desc}</div>`).join('') +
+            `</div>`;
+    }
     detailEl.innerHTML =
         `<div class="wsl-detail-box" style="position:relative;">` +
         // 2026-08-11 v2.99 用户要求：所有弹窗都有叉号关闭按钮（右上角）
@@ -758,16 +866,20 @@ export function showItemDetail(id, discardFn, batchFn, grade, onUpgrade) {
         `<span class="wsl-detail-cat" style="border-color:${cat.color};color:${cat.color}">${cat.name}</span></div>` +
         `<div class="wsl-detail-desc">${itemDesc(id) || '—'}</div>` +
         stats +
+        manifestHtml +
         (batchFn ? `<button class="menu-btn wsl-detail-batch">全部打开</button>` : '') +
         (discardFn ? `<button class="menu-btn wsl-detail-drop">丢 弃</button>` : '') +
         // 2026-08-11 v2.98 品级系统：武器强化按钮（消耗灵石升品级，B→A 0.02% 极难）
         (onUpgrade ? `<button class="menu-btn wsl-detail-upgrade" style="color:#7DF9FF;">强化品级</button>` : '') +
+        // 2026-08-12 v3.8 配方：右键详情"使用"→ 解锁到拼字台
+        (onRecipeUse ? `<button class="menu-btn wsl-detail-recipe" style="color:#C88AFF;">使 用</button>` : '') +
         `</div>`;
     detailEl.classList.remove('hidden');
     detailEl.querySelector('.wsl-detail-close').addEventListener('click', hideItemDetail);
     if (batchFn) detailEl.querySelector('.wsl-detail-batch').addEventListener('click', () => { hideItemDetail(); batchFn(); });
     if (discardFn) detailEl.querySelector('.wsl-detail-drop').addEventListener('click', () => { discardFn(); hideItemDetail(); });
     if (onUpgrade) detailEl.querySelector('.wsl-detail-upgrade').addEventListener('click', () => { onUpgrade(); hideItemDetail(); });
+    if (onRecipeUse) detailEl.querySelector('.wsl-detail-recipe').addEventListener('click', () => { onRecipeUse(); hideItemDetail(); });
     AudioSystem.playClick();
 }
 export function hideItemDetail() { if (detailEl) detailEl.classList.add('hidden'); }

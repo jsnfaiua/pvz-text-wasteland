@@ -155,6 +155,62 @@ export function spawnZombie(sv, type, x, y, horde) {
     return z;
 }
 
+// 错乱僵尸（2026-08-12 v3.9 用户需求：拼错词生成对应文字的错乱僵尸，特殊字有特殊效果）
+// stats = WW.computeCorruptStats(chars) 的结果：{ name, chars, hp, speed, damage, armor, ability, abilityChar, descs }
+// 在拼字台旁生成（world 坐标），室内/室外通用；属性按组成字叠加。
+export function spawnCorruptedZombie(sv, x, y, stats) {
+    if (!sv || !stats) return null;
+    const inInterior = !!sv.interior;
+    const mul = (1 + (sv.day - 1) * B.Z_DAY_SCALE) * (B.DIFF_TABLE[sv.diffKey] || B.DIFF_TABLE.normal).mul;
+    const totalHp = Math.max(50, Math.round(stats.hp * mul));
+    const z = {
+        id: 'z' + ((sv._zIdSeq = (sv._zIdSeq || 0) + 1)),
+        // 2026-08-12 v3.9 错乱僵尸显示拼出的字（取组成字首字），无字时用"错"
+        type: 'corrupt', char: (stats.chars || '').slice(0, 1) || '错', color: B.CORRUPT_BASE.color, x, y,
+        name: stats.name || '错乱尸',
+        hp: totalHp, maxHp: totalHp,
+        speed: Math.max(10, Math.round(stats.speed * B.Z_SPEED_MUL)),
+        damage: stats.damage || 18,
+        wt: 0, tx: x, ty: y, wDir: null, biteT: 0, hurt: 0, stunT: 0,
+        biteCd: 0, lungeCd: 0, lungeT: 0, plantBiteCd: 0,
+        horde: false,
+        infection: infectionLevelFromRoll(Math.random()),
+        textAbility: stats.ability || null,
+        armor: stats.armor || 0,
+        corruptChars: stats.chars || '',      // 拼出的字（渲染/存档/掉落用）
+        corruptAbilityChar: stats.abilityChar || null,
+        corruptDescs: stats.descs || [],
+        atkState: null, atkT: 0, atkCd: 0, atkAngle: 0, atkWindup: 0, hasHit: false, auraT: 0, comboLeft: 0,
+    };
+    if (inInterior) { if (sv.interior) sv.interior.zombies.push(z); }
+    else sv.zombies.push(z);
+    sv._zombiePathNeedsRebuild = true;
+    AudioSystem.playZombieSpawn();
+    return z;
+}
+
+// 错乱僵尸死亡结算（2026-08-12 v3.9）：能力 explode → 死亡时爆炸伤及玩家/周围
+// 在本地击杀（wzombie）、联机击杀（survival removeZombieById）、室内击杀（windoor）三处调用。
+export function corruptDeathEffects(sv, z) {
+    if (!sv || !z || z.type !== 'corrupt') return;
+    if (z.textAbility === 'explode') {
+        const R = B.Z_BITE_RANGE * 1.8;   // 爆炸半径
+        const d = Math.hypot(sv.px - z.x, sv.py - z.y);
+        if (d < R) {
+            const dmg = Math.max(6, Math.round((z.damage || 18) * 0.6));
+            if (!sv._devGod) sv.hp = Math.max(1, sv.hp - dmg);
+            sv._combatT = 2;   // v3.63 战斗脱战冷却：4→2 秒，更快进入自然回血
+            if (sv.npcs) {
+                const ctl = sv.npcs.find(n => n.id === sv.controllerId);
+                if (ctl) ctl.hp = Math.max(1, ctl.hp - dmg);
+            }
+            sv.effects.push({ kind: 'hit', x: sv.px, y: sv.py, life: 0.3, maxLife: 0.3, label: `爆${dmg}` });
+        }
+        sv.effects.push({ kind: 'quake', x: z.x, y: z.y, life: 0.5, maxLife: 0.5 });
+        sv.effects.push({ kind: 'text', x: z.x, y: z.y - 20, life: 1.2, maxLife: 1.2, label: '爆 裂！' });
+    }
+}
+
 // 玩家尸化精英僵尸：玩家死亡后，原角色变成一只留在当前世界的精英僵尸——
 // 继承玩家名字/外观（肤色/上衣）/全部装备与背包，会用背包里的远程武器射击玩家，
 // 近战伤害与血量按精英系数强化。死亡播报「XXX已尸化」由 survival.onDeath 负责。
@@ -273,46 +329,19 @@ export function zombieBagDropChance(type) {
     return B.ZOMBIE_BAG_DROP_CHANCE[tier] ?? B.ZOMBIE_BAG_DROP_CHANCE.normal;
 }
 
-function resolveLootItem(kind, quality) {
-    if (kind === 'ammo') {
-        const at = B.LOOT_AMMO[Math.floor(Math.random() * B.LOOT_AMMO.length)];
-        return { id: 'ammo:' + at, n: 4 + Math.floor(Math.random() * (quality === 'epic' ? 9 : 6)) };
-    }
-    if (kind === 'tool') {
-        const tools = ['chopper', 'pick', 'hoe', 'wrench'];
-        return { id: 'tool:' + tools[Math.floor(Math.random() * tools.length)], n: 1 };
-    }
-    if (kind === 'weapon') {
-        const tier = quality === 'epic' ? (Math.random() < 0.5 ? 'rare' : 'epic') : (Math.random() < 0.6 ? 'common' : 'rare');
-        const pool = B.LOOT_WEAPONS[tier];
-        // 2026-08-11 v2.98 品级系统：开箱武器随机赋品级（A 极稀有 → Z 最常见）
-        return WG.withRandomGrade({ id: 'wpn:' + pool[Math.floor(Math.random() * pool.length)], n: 1 });
-    }
-    if (kind === 'gem') return { id: 'gem', n: 1 };
-    if (kind === 'flag') return { id: 'flag', n: 1 };   // 史诗战利品袋：领地旗帜
-    const base = { herb: 2, food: 2, wood: 3, stone: 3, water: 1, fert: 1, sun: 1 };
-    const max = base[kind] || 1;
-    return { id: kind, n: 1 + Math.floor(Math.random() * max) };
-}
-
-// 按品质生成内容（种类丰富）
-function zombieGlyphPool(type) {
-    const occupation = {
-        normal: 'resident', cone: 'worker', bucket: 'worker', door: 'worker', pole: 'guard', flag: 'guard',
-    }[type] || 'resident';
-    return WW.ZOMBIE_GLYPH_POOLS[occupation];
-}
-
+// v3.19 用户定稿：击杀僵尸物资掉落所有物资（ZOMBIE_LOOT_ALL 全池），按全局权重抽——物资稀有度全局一致；品质只影响件数。
+// （v3.18 文字部分：击杀僵尸掉落所有文字 GLYPH_UNIVERSAL，见 rollLootContents）
 function rollBaseLootContents(quality) {
-    const def = B.LOOT_CONTENTS[quality] || B.LOOT_CONTENTS.common;
-    const pool = def.pool;
-    const total = pool.reduce((s, e) => s + e[1], 0);
-    const count = def.count[0] + (Math.random() < 0.5 ? def.count[1] - def.count[0] : 0);
+    const countRange = quality === 'epic' ? [2, 3] : quality === 'rare' ? [2, 3] : [1, 2];
+    const count = countRange[0] + (Math.random() < 0.5 ? countRange[1] - countRange[0] : 0);
     const items = [];
     for (let i = 0; i < count; i++) {
-        let r = Math.random() * total, kind = pool[0][0];
-        for (const [k, w] of pool) { if (r < w) { kind = k; break; } r -= w; }
-        items.push(resolveLootItem(kind, quality));
+        const id = WW.rollGlobalLoot(B.ZOMBIE_LOOT_ALL, Math.random);
+        if (!id) continue;
+        let it = { id, n: WW.globalLootQty(id, Math.random) };
+        // 2026-08-11 v2.98 品级系统：开箱武器随机赋品级（A 极稀有 → Z 最常见）
+        if (id.startsWith('wpn:')) it = WG.withRandomGrade(it);
+        items.push(it);
     }
     // 稀有/史诗容器：低概率额外掉落传送宝石（D/E2 联动）
     if ((quality === 'rare' || quality === 'epic') && Math.random() < 0.25) {
@@ -326,7 +355,7 @@ export function rollLootContents(quality, type = 'normal') {
     const countKey = quality === 'epic' ? 'zombieEpic' : quality === 'rare' ? 'zombieRare' : 'zombieCommon';
     const result = WW.rollWordLootOutcome('zombie', resultTable, {
         countTable: WW.GLYPH_COUNT_TABLES[countKey],
-        glyphPool: zombieGlyphPool(type),
+        // v3.18 用户定稿：击杀僵尸掉落所有文字（每字有自己的概率），统一走全字池 GLYPH_UNIVERSAL（不传 glyphPool）
         wedgeSource: countKey,
         pollutionTable: WW.ZOMBIE_POLLUTION_TABLES[quality] || WW.ZOMBIE_POLLUTION_TABLES.common,
         completeSource: 'zombie',
@@ -336,6 +365,14 @@ export function rollLootContents(quality, type = 'normal') {
     if (type === 'giant') {
         items.push({ id: 'tpgem', n: 1 });
         if (Math.random() < 0.5) items.push({ id: 'gem', n: 1 });
+    }
+    // 2026-08-12 v3.8 配方掉落：文字僵尸/精英必掉（对应字符库）；其余僵尸低概率掉（优先未解锁）
+    if (B.TEXT_ZOMBIE_TYPES[type] || type === 'giant') {
+        const r = WW.rollRecipeItem(undefined, Math.random);
+        if (r) items.push(r);
+    } else if (Math.random() < (B.RECIPE_DROP_CHANCE_ZOMBIE || 0.05)) {
+        const r = WW.rollRecipeItem(undefined, Math.random);
+        if (r) items.push(r);
     }
     return items;
 }
@@ -429,7 +466,9 @@ function updatePackFollow(sv, z, dt, zCanStand) {
         if (z.wt <= 0 || z.wDir == null) { z.wt = 1 + Math.random() * 2; z.wDir = Math.random() * Math.PI * 2; }
         return false;
     }
-    const spd = z.speed * (B.Z_CONTACT[z.type] || B.Z_CONTACT.normal).speedMul * B.PACK_FOLLOW_SPEED_MUL;
+    // 2026-08-12 v3.32 用户定稿：天气负面影响波及所有生物——僵尸/室内僵尸/NPC/队友都吃 wxMoveMul
+    const wxSpd = B.wxMoveMul(sv._weather, B.wxLevelCur(sv));
+    const spd = z.speed * (B.Z_CONTACT[z.type] || B.Z_CONTACT.normal).speedMul * B.PACK_FOLLOW_SPEED_MUL * wxSpd;
     const nx = z.x + (dx / dist) * spd * dt;
     const ny = z.y + (dy / dist) * spd * dt;
     if (zCanStand(nx, z.y)) z.x = nx;
@@ -527,6 +566,17 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         if (z.slowT > 0) z.slowT -= dt;
         else z.slowMul = 0;
         if (z.stunT > 0) { z.stunT -= dt; continue; }
+        // 2026-08-12 v3.10 具象词条持续状态：灼烧/剧毒（对僵尸每 0.5s 跳一次伤害）
+        if (z._burnT > 0) {
+            z._burnT -= dt; z._burnTic = (z._burnTic || 0) + dt;
+            if (z._burnTic >= 0.5) { z._burnTic = 0; z.hp = Math.max(1, z.hp - 3); }
+            if (z._burnT <= 0) z._burnT = 0;
+        }
+        if (z._poisonT > 0) {
+            z._poisonT -= dt; z._poisonTic = (z._poisonTic || 0) + dt;
+            if (z._poisonTic >= 0.5) { z._poisonTic = 0; z.hp = Math.max(1, z.hp - 2); }
+            if (z._poisonT <= 0) z._poisonT = 0;
+        }
         if (z.biteCd > 0) z.biteCd -= dt;
         if (z.lungeCd > 0) z.lungeCd -= dt;
         if (z.lungeT > 0) z.lungeT -= dt;
@@ -541,7 +591,8 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         const playerAlerted = isInPlayerAlertRange(sv, z);
         const plant = nearestPlantTarget(sv, z, B.Z_PLANT_DETECT * TS);
         const contact = B.Z_CONTACT[z.type] || B.Z_CONTACT.normal;
-        const dmgTo = contact.dmg * diffMul * nightMul;
+        // 2026-08-12 v3.9 错乱僵尸：伤害/护甲来自组成字计算的自身字段（覆盖 contact 表）
+        const dmgTo = (z.type === 'corrupt' && z.damage ? z.damage : contact.dmg) * diffMul * nightMul;
         if (z.auraT > 0) z.auraT -= dt;
 
         // 碰撞攻击：贴近玩家后持续啃咬（2026-08-09 用户要求）——
@@ -563,6 +614,61 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         }
         // 尸化玩家精英：用背包继承的武器远程射击玩家（hostile 子弹由 npcBullets 系统命中结算）
         if (z.isPlayerZombie && z.wpnKey) playerZombieShoot(sv, z, dt);
+        // 2026-08-12 v3.9 错乱僵尸 AI 能力（每帧节拍 0.6s）：
+        // blink 影步瞬移突进 / summon 召唤小僵尸 / rally 号令周围僵尸提速 / healaura 医疗光环回血
+        if (z.type === 'corrupt' && z.hp > 0 && z.textAbility) {
+            z._corruptAiT = (z._corruptAiT || 0) - dt;
+            if (z._corruptAiT <= 0) {
+                z._corruptAiT = 0.6;
+                if (z.textAbility === 'blink' && pdist > B.Z_BITE_RANGE && pdist < 8 * TS && playerAlerted) {
+                    const a2 = Math.atan2(sv.py - z.y, sv.px - z.x);
+                    const nx2 = sv.px - Math.cos(a2) * TS * 1.2, ny2 = sv.py - Math.sin(a2) * TS * 1.2;
+                    if (zCanStand(nx2, ny2)) { z.x = nx2; z.y = ny2; sv.effects.push({ kind: 'text', x: z.x, y: z.y - 16, life: 0.8, maxLife: 0.8, label: '影' }); }
+                } else if (z.textAbility === 'summon') {
+                    const cap = (sv.zombies || []).length;
+                    if (cap < B.Z_SPAWN_CAP_MAX) {
+                        const ang3 = Math.random() * Math.PI * 2;
+                        const sx3 = z.x + Math.cos(ang3) * TS * 1.5, sy3 = z.y + Math.sin(ang3) * TS * 1.5;
+                        if (zCanStand(sx3, sy3)) {
+                            spawnZombie(sv, 'normal', sx3, sy3, true);
+                            sv.effects.push({ kind: 'text', x: z.x, y: z.y - 16, life: 0.8, maxLife: 0.8, label: '召' });
+                        }
+                    }
+                } else if (z.textAbility === 'gun') {
+                    // 远程射击：向玩家发射一颗 hostile 弹丸（复用 npcBullets 命中结算系统）
+                    const shootY = z.y - 26;
+                    const dxx = sv.px - z.x, dyy = sv.py - shootY;
+                    const distG = Math.hypot(dxx, dyy);
+                    if (distG < 7 * TS) {
+                        const angG = Math.atan2(dyy, dxx);
+                        if (!sv.npcBullets) sv.npcBullets = [];
+                        sv.npcBullets.push({
+                            x: z.x, y: shootY,
+                            vx: Math.cos(angG) * 300, vy: Math.sin(angG) * 300,
+                            dmg: Math.max(4, Math.round((z.damage || 18) * 0.5)),
+                            color: '#ff8866', label: '字', life: 0.9, traveled: 0,
+                            range: 7 * TS, pierce: 0, pierced: 0, hitList: null,
+                            hostile: true, src: z.id, srcName: z.name, srcWpn: null,
+                        });
+                        sv.effects.push({ kind: 'zswing', x: z.x, y: shootY, angle: angG, life: 0.2, maxLife: 0.2, style: 'thrust' });
+                    }
+                } else if (z.textAbility === 'rally') {
+                    let rallied = 0;
+                    for (const oth of sv.zombies) {
+                        if (oth !== z && oth.hp > 0 && Math.hypot(oth.x - z.x, oth.y - z.y) < B.Z_FLAG_AURA_RANGE * TS) { oth.auraT = 3; rallied++; }
+                    }
+                    if (rallied) sv.effects.push({ kind: 'text', x: z.x, y: z.y - 16, life: 0.8, maxLife: 0.8, label: `令 ${rallied}` });
+                } else if (z.textAbility === 'healaura') {
+                    let healed = 0;
+                    for (const oth of sv.zombies) {
+                        if (oth !== z && oth.hp > 0 && oth.hp < oth.maxHp && Math.hypot(oth.x - z.x, oth.y - z.y) < B.Z_FLAG_AURA_RANGE * TS) {
+                            oth.hp = Math.min(oth.maxHp, oth.hp + 4); healed++;
+                        }
+                    }
+                    if (healed) sv.effects.push({ kind: 'text', x: z.x, y: z.y - 16, life: 0.8, maxLife: 0.8, label: `愈 ${healed}` });
+                }
+            }
+        }
 
         // 僵尸啃咬附近的角色/NPC（含恶意 NPC：僵尸攻击除同类外的一切生物；受击原则与主角一致）
         // 2026-08-09 用户要求 NPC 与玩家一致：持续啃咬（血条平滑减少，DPS=dmgTo/biteCd）；
@@ -725,7 +831,9 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
             mvx = Math.cos(z.wDir); mvy = Math.sin(z.wDir); spd = z.speed * typeSpd * B.Z_WANDER_SPEED * auraMul * nightMul;
         }
         const slowFactor = z.slowMul ? (1 - z.slowMul) : 1;
-        const nx = z.x + mvx * spd * slowFactor * dt, ny = z.y + mvy * spd * slowFactor * dt;
+        // v3.32 天气对所有生物移速影响：沙尘暴减速、雪雾降速（统一由 wbalance.wxMoveMul 计算）
+        const wxMoveSpd = B.wxMoveMul(sv._weather, B.wxLevelCur(sv));
+        const nx = z.x + mvx * spd * slowFactor * wxMoveSpd * dt, ny = z.y + mvy * spd * slowFactor * wxMoveSpd * dt;
         const okX = zCanStand(nx, z.y), okY = zCanStand(z.x, ny);
         if (okX || okY) z.faceDir = Math.atan2(mvy, mvx);   // 持盾/朝向跟随移动方向
         if (okX) z.x = nx;
@@ -793,6 +901,8 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
             const contents = rollLootContents(quality, z.type);
             if (contents.length) sv.drops.push({ x: z.x, y: z.y, id: 'loot:' + quality, n: 1, contents });
         }
+        // 2026-08-12 v3.9 错乱僵尸死亡结算（爆裂能力）
+        corruptDeathEffects(sv, z);
         // 2026-08-11 v2.98 品级系统：僵尸死亡掉落灵石（基础 3.33%，越稀有掉率越高/数量越多）
         // 灵石为品级强化材料，掉落为可拾取物品（drops 实体，走过去拾取入包）
         try {

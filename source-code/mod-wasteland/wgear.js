@@ -224,6 +224,9 @@ export function meleeAttack(sv) {
         return false;
     };
     let hitAny = false;
+    // 2026-08-12 v3.10 具象词条：读取当前近战武器的词条（火=灼烧/冰=冰封等）
+    const meleeItem = (sv.inv || []).find(x => x && x.eq === 'melee' && x.id === 'wpn:' + k) || null;
+    const affixes = (meleeItem && meleeItem._manifested && Array.isArray(meleeItem.manifestAffixes)) ? meleeItem.manifestAffixes : [];
     for (const z of sv.zombies) {
         if (z.hp <= 0) continue;
         const dx = z.x - sv.px, dy = z.y - sv.py;
@@ -259,11 +262,25 @@ export function meleeAttack(sv) {
                 continue;
             }
             const df = doorFront(z, Math.atan2(sv.py - z.y, sv.px - z.x));
-            z.hp -= devDmg(sv, w.damage) * gMul * df * atkMul;
+            // 2026-08-12 v3.9 护甲减伤：错乱僵尸用 z.armor（按组成字计算），其余僵尸按 Z_CONTACT 表 armor
+            let dmgNow = devDmg(sv, w.damage) * gMul * df * atkMul;
+            const armorV = z.type === 'corrupt' ? (z.armor || 0) : ((B.Z_CONTACT[z.type] || B.Z_CONTACT.normal).armor || 0);
+            if (armorV > 0) dmgNow = Math.max(1, Math.round(dmgNow * (1 - armorV)));
+            // 2026-08-12 v3.10 具象词条：伤害强化类词条（蛮力/强击/刀锋/铁质等）在此叠加
+            for (const af of affixes) {
+                if (af.id === 'power') dmgNow = Math.round(dmgNow * 1.2);
+                else if (af.id === 'strong' || af.id === 'battle' || af.id === 'sword' || af.id === 'blade') dmgNow = Math.round(dmgNow * 1.15);
+                else if (af.id === 'lance' || af.id === 'heavy') dmgNow = Math.round(dmgNow * 1.18);
+                else if (af.id === 'sharp' || af.id === 'snipe' || af.id === 'dark' || af.id === 'shadow') dmgNow = Math.round(dmgNow * 1.12);
+                else if (af.id === 'iron') dmgNow = Math.round(dmgNow * 1.1);
+            }
+            z.hp -= dmgNow;
             z.hurt = 0.12;
             hitAny = true;
             zombieHitSound(sv, z);
             if (df < 1) sv.effects.push({ kind: 'hit', x: z.x, y: z.y, life: 0.2, maxLife: 0.2, label: '挡' });
+            // 2026-08-12 v3.10 具象词条：命中附加效果（灼烧/冰封/剧毒/麻痹/吸血等）
+            applyManifestHitEffects(sv, z, affixes, dmgNow);
         }
     }
     // 近战命中恶意 NPC（同一扇形判定；联机 guest 室外不本地扣血，由 host 按 atk 裁决）
@@ -291,7 +308,7 @@ export function meleeAttack(sv) {
         }
     }
     if (hitAny) addAct(sv, controlledNpc(sv), 'melee');   // 后天培养：近战练力量
-    if (hitAny) sv._combatT = 4;   // 玩家出手 → 队友支援
+    if (hitAny) sv._combatT = 2;   // v3.63 战斗脱战冷却：4→2 秒
     // 2026-08-09 用户要求：近战对空气砍不消耗耐久（修复挥空也 -1 的 bug）
     // 只在命中目标（僵尸/敌对 NPC/植物）时才扣武器耐久——挥空属无效操作不该损耗武器。
     if (hitAny) wearWeapon(sv, 'melee');
@@ -324,6 +341,60 @@ export function meleeAttack(sv) {
     return { ok: true, hit: hitAny };
 }
 
+// 2026-08-12 v3.10 具象词条命中附加效果（近战/远程共用）：对僵尸附加灼烧/冰封/剧毒/麻痹/吸血等
+export function applyManifestHitEffects(sv, z, affixes, dmg) {
+    if (!sv || !z || z.hp <= 0 || !affixes || !affixes.length) return;
+    for (const af of affixes) {
+        switch (af.id) {
+            case 'burn':      // 灼烧：4 秒持续掉血
+                z._burnT = 4; z._burnTic = 0;
+                sv.effects.push({ kind: 'text', x: z.x, y: z.y - 16, life: 1.0, maxLife: 1.0, label: '灼' });
+                break;
+            case 'poison':    // 剧毒：4 秒持续掉血
+                z._poisonT = 4; z._poisonTic = 0;
+                sv.effects.push({ kind: 'text', x: z.x, y: z.y - 16, life: 1.0, maxLife: 1.0, label: '毒' });
+                break;
+            case 'frost':     // 冰封：减速 2.5s
+                z.slowT = 2.5; z.slowMul = 0.5;
+                sv.effects.push({ kind: 'text', x: z.x, y: z.y - 16, life: 1.0, maxLife: 1.0, label: '冰' });
+                break;
+            case 'shadow':    // 暗影：附带减速
+                z.slowT = Math.max(z.slowT || 0, 1.5); z.slowMul = 0.65;
+                break;
+            case 'shock':     // 麻痹：短暂僵直
+                z.stunT = Math.max(z.stunT || 0, 0.6);
+                sv.effects.push({ kind: 'text', x: z.x, y: z.y - 16, life: 1.0, maxLife: 1.0, label: '麻' });
+                break;
+            case 'leech':     // 嗜血：命中回血
+            case 'feed':
+            case 'heart': {
+                const heal = Math.max(2, Math.round((dmg || 8) * 0.2));
+                sv.hp = Math.min(sv.maxHp, sv.hp + heal);
+                sv.effects.push({ kind: 'text', x: sv.px, y: sv.py - 24, life: 1.0, maxLife: 1.0, label: `+${heal}` });
+                break;
+            }
+            case 'crit': case 'auto': case 'speed': case 'haste': case 'swift':
+            case 'bullet': case 'grip': case 'steady': case 'arrow': case 'spread': case 'gun':
+                // 攻速/射程/弹匣类词条在 tryFire/换弹逻辑中体现，此处无命中附加
+                break;
+            case 'blast':     // 爆裂：概率范围伤害
+                if (Math.random() < 0.15) {
+                    const rr = B.Z_BITE_RANGE * 1.6;
+                    for (const oth of sv.zombies) {
+                        if (oth === z || oth.hp <= 0) continue;
+                        if (Math.hypot(oth.x - z.x, oth.y - z.y) < rr) {
+                            oth.hp -= Math.max(1, Math.round((dmg || 10) * 0.5));
+                            oth.hurt = 0.12;
+                        }
+                    }
+                    sv.effects.push({ kind: 'quake', x: z.x, y: z.y, life: 0.4, maxLife: 0.4 });
+                }
+                break;
+            default: break;
+        }
+    }
+}
+
 // ---------- 远程开火（半自动点射 / 全自动按住；弓箭由 releaseBow 放箭） ----------
 export function tryFire(sv, charge = 1) {
     const wpn = sv.wpn;
@@ -333,6 +404,9 @@ export function tryFire(sv, charge = 1) {
     if (!w) return { msg: '武器数据缺失' };
     // 2026-08-11 v2.98 品级系统：远程伤害乘当前装备武器品级倍率（Z=1，A≈1.625）
     const gMul = gradeDmgMul(sv, 'ranged');
+    // 2026-08-12 v3.10 具象词条：读取当前远程武器词条（附加到子弹，命中时生效）
+    const rangedItem = (sv.inv || []).find(x => x && x.eq === 'ranged' && x.id === 'wpn:' + k) || null;
+    const rangeAffixes = (rangedItem && rangedItem._manifested && Array.isArray(rangedItem.manifestAffixes)) ? rangedItem.manifestAffixes : [];
     // 武器耐久：损坏的远程武器无法射击
     const rdur = weaponDurInfo(sv, 'ranged');
     if (rdur && rdur.broken) return { msg: '武器已损坏，需要修理（扳手+零件）' };
@@ -347,6 +421,14 @@ export function tryFire(sv, charge = 1) {
     const pellets = w.pellets || 1;
     const spread = (w.spread || 0) * (sv.aiming ? (w.aimFactor ?? 0.35) : 1);
     const spdMul = w.chargeable ? (0.7 + 0.5 * charge) : 1;
+    // 2026-08-12 v3.10 具象词条伤害强化（远程）：蛮力/强击/刀锋等叠加弹伤
+    let rangeDmgMul = 1;
+    for (const af of rangeAffixes) {
+        if (af.id === 'power') rangeDmgMul *= 1.2;
+        else if (af.id === 'strong' || af.id === 'battle' || af.id === 'blade') rangeDmgMul *= 1.15;
+        else if (af.id === 'lance' || af.id === 'snipe') rangeDmgMul *= 1.15;
+        else if (af.id === 'iron') rangeDmgMul *= 1.1;
+    }
     for (let i = 0; i < pellets; i++) {
         const t = pellets === 1 ? 0 : (i / (pellets - 1) - 0.5);
         const a = angle + t * spread;
@@ -355,11 +437,12 @@ export function tryFire(sv, charge = 1) {
             // 从手部高度发射（原 sv.py 为脚底，导致子弹从人物下方打出）
             x: sv.px + Math.cos(a) * 22, y: (sv.py - SHOT_ORIGIN_Y) + Math.sin(a) * 22,
             vx: Math.cos(a) * w.bulletSpeed * spdMul, vy: Math.sin(a) * w.bulletSpeed * spdMul,
-            damage: Math.round(devDmg(sv, Math.round(w.damage * charge)) * gMul),
+            damage: Math.round(devDmg(sv, Math.round(w.damage * charge)) * gMul * rangeDmgMul),
             color: w.color, label: w.bulletLabel || '·',
             life: 1.2, range: w.range || 9999,
             pierce: w.pierce || 0, pierced: 0, hitList: null,
             spin: !!w.spin, traveled: 0,
+            affixes: rangeAffixes,   // 2026-08-12 v3.10 具象词条（命中时生效）
         });
     }
     if (!infAmmo) wpn.mag[k]--;
@@ -387,7 +470,7 @@ export function tryFire(sv, charge = 1) {
     if (k === 'bow') AudioSystem.playBowFire();
     else AudioSystem.playWeaponShot(k, iv);
     mpSfx(sv, 'shot', { w: k, iv, bow: k === 'bow' });   // 联机：对端也听到枪声/弓声
-    sv._combatT = 4;   // 玩家射击 → 队友支援
+    sv._combatT = 2;   // v3.63 战斗脱战冷却：4→2 秒
     wearWeapon(sv, 'ranged');   // 武器耐久：每次射击 -1
     return { ok: true };
 }
@@ -420,6 +503,19 @@ export function releaseBow(sv) {
 }
 
 // ---------- 换弹（R；时长读武器表 reloadTime，从背包弹种补充，与单机一致） ----------
+// 2026-08-12 v3.15 弹药词条：背包中带"弹量(bullet)"词条的具象弹药 → 该武器弹匣 +25%
+// （用户定稿："弹药加25%的意思就是武器的弹药量增加25%"——词条表现在武器弹匣上）
+function magSizeWithAmmo(sv, w) {
+    if (!sv || !w || !w.ammoType || !w.magSize) return w ? w.magSize : 0;
+    // 找背包中该弹种的具象弹药（带 bullet 词条）
+    for (const s of sv.inv || []) {
+        if (s && s.id === 'ammo:' + w.ammoType && s._manifested && Array.isArray(s.manifestAffixes)
+            && s.manifestAffixes.some(a => a.id === 'bullet')) {
+            return Math.round(w.magSize * 1.25);
+        }
+    }
+    return w.magSize;
+}
 export function startReload(sv) {
     const wpn = sv.wpn;
     const k = equipped(sv, 'ranged');
@@ -427,9 +523,10 @@ export function startReload(sv) {
     const w = WEAPONS[k];
     if (!w || !w.magSize) return { msg: '该武器无需换弹' };
     if (wpn.reloading > 0) return {};
+    const magCap = magSizeWithAmmo(sv, w);
     const cur = wpn.mag[k] || 0;
-    if (cur >= w.magSize) return { msg: '弹匣已满' };
-    if (devInfAmmo(sv)) { wpn.mag[k] = w.magSize; return { ok: true, msg: '无限弹药：弹匣已满' }; }
+    if (cur >= magCap) return { msg: '弹匣已满' };
+    if (devInfAmmo(sv)) { wpn.mag[k] = magCap; return { ok: true, msg: '无限弹药：弹匣已满' }; }
     if (ammoCount(sv, w.ammoType) <= 0) return { msg: `没有弹药（${w.ammoLabel || w.ammoType}）` };
     wpn.reloading = w.reloadTime || 1.5;
     AudioSystem.playWeaponReload(k);
@@ -442,7 +539,8 @@ function finishReload(sv) {
     const k = equipped(sv, 'ranged');
     const w = k ? WEAPONS[k] : null;
     if (!w) return;
-    const need = w.magSize - (wpn.mag[k] || 0);
+    const magCap = magSizeWithAmmo(sv, w);
+    const need = magCap - (wpn.mag[k] || 0);
     wpn.mag[k] = (wpn.mag[k] || 0) + takeAmmo(sv, w.ammoType, need);
 }
 
@@ -452,9 +550,10 @@ export function syncMag(sv) {
     if (!k) return;
     const w = WEAPONS[k];
     if (!w || !w.magSize) return;
-    if (devInfAmmo(sv)) { sv.wpn.mag[k] = w.magSize; return; }
+    const magCap = magSizeWithAmmo(sv, w);
+    if (devInfAmmo(sv)) { sv.wpn.mag[k] = magCap; return; }
     if (sv.wpn.mag[k] == null) {
-        sv.wpn.mag[k] = takeAmmo(sv, w.ammoType, w.magSize);
+        sv.wpn.mag[k] = takeAmmo(sv, w.ammoType, magCap);
     }
 }
 
@@ -555,6 +654,10 @@ export function updateBullets(sv, dt) {
                 sv.effects.push({ kind: 'hit', x: b.x, y: b.y, life: 0.15, maxLife: 0.15 });
                 if (df < 1) sv.effects.push({ kind: 'hit', x: hit.x, y: hit.y, life: 0.2, maxLife: 0.2, label: '挡' });
                 zombieHitSound(sv, hit);
+                // 2026-08-12 v3.10 具象词条命中附加（灼烧/冰封/剧毒/吸血等）
+                if (b.affixes && b.affixes.length) {
+                    applyManifestHitEffects(sv, hit, b.affixes, Math.round(b.damage * fo * df));
+                }
                 // 穿透：未达穿透上限则穿过该僵尸继续飞行
                 if ((b.pierced || 0) < (b.pierce || 0)) {
                     b.pierced++;
@@ -598,8 +701,10 @@ export function hudText(sv) {
     let txt = `${mk ? WEAPONS[mk].name : '拳头'}${durTxt('melee')}`;
     if (rk) {
         const w = WEAPONS[rk];
+        // 2026-08-12 v3.15 弹药词条：HUD 显示实际弹匣容量（具象"弹量"弹药 +25%）
+        const magCap = magSizeWithAmmo(sv, w);
         if (devInfAmmo(sv)) txt += ` · ${w.name} ∞/∞${durTxt('ranged')}`;
-        else txt += ` · ${w.name} ${sv.wpn.mag[rk] || 0}/${w.magSize} 备${ammoCount(sv, w.ammoType)}${durTxt('ranged')}`;
+        else txt += ` · ${w.name} ${sv.wpn.mag[rk] || 0}/${magCap} 备${ammoCount(sv, w.ammoType)}${durTxt('ranged')}`;
         if (w.modes && w.modes.length > 1) txt += modeOf(sv, rk) === 'auto' ? '·自动' : '·半自动';
         if (sv.aiming) txt += '·开镜';
     }

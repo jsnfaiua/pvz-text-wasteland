@@ -284,7 +284,8 @@ assert(surv.includes('const curPc = (sv.npcs || []).find(n => n.id === sv.contro
 assert(surv.includes('curPc.downed = false;'), 'G2: _devGod 清记录 downed');
 // G3: 恶意 NPC 稳定伤害（子弹命中倒地走扣时 + 近战保底伤害）
 assert(wnpc.includes('let hit = null, best = 18;'), 'G3: NPC 子弹命中半径 18');
-assert(wnpc.includes('} else if (hit.npc.downed) {\n                        // 2026-08-11 v2.97 倒地角色被子弹命中'),
+// 2026-08-12 fd84499 批量修复重构了缩进/注释格式，断言改为子串匹配
+assert(wnpc.includes('} else if (hit.npc.downed) {'),
     'G3: 子弹命中倒地角色走扣时');
 assert(wnpc.includes('npcApplyDownedHit(sv, hit.npc, dmg);'), 'G3: 子弹命中倒地调 npcApplyDownedHit');
 // G4: 近战判定 = 特效长度（防隔空打死）
