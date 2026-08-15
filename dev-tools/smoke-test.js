@@ -1654,11 +1654,11 @@ for (const m of browserOnly) {
     assert(guardOnDeath >= 2, `survival: typeof-guard on showAllDeadChoices in 2 sites (found ${guardOnDeath})`);
     assert(src.includes('_softRespawnAllDeadFallback'),
         'survival: fallback _softRespawnAllDeadFallback defined when showAllDeadChoices unavailable');
-    //  workshop.js + mpWasteland.js 必须加 ?v= cache-busting（动态 import 用 ?v= 拼接变量，静态 import 用 ?v=4.13 字面量）
-    assert(/import\(['"]\.\.\/mod-wasteland\/survival\.js\?v=/.test(ws) && /_WSL_VER\s*=\s*['"]4\.13['"]/.test(ws),
-        'workshop: dynamic import uses ?v=4.13 cache-busting (via _WSL_VER)');
-    assert(/from\s+['"]\.\/survival\.js\?v=4\.13['"]/.test(mp),
-        'mpWasteland: static import uses ?v=4.13 cache-busting');
+    //  workshop.js + mpWasteland.js 必须加 ?v= cache-busting（动态 import 用 ?v= 拼接变量，静态 import 用 ?v=4.14 字面量）
+    assert(/import\(['"]\.\.\/mod-wasteland\/survival\.js\?v=/.test(ws) && /_WSL_VER\s*=\s*['"]4\.14['"]/.test(ws),
+        'workshop: dynamic import uses ?v=4.14 cache-busting (via _WSL_VER)');
+    assert(/from\s+['"]\.\/survival\.js\?v=4\.14['"]/.test(mp),
+        'mpWasteland: static import uses ?v=4.14 cache-busting');
 }
 
 // 2026-08-11 v2.97 静态回归：①濒死救援时间系统改为【现实时间 20 分钟】（被攻击每点伤害扣 10 秒，

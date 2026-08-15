@@ -166,7 +166,7 @@ function renderDetail() {
     // 2026-08-11 v2.97 加 ?v= 版本号强制 cache-busting：用户浏览器 ESM 缓存会复用旧版 survival.js，
     // 导致 showAllDeadChoices 找不到 → ReferenceError 循环僵死。版本号变更必须同步。
     // v4.10 升级缓存号（v4.9 后进位 v4.10：V一键切武器全自动/半自动 + 横幅键位凝练 + 横幅版本号同步 + 缓存链强制刷新）
-    const _WSL_VER = '4.13';
+    const _WSL_VER = '4.14';
     const launchWasteland = (opts) => {
         import('../mod-wasteland/survival.js?v=' + _WSL_VER).then(m => {
             m.enterWasteland(opts);
@@ -219,7 +219,7 @@ function renderDetail() {
     // 联机启动：动态加载联机层（供开始界面「多人联机」调用）
     const onLaunchMP = (role, opts) => {
         // v3.80 加 ?v= cache-busting（与 _WSL_VER 同步，防止加载缓存的旧 mpWasteland.js → 旧 survival.js）
-        import('../mod-wasteland/mpWasteland.js?v=4.13').then(m => {
+        import('../mod-wasteland/mpWasteland.js?v=4.14').then(m => {
             m.startWastelandMP(role, opts || getModState(mod.id).opts);
         }).catch(err => {
             console.error('[wasteland-mp] 启动失败', err);

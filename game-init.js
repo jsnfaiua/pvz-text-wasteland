@@ -41,7 +41,7 @@ import { stopTraining } from './source-code/ui/training.js';
 import { initMissions, reportMissionProgress, MISSION_TYPES } from './source-code/systems/missions.js';
 
 import { initScreenButtons, showScreen,
-    initModalButtons } from './source-code/ui/screens.js?v=4.13';   // v4.13 cache-busting：screens.js 内动态 import workshop.js 带版本号，需强制刷新自身
+    initModalButtons } from './source-code/ui/screens.js?v=4.14';   // v4.13 cache-busting：screens.js 内动态 import workshop.js 带版本号，需强制刷新自身
 
 // saveData 从 state.js 全局导入，不重复声明！
 // inputFocused 从 state.js 导入，不重复声明！
@@ -1190,7 +1190,7 @@ export function initGame() {
     // 荒原邀请链接：?wroom= 自动加入（与本体塔防 ?room= 隔离；游客也可加入，与本体建房/入房一致）
     const wroomCode = new URLSearchParams(location.search).get('wroom');
     if (wroomCode && /^[A-Za-z0-9]{6}$/.test(wroomCode)) {
-        import('./source-code/mod-wasteland/mpWasteland.js?v=4.13')
+        import('./source-code/mod-wasteland/mpWasteland.js?v=4.14')
             .then(m => m.tryAutoJoinWastelandFromURL())
             .catch(err => console.error('[wasteland-mp] 自动加入失败', err));
     }
