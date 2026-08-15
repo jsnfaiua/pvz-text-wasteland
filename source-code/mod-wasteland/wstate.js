@@ -307,6 +307,8 @@ export function serializeWorld(sv, deps) {
         mods: sv.mods,
         homeBed: sv.homeBed || null,
         lastRestDay: sv.lastRestDay,
+        // v4.13 最近登录时间（进世界时更新，存档管理界面显示）
+        lastLoginTime: sv._lastLoginTime || null,
         horde: sv.horde ? { phase: sv.horde.phase, pending: sv.horde.pending || 0, total: sv.horde.total || 0, batchT: sv.horde.batchT || 0 } : null,
         zombies: sv.zombies.map(z => ({
             id: z.id,   // 运行时 id（'zNNN'）：联机 wsync 按 id 合并；无 id 的旧档僵尸由 apply 端补

@@ -1283,7 +1283,8 @@ export function drawPixelPlayerBody(ctx, sx, sy, color = '#39d98a', infection, l
                     const rgb = mixHexColor('#' + hex2(d[i]) + hex2(d[i + 1]) + hex2(d[i + 2]), transitionColor, t);
                     d[i] = parseInt(rgb.slice(1, 3), 16); d[i + 1] = parseInt(rgb.slice(3, 5), 16); d[i + 2] = parseInt(rgb.slice(5, 7), 16);
                 } else {
-                    d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
+                    // v4.13 感染像素点灰绿色化（非透明化）：完全侵蚀的像素保持灰绿色，不消失
+                    d[i] = 0x4a; d[i + 1] = 0x5a; d[i + 2] = 0x50; d[i + 3] = 255;
                 }
             }
         }

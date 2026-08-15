@@ -7501,6 +7501,11 @@ function startGameConfirm(mode) {
     // 读世界档难度（锁定）
     const worldData = getStorage(worldKey(seed), null);
     const diff = (worldData && worldData.difficulty) || 'normal';
+    // v4.13 更新最近登录时间
+    if (worldData) {
+        worldData.lastLoginTime = Date.now();
+        setStorage(worldKey(seed), worldData);
+    }
     const baseOpts = { characterName: charName, seed, difficulty: diff, multiplayer: mode === 'mp' };
     // v3.76 点开始游戏过渡：背景层立刻开始"散开变淡"（粒子加速 + 渐白蒙层 0.6s），
     // 600ms 后进入加载动画，动画结束进入游戏 → 睁眼动画衔接。
@@ -7648,8 +7653,6 @@ function startBoundCharacter() {
             };
             setStorage(charKey(finalName), cd);
             updateCharList(finalName);
-            // v3.80 创建角色后立刻刷新创意工坊存档管理列表（无需刷新页面）
-            if (typeof window.__wslWorkshopRefresh === 'function') window.__wslWorkshopRefresh();
             // 绑定到当前世界
             const wd = getStorage(worldKey(seed), null);
             if (wd) {
@@ -7659,6 +7662,8 @@ function startBoundCharacter() {
             } else {
                 log(`角色「${finalName}」已创建`, '#7DFF7D');
             }
+            // v4.13 绑定世界后再刷新创意工坊存档管理列表（确保显示已绑定状态）
+            if (typeof window.__wslWorkshopRefresh === 'function') window.__wslWorkshopRefresh();
             showToast('角色创建并绑定成功');   // v3.62 反馈 UI：绑定完成（存档已落盘）
             // v3.64 反馈 UI：再次提示存档已自动保存（点取消时可在开始界面看到该存档）
             // showToast 内部排队显示，两个反馈依次淡入淡出

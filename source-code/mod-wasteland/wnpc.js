@@ -755,6 +755,10 @@ export function combatThreat(sv, n, dt, canStand, selfRange, playerRange, hostil
     if (canHit && n.atkCd <= 0) {
         // 与玩家一致：冷却用武器 fireInterval，伤害用武器实际伤害
         n.atkCd = wDef ? (wDef.fireInterval || 0.35) : 0.5;
+        // v4.13 NPC 近战攻击音效（与玩家攻击音效一致）
+        if (typeof AudioSystem !== 'undefined' && AudioSystem.playWeaponSwing) {
+            try { AudioSystem.playWeaponSwing(style === 'thrust' ? 'thrust' : 'melee', 0.6); } catch (e) { /* ignore */ }
+        }
         if (threat.isZombie) {
             threat.z.hp -= wDef ? wDef.damage : 8;
             threat.z.hurt = 0.12;          // 僵尸受击闪白（与玩家命中一致）
@@ -861,6 +865,10 @@ function fireNpcBullet(sv, n, threat) {
     }
     npcTakeAmmo(n, w.ammoType, 1);
     wearNpcWeapon(sv, n);
+    // v4.13 NPC 远程攻击音效（与玩家射击音效一致）
+    if (typeof AudioSystem !== 'undefined' && AudioSystem.playWeaponShot) {
+        try { AudioSystem.playWeaponShot(w, 0.5); } catch (e) { /* ignore */ }
+    }
     sv.effects.push({ kind: 'muzzle', x: n.x + Math.cos(ang) * 20, y: shootY + Math.sin(ang) * 20, angle: ang, color: w.color, label: '轰', ghosts: pellets > 1 ? 2 : 1, life: 0.1, maxLife: 0.1 });
 }
 // 更新 NPC 子弹（与玩家同规则：射程衰减 + 穿透；命中僵尸/恶意 NPC，恶意火力可打玩家）
