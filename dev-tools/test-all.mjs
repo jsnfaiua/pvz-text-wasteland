@@ -1133,6 +1133,265 @@ module('v3.75弹窗遮罩透明scanPanelOpen守卫');
         `S43.3 v3.75 scanPanelOpen 加 typeof 守卫（≥4 处，实际 ${guardCount} 处）`);
 }
 
+// ================= [3h] v4.16 室内相机：大房间玩家居中夹紧（修自建超大房裁剪） =================
+module('v4.16室内相机大房间玩家居中');
+{
+    const wdr = stripComments(read('windoor.js'));
+    const rnd = stripComments(read('render.js'));
+    const svc = stripComments(read('survival.js'));
+    // S44.1 windoor.js 导出公共函数 computeInteriorCam（小房间居中 / 大房间玩家居中夹紧）
+    assert(wdr.includes('export function computeInteriorCam(sv, W, H)')
+        && wdr.includes('if (totalW <= W && totalH <= H) {')
+        && wdr.includes('return { ox: (W - totalW) / 2, oy: (H - totalH) / 2 };')
+        && wdr.includes('Math.max(W - totalW, Math.min(0, W / 2 - sv.px))'),
+        'S44.1 v4.16 windoor 导出 computeInteriorCam 公共相机函数（小房间居中/大房间玩家居中夹紧）');
+    // S44.2 render.js drawInterior 用 computeInteriorCam（不再写死 ox/oy 居中）
+    assert(rnd.includes('import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H, computeInteriorCam } from \'./windoor.js\';')
+        && rnd.includes('const { ox, oy } = computeInteriorCam(sv, W, H);')
+        && !rnd.includes('const ox = (W - totalW) / 2, oy = (H - totalH) / 2;'),
+        'S44.2 v4.16 render drawInterior 用 computeInteriorCam（写死 ox/oy 已移除）');
+    // S44.3 survival.js updateInteriorMode 用 WD.computeInteriorCam（与 drawInterior 同源，保证 sv.camX/camY 一致）
+    assert(svc.includes('WD.computeInteriorCam(sv, 960, 540)')
+        && svc.includes('sv.camX = -_cam.ox;')
+        && svc.includes('sv.camY = -_cam.oy;')
+        && !svc.includes('const ox = (960 - it.w * TS) / 2, oy = (540 - it.h * TS) / 2;'),
+        'S44.3 v4.16 survival updateInteriorMode 用 WD.computeInteriorCam（写死 ox/oy 已移除）');
+}
+
+// ================= [3i] v4.17 室内外切换：enterInterior/exitInterior 同步主控 inInterior（修"室内到不了室外"） =================
+module('v4.17室内外切换同步主控inInterior');
+{
+    const wdr = stripComments(read('windoor.js'));
+    // S45.1 windoor.js 导入 WNPC（用于 controlledNpc 拿主控）
+    assert(wdr.includes("import * as WNPC from './wnpc.js';"),
+        'S45.1 v4.17 windoor 导入 WNPC（用于同步主控 inInterior）');
+    // S45.2 enterInterior 同步主控 inInterior=true + interiorKey=doorKey + interiorFloor=1
+    const enterMatch = wdr.match(/enterFollowers\(sv, sv\.interior\);([\s\S]{0,400})MSG\.pushMsg\(sv, cleared/);
+    assert(enterMatch && /_ctrl\s*=\s*WNPC\.controlledNpc\(sv\)/.test(enterMatch[1])
+        && /_ctrl\.inInterior\s*=\s*true/.test(enterMatch[1])
+        && /_ctrl\.interiorKey\s*=\s*doorKey/.test(enterMatch[1])
+        && /_ctrl\.interiorFloor\s*=\s*1/.test(enterMatch[1]),
+        'S45.2 v4.17 enterInterior 同步主控 inInterior=true / interiorKey=doorKey / interiorFloor=1');
+    // S45.3 exitInterior 同步主控 inInterior=false + interiorKey=null + interiorFloor=null
+    assert(wdr.match(/sv\.interior = null;([\s\S]{0,300})MSG\.pushMsg\(sv, allDead/)
+        && /_ctrl\.inInterior\s*=\s*false/.test(wdr)
+        && /_ctrl\.interiorKey\s*=\s*null/.test(wdr)
+        && /_ctrl\.interiorFloor\s*=\s*null/.test(wdr),
+        'S45.3 v4.17 exitInterior 同步主控 inInterior=false / interiorKey=null / interiorFloor=null');
+    // S45.4 changeFloor 同步主控 interiorFloor（玩家始终在室内，但 interiorFloor 跟新楼层走）
+    const cfIdx = wdr.indexOf('function changeFloor');
+    const cfBody = cfIdx >= 0 ? wdr.slice(cfIdx, cfIdx + 8000) : '';
+    assert(cfBody && /WNPC\.controlledNpc\(sv\)/.test(cfBody) && /_ctrl\.interiorFloor\s*=\s*nextFloor/.test(cfBody),
+        'S45.4 v4.17 changeFloor 同步主控 interiorFloor=nextFloor（防 syncControllerInterior 把玩家拉回旧层）');
+}
+
+// ================= [3j] v4.18 死亡逻辑：切队友视角后原主控不"直接死亡"（不清濒死血 + 并入倒地管理 + 补刀扣时） =================
+module('v4.18切视角后原主控不直接死亡');
+{
+    const wnp = stripComments(read('wnpc.js'));
+    const svc = stripComments(read('survival.js'));
+    // S46.1 switchControl 写回主控血不清濒死血（downed 角色保留 ≥1，否则记录"活着但 hp=0"→ 被补刀 killNpc）
+    assert(/cur\.hp\s*=\s*cur\.downed\s*\?\s*Math\.max\(1,\s*cur\.hp\s*\|\|\s*1\)\s*:\s*sv\.hp/.test(wnp),
+        'S46.1 v4.18 switchControl 濒死（downed）角色写回时不清血（保留 ≥1）');
+    // v4.23 倒地状态下每 1 点伤害扣 10 秒救援时间（按伤害量扣）—— wnpc.js 恶意 NPC 补刀两处
+    // v4.24 重构：对已倒地成员跳过扣血（Math.max(0,...) 防血负）直接扣救援时间，_pd 变量名
+    assert(/threat\.npc\._penaltySec\s*=\s*\(threat\.npc\._penaltySec\s*\|\|\s*0\)\s*\+\s*_pd\s*\*\s*B\.DOWNED_HIT_PENALTY_SEC/.test(wnp)
+        || /threat\.npc\._penaltySec\s*=\s*\(threat\.npc\._penaltySec\s*\|\|\s*0\)\s*\+\s*_dmg\s*\*\s*B\.DOWNED_HIT_PENALTY_SEC/.test(wnp),
+        'S46.2 v4.18 恶意NPC近战补刀倒地队员 → 按伤害量扣救援时间（不立刻致命）');
+    assert(/hit\.npc\._penaltySec\s*=\s*\(hit\.npc\._penaltySec\s*\|\|\s*0\)\s*\+\s*dmg\s*\*\s*B\.DOWNED_HIT_PENALTY_SEC/.test(wnp),
+        'S46.3 v4.18 恶意NPC远程补刀倒地队员 → 按伤害量扣救援时间（不立刻致命）');
+    // S46.4 恶意 NPC 首次把友方队员打倒地 → 补设 _downedAtReal/limitSec（供成员超时管理）
+    assert(/threat\.npc\._downedAtReal\s*=\s*sv\.now\s*!=\s*null\s*\?\s*sv\.now\s*:\s*0/.test(wnp)
+        && /hit\.npc\._downedAtReal\s*=\s*sv\.now\s*!=\s*null\s*\?\s*sv\.now\s*:\s*0/.test(wnp),
+        'S46.4 v4.18 恶意NPC首次打倒地补设 _downedAtReal/limitSec（近战+远程两处）');
+    // S46.5 enterDownedView 切视角后把倒下的旧主控并入 _downedMembers（受超时管理 + 可被救援）
+    assert(/enterDownedView\s*=\s*\(\)\s*=>\s*\{[\s\S]{0,900}sv\._downedMembers\s*=\s*sv\._downedMembers\s*\|\|\s*\[\][\s\S]{0,200}_dpc\.id/.test(svc)
+        && /find\(n\s*=>\s*n\.downed\s*&&\s*n\.alive\)/.test(svc),
+        'S46.5 v4.18 enterDownedView 切视角后把倒下旧主控并入 _downedMembers');
+}
+
+// ================= [3k] v4.19 集合信号最高命令：T 键/召唤打断成员所有工作（搜刮/采药/营地/游荡/追敌） =================
+module('v4.19集合信号最高命令打断成员所有工作');
+{
+    const svc = stripComments(read('survival.js'));
+    // S47.1 interruptMateWork 公共函数定义（含全部打断项）
+    assert(/function interruptMateWork\(m\)\s*\{/.test(svc)
+        && /m\.state\s*=\s*'follow'/.test(svc)
+        && /m\.campTask\s*=\s*null/.test(svc)
+        && /m\._path\s*=\s*null/.test(svc),
+        'S47.1 v4.19 定义 interruptMateWork 公共函数（转跟随+清营地任务+清寻路）');
+    // S47.2 打断项齐全：搜刮/采药/游荡点/战斗威胁缓存全部清理
+    assert(/m\.scavTarget\s*=\s*null/.test(svc)
+        && /m\._herbTarget\s*=\s*null/.test(svc)
+        && /m\._wpX\s*=\s*null;\s*m\._wpY\s*=\s*null/.test(svc)
+        && /m\._threatT\s*=\s*0;\s*m\._threat\s*=\s*null/.test(svc),
+        'S47.2 v4.19 interruptMateWork 打断项齐全（搜刮/采药/游荡点/追敌缓存）');
+    // S47.3 T 键集合信号循环调用 interruptMateWork
+    assert(/if\s*\(\s*k\s*===\s*getBind\('rally'\)[\s\S]{0,500}interruptMateWork\(m\)/.test(svc),
+        'S47.3 v4.19 T 键集合信号循环调用 interruptMateWork');
+    // S47.4 NPC 菜单 summonTeammates 调用 interruptMateWork（瞬移召唤也打断所有工作）
+    assert(/interruptMateWork\(m\);\s*\/\/\s*v4\.19/.test(svc)
+        || /interruptMateWork\(m\);[\s\S]{0,120}n\+\+/.test(svc),
+        'S47.4 v4.19 summonTeammates（菜单召唤）调用 interruptMateWork');
+}
+
+// ================= [3l] v4.20 倒地系统完整修复：血归零倒地 + 倒地不能移动 + 20分钟救助 + 3分钟尸变 =================
+module('v4.20倒地系统血归零倒地且不能移动');
+{
+    const wnp = stripComments(read('wnpc.js'));
+    const wzm = stripComments(read('wzombie.js'));
+    const wac = stripComments(read('waction.js'));
+    // S48.1 wnpc.js 导出 npcDowned 公共函数（队员倒地统一入口）
+    assert(/export function npcDowned\(sv,\s*n,\s*cause\)/.test(wnp)
+        && /n\.downed\s*=\s*true/.test(wnp)
+        && /n\.hp\s*=\s*1/.test(wnp)
+        && /n\.limitSec\s*=\s*B\.DOWNED_LIMIT_SECONDS/.test(wnp)
+        && /sv\._downedMembers\.push\(n\)/.test(wnp),
+        'S48.1 v4.20 wnpc 导出 npcDowned 公共函数（队员倒地：downed=true/hp=1/limitSec=1200s/push 到 _downedMembers）');
+    // S48.2 僵尸啃咬 NPC 路径走 npcDowned（不再直接 killNpc）
+    assert(/npcDounded\(sv,\s*n,\s*'被僵尸啃咬濒死'\)|npcDowned\(sv,\s*n,\s*'被僵尸啃咬濒死'\)/.test(wzm)
+        && /import\s*\{[^}]*npcDowned[^}]*\}\s*from\s*'\.\/wnpc\.js'/.test(wzm),
+        'S48.2 v4.20 wzombie 僵尸啃咬 NPC hp<=0 → npcDowned（导入同步）');
+    // S48.3 病/饿死路径走 npcDowned
+    assert(/npcDowned\(sv,\s*n,\s*'病死濒死'\)/.test(wnp)
+        && /npcDowned\(sv,\s*n,\s*'饿死\/渴死\/病死'\)/.test(wnp),
+        'S48.3 v4.20 wnpc 病/饿死路径走 npcDowned（不再直接 killNpc）');
+    // S48.4 主控 moveInput 加倒地守卫（倒地不能 WASD）
+    assert(/if\s*\(\s*sv\._downed\s*\)\s*\{[\s\S]{0,200}return\s*\{\s*mx:\s*0,\s*my:\s*0\s*\}/.test(wac)
+        && /!cur\s*\|\|\s*cur\.downed/.test(wac),
+        'S48.4 v4.20 waction moveInput 倒地主控守卫 return {mx:0,my:0}（WASD/方向键无输入）');
+    // S48.5 主控 updateActions 顶部加倒地守卫（不能跳跃/格挡/攻击/闪避）
+    const uaStart = wac.indexOf('export function updateActions');
+    const uaHead = uaStart >= 0 ? wac.slice(uaStart, uaStart + 1200) : '';
+    assert(/if\s*\(\s*sv\._downed\s*\)/.test(uaHead) && /return\s*false/.test(uaHead)
+        && /!cur\s*\|\|\s*cur\.downed/.test(uaHead),
+        'S48.5 v4.20 waction updateActions 顶部倒地守卫 return false（只允许计时推进）');
+    // S48.6 成员 AI updateNpc 头部加倒地守卫（n.downed → return 跳过 AI）
+    const unStart = wnp.indexOf('export function updateNpc(');   // 精确匹配 updateNpc(，排除 updateNpcs
+    const unHead = unStart >= 0 ? wnp.slice(unStart, unStart + 2000) : '';
+    assert(/n\._moving\s*=\s*false/.test(unHead) && /if\s*\(\s*n\.downed\s*\)\s*return/.test(unHead),
+        'S48.6 v4.20 wnpc updateNpc 头部 if(n.downed) return（成员倒地不能移动/攻击/工作）');
+}
+
+// ================= [3m] v4.21 背包格子统一 24 格 + 队友屏幕外指引覆盖原主角/倒地成员 =================
+module('v4.21背包格子统一与队友指引覆盖');
+{
+    const wnp = stripComments(read('wnpc.js'));
+    const rnd = stripComments(read('render.js'));
+    // S49.1 makeNpc 生成时背包 normBag 补齐到 24 格
+    assert(/const inv\s*=\s*normBag\(\[\.\.\.rollNpcBag\(\)/.test(wnp),
+        'S49.1 v4.21 makeNpc 生成时背包 normBag（补齐到 24 格）');
+    // S49.2 switchControl 切换时背包 normBag（写回记录）
+    assert(/sv\.inv\s*=\s*tgt\.inv\s*=\s*normBag\(tgt\.inv\)/.test(wnp),
+        'S49.2 v4.21 switchControl 切换主控时背包 normBag（写回记录保持一致）');
+    // S49.3 applyControlled 读档载入时背包 normBag
+    assert(/sv\.inv\s*=\s*c\.inv\s*=\s*normBag\(c\.inv\)/.test(wnp),
+        'S49.3 v4.21 applyControlled 读档载入时背包 normBag');
+    // S49.4 drawMateGuide 过滤去掉 !n.isPlayer（切 NPC 主控后原主角作为队员也有指引）
+    assert(/const mates\s*=\s*sv\.npcs\.filter\(n\s*=>\s*n\.alive\s*&&\s*n\.party\s*&&\s*n\.id\s*!==\s*sv\.controllerId\s*&&\s*!n\.riding\)/.test(rnd)
+        && !/n\.alive\s*&&\s*n\.party\s*&&\s*!n\.downed/.test(rnd),
+        'S49.4 v4.21 drawMateGuide 过滤覆盖原主角与倒地成员（去掉 !isPlayer / !downed）');
+    // S49.5 倒地成员红色"（倒地）"指引
+    assert(/m\.name\s*\+\s*'（倒地）'/.test(rnd)
+        && /'#FF5555'/.test(rnd),
+        'S49.5 v4.21 倒地成员固定红色#FF5555 + 名字（倒地）标记');
+}
+
+// ================= [3n] v4.22 感染系统完善：NPC con 天赋加成血上限 + 队员感染自动增长/满→尸化/属性削弱/粒子 =================
+module('v4.22感染系统完善队员感染与主控一致');
+{
+    const wnp = stripComments(read('wnpc.js'));
+    const rnd = stripComments(read('render.js'));
+    // S50.1 makeNpc 血上限按 con 天赋加成（base + (con-10)*4） + 初始化 infection 字段
+    assert(/const _conMaxHp\s*=\s*base\s*\+\s*\(born\.attrs\.con\s*-\s*10\)\s*\*\s*4/.test(wnp)
+        && /hp:\s*_conMaxHp,\s*maxHp:\s*_conMaxHp/.test(wnp)
+        && /infection:\s*0/.test(wnp),
+        'S50.1 v4.22 makeNpc con 加成血上限 (base+(con-10)*4) + 初始化 infection:0');
+    // S50.2 updateNpc 队员感染自动增长（INFECTION_AUTO_GROW_PER_SEC）
+    assert(/n\.infection\s*=\s*addPlayerInfection\(n\.infection,\s*B\.INFECTION_AUTO_GROW_PER_SEC\s*\*\s*dt\)/.test(wnp)
+        && /n\._infSpdMul\s*=\s*\(n\.infection\s*>\s*0\)\s*\?\s*playerInfectionEffects\(n\.infection\)\.speedMul\s*:\s*1/.test(wnp),
+        'S50.2 v4.22 updateNpc 队员感染自动增长 + 削速乘子 n._infSpdMul');
+    // S50.3 updateNpc 感染满→直接 killNpc（用户定稿"感染致死不能救助"）
+    assert(/n\.infection\s*>=\s*PLAYER_INFECTION\.max/.test(wnp)
+        && /killNpc\(sv,\s*n,\s*'感染恶化致死'\)/.test(wnp),
+        'S50.3 v4.22 队员感染满→直接 killNpc（无倒地/无救援/尸化）');
+    // S50.4 updateNpc 感染削减 NPC 血上限（n._baseMaxHp 记录 + maxHp 削到 _effMaxHp）
+    assert(/n\._baseMaxHp\s*=\s*n\.maxHp/.test(wnp)
+        && /n\.maxHp\s*=\s*_effMaxHp/.test(wnp)
+        && /_effMaxHp\s*=\s*Math\.round\(n\._baseMaxHp\s*\*\s*_ie\.maxHpMul\)/.test(wnp),
+        'S50.4 v4.22 updateNpc 感染削减 NPC 血上限（_baseMaxHp 记录 + maxHp 削到 _effMaxHp）');
+    // S50.5 moveToward 内部自动乘 n._infSpdMul（所有调用点自动受感染削速）
+    assert(/const _infMul\s*=\s*\(n\s*&&\s*n\._infSpdMul\)\s*\|\|\s*1/.test(wnp)
+        && /const spd\s*=\s*95\s*\*\s*_totalMul/.test(wnp),
+        'S50.5 v4.22 moveToward 内部读 n._infSpdMul（所有调用点自动受感染削速）');
+    // S50.6 渲染 NPC 时传 n.infection（drawPixelPlayerBody 感染参数动态）
+    assert(/drawPixelPlayerBody\(ctx, sx, sy, \(n\.look\s*&&\s*n\.look\.shirt\)\s*\|\|\s*'#8f9baa',\s*n\.infection\s*\|\|\s*0,\s*n\.look/.test(rnd),
+        'S50.6 v4.22 渲染 NPC 传 n.infection（drawPixelPlayerBody 侵蚀像素动态化）');
+}
+
+// ================= [3o] v4.23 倒地系统完善：hp 不为负/倒地被攻击按伤害量扣 10 秒/僵尸优先追倒地/死亡不立刻移除队伍+待尸变尸体补刀 UI/全灭死亡明细用击倒原因 =================
+module('v4.23倒地系统完善死亡逻辑修正');
+{
+    const wnp = stripComments(read('wnpc.js'));
+    const wzm = stripComments(read('wzombie.js'));
+    const rnd = stripComments(read('render.js'));
+    const svc = stripComments(read('survival.js'));
+    // S51.1 wzombie 啃咬 NPC 路径 hp 下限 0（防血量变负）
+    assert(/n\.hp\s*=\s*Math\.max\(0,\s*n\.hp\s*-\s*npcDps\s*\*\s*0\.2\)/.test(wzm)
+        && /if\s*\(\s*n\.downed\s*\)\s*\{[\s\S]{0,200}_penaltySec\s*\+=\s*\(npcDps\s*\*\s*0\.2\)\s*\*\s*B\.DOWNED_HIT_PENALTY_SEC/.test(wzm),
+        'S51.1 v4.23 wzombie 啃咬路径 hp 下限 0 + 倒地队员扣救援时间（不扣血）');
+    // S51.2 v4.24 用户定稿（推翻 v4.23 倒地优先）："倒地的生物和其余生物优先级是一样的，敌对生物只会看生物的距离"
+    // —— 倒地成员与站立成员同优先级（谁近追谁），不再单独 bdDowned 优先候选
+    assert(!/bdDowned/.test(wzm)
+        && /if\s*\(\s*nd\s*<\s*bd\s*\)\s*\{\s*bd\s*=\s*nd;\s*bn\s*=\s*n;\s*\}/.test(wzm),
+        'S51.2 v4.24 僵尸索敌倒地与站立同优先级（按距离谁近追谁，去掉 bdDowned 优先）');
+    // S51.3 wnpc.killNpc 保留 n.party（推迟到 updateCorpseRevive 真尸变时 n.party=false）
+    assert(/n\.party\s*=\s*false;[\s\S]{0,1000}updateCorpseRevive/.test(svc) === false
+        || /if\s*\(n\.party\)\s*\{[\s\S]{0,500}\/\/ n\.party 保持 true，由 updateCorpseRevive 真正尸变完成时再 n\.party=false/.test(wnp),
+        'S51.3 v4.23 wnpc.killNpc 保留 n.party（推迟到 updateCorpseRevive 真尸变时 n.party=false）');
+    // S51.4 updateCorpseRevive 真尸变完成时 n.party=false（与 killNpc 配对）—— 中间允许 stripComments 剥行内注释
+    assert(/n\._revived\s*=\s*true;\s*\n\s*n\.party\s*=\s*false;/.test(svc) || /n\._revived\s*=\s*true;[\s\S]{0,30}n\.party\s*=\s*false;/.test(svc),
+        'S51.4 v4.23 updateCorpseRevive 真尸变完成时 n.party=false（与 killNpc 推迟移除配对）');
+    // S51.5 drawTeamPanel 仍显示已死待尸变成员（n.party + !n._revived + 灰色血条 + 尸徽标）
+    assert(/const members\s*=\s*sv\.npcs\.filter\(n\s*=>\s*n\.party\s*&&\s*n\._revived\s*!==\s*true\)/.test(rnd)
+        && /if\s*\(\s*!n\.alive\s*\)\s*\{\s*st\s*=\s*'尸';/.test(rnd),
+        'S51.5 v4.23 drawTeamPanel 仍显示已死待尸变（filter n.party+!_revived + 尸徽标）');
+    // S51.6 全灭死亡明细救援超时不写"救援超时"——回退用 m._killedByReason / m._cause（倒下前击倒原因）
+    assert(/_isTimeout\s*=\s*_mReason\s*===\s*'救援时间耗尽致死'/.test(svc)
+        && /const _mFinal\s*=\s*_isTimeout\s*\?\s*\(m\._killedByReason\s*\|\|\s*m\._cause/.test(svc),
+        'S51.6 v4.23 全灭死亡明细救援超时回退用 m._killedByReason / m._cause（倒下前击倒原因）');
+    // S51.7 新增"待尸变尸体"互动 UI：openCorpseFinish/renderCorpseFinish/closeCorpseFinish + 补刀按钮
+    assert(/function openCorpseFinish\b/.test(svc)
+        && /function renderCorpseFinish\b/.test(svc)
+        && /function closeCorpseFinish\b/.test(svc)
+        && /id="wsl-corpse-finish"/.test(svc)
+        && svc.includes('补刀（阻止尸变）'),
+        'S51.7 v4.23 新增待尸变尸体互动 UI（openCorpseFinish/renderCorpseFinish/closeCorpseFinish + 补刀按钮）');
+}
+
+// ================= [3p] v4.24 感染显示修复 + 倒地同优先级 + 敌对生物对倒地生物有效伤害（血量不为负） =================
+module('v4.24感染显示与倒地索敌优化');
+{
+    const wnp = stripComments(read('wnpc.js'));
+    const wzm = stripComments(read('wzombie.js'));
+    // S52.1 maybeInfectNpc 写 n.infection（不只 _infect）—— 队员侵蚀粒子/自动增长/属性削弱/满→尸化全部生效
+    assert(/n\.infection\s*=\s*Math\.min\(PLAYER_INFECTION\.max,\s*n\.infection\s*\+\s*1\s*\*\s*m\.sickMul\)/.test(wnp),
+        'S52.1 v4.24 maybeInfectNpc 写 n.infection（修复 NPC 队员侵蚀效果不显示）');
+    // S52.2 恶意 NPC 近战对已倒地成员不扣血直接扣救援时间（血量不为负）
+    assert(/if\s*\(\s*threat\.npc\.downed\s*\)\s*\{[\s\S]{0,300}_penaltySec\s*=\s*\(threat\.npc\._penaltySec\s*\|\|\s*0\)\s*\+\s*_pd\s*\*\s*B\.DOWNED_HIT_PENALTY_SEC/.test(wnp),
+        'S52.2 v4.24 恶意NPC近战对倒地成员不扣血直接扣救援时间（防血量变负）');
+    // S52.3 恶意 NPC 远程对已倒地成员不扣血直接扣救援时间
+    assert(/if\s*\(\s*hit\.npc\.downed\s*\)\s*\{[\s\S]{0,150}_penaltySec\s*=\s*\(hit\.npc\._penaltySec\s*\|\|\s*0\)\s*\+\s*dmg\s*\*\s*B\.DOWNED_HIT_PENALTY_SEC/.test(wnp),
+        'S52.3 v4.24 恶意NPC远程对倒地成员不扣血直接扣救援时间（防血量变负）');
+    // S52.4 恶意 NPC 近战/远程对未倒地成员扣血用 Math.max(0,...) 下限（血量不为负）
+    assert(/threat\.npc\.hp\s*=\s*Math\.max\(0,\s*threat\.npc\.hp\s*-\s*\(wDef\s*\?\s*wDef\.damage\s*:\s*8\)\)/.test(wnp)
+        && /hit\.npc\.hp\s*=\s*Math\.max\(0,\s*hit\.npc\.hp\s*-\s*dmg\)/.test(wnp),
+        'S52.4 v4.24 恶意NPC近战/远程扣血用 Math.max(0,...) 下限（血量不为负）');
+    // S52.5 僵尸索敌：倒地与站立同优先级（按距离谁近追谁，去掉 bdDowned 优先候选）
+    assert(!/bdDowned/.test(wzm),
+        'S52.5 v4.24 僵尸索敌去掉 bdDowned 优先候选（用户定稿：倒地与其余生物优先级一样只看距离）');
+}
+
 // ================= [6]~[9] 子进程调度运行时测试 =================
 sub('smoke-test', 'smoke-test.js');
 sub('global-drop', 'global-drop-test.mjs');

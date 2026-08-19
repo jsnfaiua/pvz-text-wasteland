@@ -489,6 +489,10 @@ export function serializeMpSnapshot(sv, deps, zombieList, cull) {
             god: !!sv._devGod, stamina: !!sv._devInfStamina, inf: sv._devInf !== false,
             ammo: !!sv._devInfAmmo, oneshot: !!sv._devOneShot, bag: !!sv._devInfBag,
             dmgMul: sv._devDmgMul || 1, timeScale: sv._devTimeScale || 1,
+            // v4.49 联机同步缺陷修复：快照补 dura（无限耐久）/wind（风向覆盖）——
+            // applySnapDevFlags（survival.js）一直读取它们，但快照从未下发 →
+            // host 开启无限耐久/设置风向时 guest 端不生效（仅 guest 自己开才生效）。
+            dura: !!sv._devInfDura, wind: sv._devWind != null ? sv._devWind : null,
         },
         // NPC 队伍各自本地管理（wsync 不同步 npcs，避免 host controllerId 覆盖 guest 主控）
     };

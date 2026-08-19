@@ -11,11 +11,18 @@ import { speciesInfo, speciesAt, plantDisplay } from './wplants.js';
 import * as WGRASS from './wgrass.js';   // 草地独立模块（地面/草束/季节/风摆）
 import { drawMsg } from './wmsg.js';
 import { TS } from './wconst.js';
-import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H } from './windoor.js';
+import { INTERIOR_TILES as IT, INTERIOR_W, INTERIOR_H, computeInteriorCam } from './windoor.js';
 import { districtAt, districtProfile, infectionAt } from './wdistrict.js';
 import { BARRICADE_HP, CAR_HP, Z_ATK_STYLES, Z_FLAG_AURA_RANGE, Z_BODY, PLANT_BODY, PLAYER_BODY, WATER_MAX, COIN_ID, SICKNESS, sickColor, FUEL_MAX, CAMP_RADIUS, wxInfo, infVis, wxIntensity, wxLevelCur, WX_PART_SPEED, wxSpeedMul, fogRadius, windDirAt, windDirAtHour, SEASON_NAMES, seasonAt, DOWNED_LIMIT_SECONDS, CORPSE_REVIVE_SECONDS } from './wbalance.js';
 import { infectionBand, worldInfectionLevel, playerInfectionEffects } from './winfection.js';
+import { showToast } from './wtoast.js';
+import { preloadBgFxParts, ensureBgFx, destroyBgFx, destroyBgFxNow, attachParticleBg, clearBgFxPrevScreen } from './wbgfx.js';
+import { drawWeatherOverlay, drawWeatherParticles, drawThunder, resetWeatherParticles } from './wrender-weather.js';
+import { drawWakeOverlay, drawDayNight, drawEventOverlay, drawSquatOverlay, drawInfectionOverlay, hungerShake, drawStarveVignette } from './wrender-overlay.js';
 export { TS };
+export { showToast };   // v4.26 toast 拆到 wtoast.js，此 re-export 保持 wlook/survival 的 import 不变
+export { preloadBgFxParts, ensureBgFx, destroyBgFx, destroyBgFxNow, attachParticleBg, clearBgFxPrevScreen };   // v4.26 bg-fx 拆到 wbgfx.js，re-export 保持 wlook/survival 的 import 不变
+export { resetWeatherParticles };   // v4.26 天气渲染拆到 wrender-weather.js，re-export 保持 survival 的 import 不变
 
 // 角色 sprite 渲染高度（与 drawPixelPlayerBody 的 TARGET_H=48 对应）。
 // 攻击/挥砍特效以脚底（sv.py / sy）为圆心会偏低、位置不居中，
@@ -117,7 +124,6 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 let _worldSeed = 0;   // 每帧 draw() 更新，供无 sv 参数的绘制函数用（如 drawCollectible 碎石残路带判定）
 
 // ---------- 离屏缓存系统：确定性渲染只算一次 ----------
-const _tileInfectionCache = new Map();
 const _treeCache = new Map();
 const _brickCache = new Map();
 
@@ -203,7 +209,6 @@ function visualInfectionAt(sv, tx, ty, salt = 0) {
     return Math.max(0, Math.min(1, base + local - 0.05));
 }
 
-const pixelWordCache = new Map();
 const _mixColorCache = new Map();
 
 function mixHexColor(a, b, t) {
@@ -222,41 +227,7 @@ function mixHexColor(a, b, t) {
     return result;
 }
 
-function pixelWordMask(text, width, height, block, gapPixels = block) {
-    const key = `${text}:${width}:${height}:${block}:${gapPixels}`;
-    if (pixelWordCache.has(key)) return pixelWordCache.get(key);
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.ceil(width / block));
-    canvas.height = Math.max(1, Math.ceil(height / block));
-    const maskCtx = canvas.getContext('2d', { willReadFrequently: true });
-    maskCtx.imageSmoothingEnabled = false;
-    maskCtx.clearRect(0, 0, canvas.width, canvas.height);
-    maskCtx.fillStyle = '#fff';
-    maskCtx.textAlign = 'center';
-    maskCtx.textBaseline = 'middle';
-    const chars = Array.from(text);
-    const gapCols = Math.max(1, Math.ceil(gapPixels / block));
-    const contentWidth = canvas.width - gapCols * Math.max(0, chars.length - 1);
-    const cellWidth = contentWidth / Math.max(1, chars.length);
-    const fontSize = Math.max(6, Math.floor(Math.min(canvas.height * .9, cellWidth * 1.14)));
-    maskCtx.font = `bold ${fontSize}px "Microsoft YaHei", sans-serif`;
-    chars.forEach((char, index) => {
-        const cx = cellWidth * (index + .5) + gapCols * index;
-        maskCtx.fillText(char, cx, canvas.height / 2);
-    });
-    const data = maskCtx.getImageData(0, 0, canvas.width, canvas.height).data;
-    const points = [];
-    for (let py = 0; py < canvas.height; py++) for (let px = 0; px < canvas.width; px++) {
-        if (data[(py * canvas.width + px) * 4 + 3] > 80) points.push([px, py]);
-    }
-    const result = { points, cols: canvas.width, rows: canvas.height };
-    pixelWordCache.set(key, result);
-    return result;
-}
-
-const _treeTextSetCache = new Map();
-
-function drawPixelTree(ctx, sx, sy, level, seed, eraseColor) {
+export function drawPixelTree(ctx, sx, sy, level, seed, eraseColor) {
     const scale = 2;
     const width = 28, height = 29;
     const totalW = width * scale, totalH = height * scale;
@@ -268,13 +239,10 @@ function drawPixelTree(ctx, sx, sy, level, seed, eraseColor) {
         cached = makeOffscreen(totalW, totalH);
         const octx = cached.getContext('2d');
         octx.imageSmoothingEnabled = false;
-        const word = pixelWordMask('树', width, height, 1, 0);
-        let textPixels = _treeTextSetCache.get('树');
-        if (!textPixels) {
-            textPixels = new Set(word.points.map(([px, py]) => px * 100 + py));
-            _treeTextSetCache.set('树', textPixels);
-        }
-        const transitionColor = '#5a5040', textColor = '#a89a82';
+        // v4.53 用户定稿"只需要玩家NPC染病灰绿色侵蚀，其余的不需要了"：
+        // 树木不再浮现"树"字（去掉 pixelWordMask/textPixels/textColor），
+        // 侵蚀改为与玩家/NPC 一致的灰绿色（transitionColor→#4a5a50）。
+        const transitionColor = '#4a5a50';
         for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
             let entityColor = null;
             if (px >= 11 && px < 18 && py >= 15) entityColor = '#493323';
@@ -283,8 +251,7 @@ function drawPixelTree(ctx, sx, sy, level, seed, eraseColor) {
             if (py >= 7 && py < 16) entityColor = '#315b32';
             if (px >= 6 && px < 22 && py < 7) entityColor = '#487444';
             if (px >= 8 && px < 15 && py >= 2 && py < 7) entityColor = '#5f8a4e';
-            const isTextPixel = textPixels.has(px * 100 + py);
-            if (!entityColor && !isTextPixel) continue;
+            if (!entityColor) continue;
             const edge = Math.min(px / (width - 1), (width - 1 - px) / (width - 1),
                 py / (height - 1), (height - 1 - py) / (height - 1));
             const noise = hash2(seed ^ 0x51A9, px, py);
@@ -292,12 +259,12 @@ function drawPixelTree(ctx, sx, sy, level, seed, eraseColor) {
             const frontier = .06;
             let color = null;
             if (level < peelAt - frontier) {
-                if (entityColor) color = entityColor;
+                color = entityColor;
             } else if (level < peelAt) {
                 const t = (level - (peelAt - frontier)) / frontier;
-                if (entityColor) color = mixHexColor(entityColor, transitionColor, t);
+                color = mixHexColor(entityColor, transitionColor, t);
             } else {
-                if (isTextPixel && entityColor) color = textColor;
+                color = transitionColor;   // 完全侵蚀 = 灰绿色（与玩家/NPC 一致）
             }
             if (color) {
                 octx.fillStyle = color;
@@ -307,77 +274,6 @@ function drawPixelTree(ctx, sx, sy, level, seed, eraseColor) {
         cacheSet(_treeCache, cacheKey, cached);
     }
     ctx.drawImage(cached, gridX, gridY);
-}
-
-const _textSetCache = new Map();
-
-function getTextSet(text, width, height, block, gap) {
-    const key = `${text}:${width}:${height}:${block}:${gap}`;
-    let set = _textSetCache.get(key);
-    if (!set) {
-        const mask = pixelWordMask(text, width, height, block, gap);
-        set = new Set(mask.points.map(([px, py]) => px * 100 + py));
-        if (_textSetCache.size < 200) _textSetCache.set(key, set);
-    }
-    return set;
-}
-
-function getTileTextSet(word, tileW, tileH, wordW, wordH, gap) {
-    const key = `tile:${word}:${tileW}:${tileH}:${wordW}:${wordH}:${gap}`;
-    let set = _textSetCache.get(key);
-    if (!set) {
-        const mask = pixelWordMask(word, wordW, wordH, 1, gap);
-        const ox = Math.floor((tileW - mask.cols) / 2);
-        const oy = Math.floor((tileH - mask.rows) / 2);
-        set = new Set(mask.points.map(([px, py]) => (px + ox) * 100 + (py + oy)));
-        if (_textSetCache.size < 200) _textSetCache.set(key, set);
-    }
-    return set;
-}
-
-function drawTileInfection(ctx, x, y, level, word, seed, options) {
-    if (level <= 0.03) return;
-    const w = options.w || TS, h = options.h || TS;
-    const lvQ = Math.round(level * 20);
-    const cacheKey = (seed ^ (lvQ * 7919)) >>> 0;
-    let cached = cacheGet(_tileInfectionCache, cacheKey);
-    if (!cached) {
-        cached = makeOffscreen(w, h);
-        const octx = cached.getContext('2d');
-        octx.imageSmoothingEnabled = false;
-        const entityColor = options.entityColor || '#888888';
-        const transitionColor = options.transitionColor || '#5a5040';
-        const textColor = options.textColor || '#a89a82';
-        const eraseColor = options.eraseColor || '#080810';
-        const wordW = options.wordW || (w - 6);
-        const wordH = options.wordH || (h - 6);
-        const textPixels = getTileTextSet(word, w, h, wordW, wordH, options.gapPixels || 2);
-        const maxEdge = Math.min(0.49, (level + 0.42) / 1.24);
-        const innerX0 = Math.floor(maxEdge * (w - 1));
-        const innerX1 = w - 1 - innerX0;
-        const innerY0 = Math.floor(maxEdge * (h - 1));
-        const innerY1 = h - 1 - innerY0;
-        for (let py = 0; py < h; py++) {
-            for (let px = 0; px < w; px++) {
-                if (px > innerX0 && px < innerX1 && py > innerY0 && py < innerY1) continue;
-                const isTextPixel = textPixels.has(px * 100 + py);
-                const edge = Math.min(px / (w - 1), (w - 1 - px) / (w - 1),
-                    py / (h - 1), (h - 1 - py) / (h - 1));
-                const noise = hash2(seed ^ 0x51A9, px, py);
-                const peelAt = .04 + edge * 1.24 + noise * .36;
-                if (level < peelAt - .06) continue;
-                let color;
-                if (level < peelAt) {
-                    color = mixHexColor(entityColor, transitionColor, (level - (peelAt - .06)) / .06);
-                } else {
-                    color = isTextPixel ? textColor : eraseColor;
-                }
-                if (color) { octx.fillStyle = color; octx.fillRect(px, py, 1, 1); }
-            }
-        }
-        cacheSet(_tileInfectionCache, cacheKey, cached);
-    }
-    ctx.drawImage(cached, x, y);
 }
 
 function zombieBodyColorAt(px, py, type, coat, skin, hair) {
@@ -436,7 +332,7 @@ const ZOMBIE_PALETTE = {
 };
 function zombiePalette(type) { return ZOMBIE_PALETTE[type] || ZOMBIE_PALETTE.normal; }
 
-function drawPixelZombie(ctx, z, sx, sy, color) {
+export function drawPixelZombie(ctx, z, sx, sy, color) {
     const level = z.infection || 0;
     const gridX = Math.round(sx - 12), gridY = Math.round(sy - 16) - 2;
     const width = 28, height = 36;
@@ -454,8 +350,10 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
         cached = makeOffscreen(width, height);
         const octx = cached.getContext('2d');
         octx.imageSmoothingEnabled = false;
-        const textPixels = getTextSet('尸', width, height, 1, 0);
-        const transitionColor = '#5a4a48', textColor = '#a87980';
+        // v4.53 用户定稿"只需要玩家NPC染病灰绿色侵蚀，其余的不需要了"：
+        // 僵尸不再浮现"尸"字（去掉 getTextSet/textPixels/textColor），
+        // 侵蚀改为与玩家/NPC 一致的灰绿色（transitionColor→#4a5a50）。
+        const transitionColor = '#4a5a50';
         const skin = skinState === 2 ? '#858585' : (skinState === 1 ? '#b65454' : (z.skin || pal.skin || '#78936b'));
         const hair = pal.hair || '#5c7657';
         const coat = color || '#58656d';
@@ -470,8 +368,7 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
                 continue;
             }
             const entityColor = zombieBodyColorAt(px, py, z.type, coat, skin, hair);
-            const isTextPixel = textPixels.has(px * 100 + py);
-            if (!entityColor && !isTextPixel) continue;
+            if (!entityColor) continue;
             const edge = Math.min(px / (width - 1), (width - 1 - px) / (width - 1),
                 py / (height - 1), (height - 1 - py) / (height - 1));
             const noise = hash2(seed ^ 0x51A9, px, py);
@@ -479,12 +376,12 @@ function drawPixelZombie(ctx, z, sx, sy, color) {
             const frontier = .06;
             let finalColor = null;
             if (level < peelAt - frontier) {
-                if (entityColor) finalColor = entityColor;
+                finalColor = entityColor;
             } else if (level < peelAt) {
                 const t = (level - (peelAt - frontier)) / frontier;
-                if (entityColor) finalColor = mixHexColor(entityColor, transitionColor, t);
+                finalColor = mixHexColor(entityColor, transitionColor, t);
             } else {
-                if (isTextPixel && entityColor) finalColor = textColor;
+                finalColor = transitionColor;   // 完全侵蚀 = 灰绿色（与玩家/NPC 一致）
             }
             if (finalColor) {
                 octx.fillStyle = finalColor;
@@ -1545,461 +1442,7 @@ function drawScanProgressRing(ctx, sv, W, H) {
     }
 }
 
-// 昏迷苏醒：从"模模糊糊昏暗"逐渐"明亮清晰"（单调变亮，不再中途变暗），
-// 配合开场视线模糊（blur）与灰雾，睁眼般越来越清楚；配合移动锁定更代入感。
-// 2026-08-12 v3.56 修复"效果太短太快看不到"：原 easeOutCubic 让暗度在前段急剧下降
-//（prog=0.5 时已基本全亮），用户感觉不到灰黑渐变。改缓出平方曲线，暗度更缓慢下降，
-// 灰黑蒙层持续更久；配合时长延长（新档 2.4s→4s、重生 3s→4s）让睁眼效果明显可见。
-function easeOutCubic(x) { const t = clamp(x, 0, 1) - 1; return 1 + t * t * t; }
-let _wakeOC = null;   // 离屏画布（用于模糊重绘当前画面）
-function drawWakeOverlay(ctx, sv, W, H) {
-    const wk = sv._wake;
-    if (!wk || wk.t >= wk.dur) return;
-    const t = wk.t, dur = wk.dur;
-    const prog = clamp(t / dur, 0, 1);
-    const a = (1 - prog) * (1 - prog);     // 暗度：1→0 缓慢变亮（缓出平方，前段保持明显灰黑）
-    const blurPx = 5 * (1 - prog);         // 开场模糊 → 越来越清晰
-    const veil = 0.5 * (1 - prog);         // 灰雾（昏暗看不清）→ 清明
-    if (a <= 0.01 && blurPx <= 0.3 && veil <= 0.01) return;
-    // 1) 视线模糊：把当前画面拷到离屏再模糊重绘（保持背景活动，只做视觉模糊）
-    if (blurPx > 0.3) {
-        if (!_wakeOC) _wakeOC = document.createElement('canvas');
-        _wakeOC.width = W; _wakeOC.height = H;
-        _wakeOC.getContext('2d').drawImage(ctx.canvas, 0, 0, W, H);
-        ctx.save();
-        ctx.filter = 'blur(' + blurPx.toFixed(1) + 'px)';
-        ctx.drawImage(_wakeOC, 0, 0, W, H, 0, 0, W, H);
-        ctx.filter = 'none';
-        ctx.restore();
-    }
-    // 2) 暗度蒙层（单调变亮）
-    if (a > 0.01) {
-        ctx.save();
-        ctx.globalAlpha = clamp(a, 0, 1);
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, W, H);
-        ctx.restore();
-    }
-    // 3) 灰雾（模糊昏暗的"看不清"感），逐渐清明
-    if (veil > 0.01) {
-        ctx.save();
-        ctx.globalAlpha = clamp(veil, 0, 1);
-        ctx.fillStyle = '#262b36';
-        ctx.fillRect(0, 0, W, H);
-        ctx.restore();
-    }
-    // 4) 苏醒文字：睁眼前半段浮现、持续、结尾淡出
-    // 2026-08-11 v2.99 重生（_wake.reborn）与开场表现完全一致：画内随睁眼浮现/持续/淡出，
-    // 仅文字内容不同（开场"你在荒野中醒来…" / 重生"你 醒 了 过 来"）。
-    const wakeTxt = wk.reborn ? '你 醒 了 过 来' : '你在荒野中醒来…';
-    const ta = prog < 0.4 ? prog / 0.4 : (prog < 0.82 ? 1 : clamp((1 - prog) / 0.18, 0, 1));
-    if (ta > 0.02) {
-        const wob = Math.round(Math.sin(sv.now * 1.5) * 1);
-        ctx.save();
-        ctx.globalAlpha = ta;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.font = 'bold 20px "Microsoft YaHei", monospace';
-        ctx.fillStyle = '#B8C6D6';
-        ctx.shadowColor = '#000';
-        ctx.shadowBlur = 8;
-        ctx.fillText(wakeTxt, W / 2 + wob, H * 0.42);
-        ctx.restore();
-    }
-}
-
-// ---------- 昼夜系统（1 现实小时 = 1 游戏天，DAY_LEN=3600s） ----------
-// 6:00-18:00 白天；18:00-20:00 黄昏渐暗；20:00-4:00 深夜全暗；4:00-6:00 黎明渐亮。
-// 与既有玩法一致：20:00 起尸潮开场、夜间僵尸变强（wbalance HORDE_START_HOUR / Z_NIGHT_STRENGTH_MUL）。
-function dayNightAlpha(sv) {
-    const hour = (sv.t / sv.dayLen) * 24;
-    const smooth = x => x * x * (3 - 2 * x);
-    if (hour >= 6 && hour < 18) return 0;
-    if (hour >= 4 && hour < 6) return 1 - smooth((hour - 4) / 2);
-    if (hour >= 18 && hour < 20) return smooth((hour - 18) / 2);
-    return 1;
-}
-function drawDayNight(ctx, sv, W, H, interior) {
-    if (sv._devGfx === 0) return;   // 低画质：跳过夜晚暗色覆盖层（氛围降级，省一次全屏 fillRect）
-    const a = dayNightAlpha(sv);
-    if (a <= 0) return;
-    // 停电夜事件（D）：暗色加强 1.5x（视野受限感）
-    const blackout = sv._evt && sv._evt.type === 'blackout' ? 1.5 : 1;
-    const alpha = 0.58 * a * (interior ? 0.5 : 1) * blackout;
-    ctx.fillStyle = `rgba(8,12,30,${alpha.toFixed(3)})`;
-    ctx.fillRect(0, 0, W, H);
-}
-
-// ---------- 随机事件氛围覆盖层（D）：停电夜暗角（沙尘暴已并入天气系统） ----------
-function drawEventOverlay(ctx, sv, W, H) {
-    if (!sv._evt) return;
-    if (sv._evt.type === 'blackout') {
-        // 停电：四周更暗的窄视（加深边缘）
-        const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, H * 0.9);
-        g.addColorStop(0, 'rgba(0,0,20,0)');
-        g.addColorStop(1, 'rgba(0,0,20,0.35)');
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, W, H);
-    }
-}
-
-// ---------- Ctrl 蹲下覆盖层（2026-08-10）：暗色遮罩 + 底部"蹲伏中"提示（潜伏感） ----------
-function drawSquatOverlay(ctx, sv, W, H) {
-    if (!sv.squatting) return;
-    ctx.save();
-    // 半透明暗色遮罩：压低画面亮度制造潜伏氛围（不阻断操作）
-    ctx.globalAlpha = 0.35;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, W, H);
-    ctx.restore();
-    // 底部提示
-    ctx.save();
-    ctx.font = '12px "Microsoft YaHei", monospace';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.fillText('蹲伏中（潜伏）', W / 2, H - 10);
-    ctx.restore();
-}
-
-// ---------- 天气氛围覆盖层：沙尘暴沙色 / 大雾弥漫 / 雨雪冷调（呼吸动态 × 强度 mul） ----------
-// 覆盖层是全屏均匀层（雾/色调不随世界滚动——无移动感知差异，符合"天气不随玩家移动变化"）
-function drawWeatherOverlay(ctx, sv, W, H) {
-    const wx = wxInfo(sv._weather);
-    if (wx.particles === 0) return;   // 晴朗无覆盖
-    const level = wxLevelCur(sv);
-    const inten = wxIntensity(sv._weather, level);
-    const mul = inten.mul;
-    const breathe = 0.5 + 0.5 * Math.sin(sv.now * 1.6);
-    if (sv._weather === 'sandstorm') {
-        // 沙色呼吸暗角 × 强度
-        const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.85);
-        g.addColorStop(0, 'rgba(150,110,40,0)');
-        g.addColorStop(1, `rgba(150,110,40,${((0.18 + 0.10 * breathe) * mul).toFixed(3)})`);
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, W, H);
-    } else if (sv._weather === 'fog') {
-        // 2026-08-09 用户要求：大雾复用"荒野中醒来"的模糊+灰雾效果（渐变的看不清，无圆环）。
-        // 原径向渐变以屏幕中心为圆心，边缘有明显圆形边界；改为全屏轻微 blur（越浓越糊）
-        // + 均匀灰雾蒙层（呼吸微动），画面整体"渐变的看不清"，无任何可见圆圈。
-        const blurPx = 0.8 + 1.8 * mul;   // 雾越浓越模糊（薄雾 ~1.2px / 浓雾 ~2.6px）
-        const veilA = Math.min(0.8, (0.20 + 0.07 * breathe) * Math.max(0.6, mul) * 1.5);
-        if (blurPx > 0.3) {
-            if (!_wakeOC) _wakeOC = document.createElement('canvas');
-            _wakeOC.width = W; _wakeOC.height = H;
-            _wakeOC.getContext('2d').drawImage(ctx.canvas, 0, 0, W, H);
-            ctx.save();
-            ctx.filter = 'blur(' + blurPx.toFixed(1) + 'px)';
-            ctx.drawImage(_wakeOC, 0, 0, W, H, 0, 0, W, H);
-            ctx.filter = 'none';
-            ctx.restore();
-        }
-        // 均匀灰雾：整屏蒙层让视野"雾蒙蒙看不清"，渐变感由 blur 提供，无硬边圆圈
-        ctx.save();
-        ctx.globalAlpha = Math.max(0.03, Math.min(0.8, veilA));
-        ctx.fillStyle = '#c8d2da';
-        ctx.fillRect(0, 0, W, H);
-        ctx.restore();
-    } else if (sv._weather === 'rain' || sv._weather === 'snow') {
-        // 雨雪天色偏冷：冷调 × 强度（暴雨更冷、小雪更淡）
-        ctx.fillStyle = sv._weather === 'rain'
-            ? `rgba(90,120,160,${((0.06 + 0.03 * breathe) * mul).toFixed(3)})`
-            : `rgba(205,222,240,${((0.05 + 0.03 * breathe) * mul).toFixed(3)})`;
-        ctx.fillRect(0, 0, W, H);
-    }
-}
-
-// ---------- 天气粒子层（雨丝 / 雪花 / 飞沙）：屏幕锚定固定池，跟随相机平移 ----------
-// 2026-08-12 用户反馈"冲刺/奔跑时天气在前方出现一片空缺"——原世界坐标固定池只有顶部越界补充，
-// 相机快速前移时新暴露区域来不及被粒子填满 → 冲刺方向空白。
-// 现改为【屏幕锚定】：粒子每帧跟随相机平移（x+=camDx, y+=camDy），屏幕上始终均匀，
-// 不管怎么跑天气都跟得上；同时保留垂直下落（y+=spd）→ 雨雪仍动态下落，风向漂移保留。
-// 注：原"世界坐标→相对地面垂直下落"在玩家移动时感知速度不变（往下走雨不变快），
-// 用户明确优先"天气在屏幕上不出现空缺"，故采用屏幕锚定。
-// 强度只影响粒子密度（× inten.density），【速度分布不随强度变】——用户明确要求。
-// 粒子是运行时表现类（§13.2 允许 Math.random：不影响世界/存档/结算），不序列化。
-const WX_PART_MAX = 300;   // 含暴雨密度 2.3 上限（140×2.3=322 → cap 300）
-let wxParticles = null;
-function ensureWxParticles() {
-    if (!wxParticles) {
-        wxParticles = [];
-        for (let i = 0; i < WX_PART_MAX; i++) wxParticles.push({ x: 0, y: 0, spd: 0, len: 3, seed: 0, kind: 0 });
-        // spd=0 & kind=0 → 首帧 move 循环触发重置（§7 正确性兜底）
-    }
-    return wxParticles;
-}
-// 重置天气粒子（重生时调用）：
-// 粒子是【屏幕锚定】固定池：重生相机瞬移时粒子随相机平移（camDx 巨大）→ 全屏依然均匀，
-// 无需"先稀后密"过渡。此函数仍把 kind 清零触发下一帧全屏撒点，兜底覆盖未知的相机跳变。
-export function resetWeatherParticles() {
-    if (!wxParticles) return;
-    for (let i = 0; i < wxParticles.length; i++) wxParticles[i].kind = 0;
-    // spd 也清零，强制下一帧重新初始化速度（避免旧速度残留在新坐标产生奇怪轨迹）
-    for (let i = 0; i < wxParticles.length; i++) wxParticles[i].spd = 0;
-}
-function drawWeatherParticles(ctx, sv, W, H, camX, camY) {
-    const wx = wxInfo(sv._weather);
-    if (wx.particles === 0 || wx.particles === 3) return;   // 雾用覆盖层，无粒子
-    if (sv._devGfx === 0) return;   // 低画质：跳过粒子（§7 性能降级）
-    const parts = ensureWxParticles();
-    const level = wxLevelCur(sv);
-    const inten = wxIntensity(sv._weather, level);
-    // v3.65 用户要求：天气切换淡入淡出 + 重生后粒子平滑过渡。
-    // _weatherFadeT：天气类型（晴→雨/雨→雪 等）淡入进度（0~1，0=全透明→1=完全显示）；
-    // _wxDensityMul：当前强度过渡（小雨→雷阵雨 / 小雪→暴雪 等），0=无粒子 → 1=正常密度。
-    const fdt2 = Math.min(0.05, (performance.now() - (sv._wxPartT || performance.now())) / 1000);
-    const fadeT = Math.min(1, (sv._weatherFadeT || 0) + fdt2 / 1.5);   // 类型淡入 1.5s
-    sv._weatherFadeT = fadeT;
-    const targetDen = inten.density;
-    const curDen = sv._wxDensityMul != null ? sv._wxDensityMul : targetDen;
-    // 密度向目标值平滑过渡（每帧靠近 ~1/TRANSITION 比例）
-    const TRANSITION = 1.4;   // 强度过渡 1.4s：从小雨慢慢变大到雷阵雨
-    const newDen = curDen + (targetDen - curDen) * Math.min(1, fdt2 / TRANSITION);
-    sv._wxDensityMul = newDen;
-    const densityMul = newDen;   // 强度 → 疏密（不改变速度，平滑过渡）
-    const partKind = wx.particles * 10 + level;   // 类型+强度组合 → 切换强度也重置粒子（否则旧速度残留，用户反馈"强度切换视觉无差异"）
-    const n = Math.min(WX_PART_MAX, Math.floor(WX_PART_MAX * (sv._devGfx === 2 ? 1 : 0.6) * densityMul));
-    // 帧间隔（封顶防跳帧）：粒子用现实秒驱动，暂停时静止
-    const nowMs = performance.now();
-    const fdt = Math.min(0.05, (nowMs - (sv._wxPartT || nowMs)) / 1000);
-    sv._wxPartT = nowMs;
-
-    // ---------- 风向系统（2026-08-09）----------
-    // 风向 = 世界每天确定性的 windDirAt(seed, day)（§13.2：world 态禁随机）。
-    // 风向只影响粒子【视觉】（倾斜角 + 水平漂移），不影响逻辑/存档/结算。
-    // 水平分量 windH = cos(wd)：
-    //   东风（wd≈0°）→ windH≈+1 → 雨向右倾斜；西风（wd≈180°）→ windH≈-1 → 雨向左倾斜；
-    //   南风（wd≈90°）/北风（wd≈270°）→ windH≈0 → 垂直下落，无水平偏移（符合"南风正常、北风没效果"）。
-    // 垂直分量 windV = sin(wd) 只影响玩家被风吹（已在 updateWind 处理），不影响粒子水平倾斜。
-    // 风向（2026-08-09 开发者模式可覆盖）：sv._devWind（弧度）为开发者测试风向；
-    // 否则用随游戏小时变化的 windDirAtHour（风向不是一成不变，§13.2 确定性双端一致）
-    const wd = sv._devWind != null ? sv._devWind : windDirAtHour(sv.world.seed, sv.day, (sv.t / sv.dayLen) * 24);
-    const windH = Math.cos(wd);
-    // 相机位移（屏幕锚定）：记录上帧相机，本帧位移叠加到所有粒子坐标 → 粒子相对屏幕静止，
-    // 玩家冲刺/奔跑时前方不再空缺（2026-08-12）。重生瞬移时粒子随相机平移，全屏依然均匀。
-    const prevCamX = sv._wxPrevCamX != null ? sv._wxPrevCamX : camX;
-    const prevCamY = sv._wxPrevCamY != null ? sv._wxPrevCamY : camY;
-    const camDx = camX - prevCamX;
-    const camDy = camY - prevCamY;
-    sv._wxPrevCamX = camX;
-    sv._wxPrevCamY = camY;
-    ctx.save();
-    // 重生策略（双轨）：
-    // ① 切换天气/初始化（kind 变）→ 撒全屏：切换瞬间立即全屏均匀（无"只有顶部"）；
-    // ② 越界（稳态）→ 顶部边界进入：持续从顶部补充 → 稳态各高度密度 = 流量/速度恒定，
-    //    顶部永远有雨（修复"全屏随机重生"稳态密度 ∝ y 线性递增 → 顶部空/底部密）。
-    // 2026-08-09 修复"右侧无雨"：原固定向左漂移 0.28 → 右侧列粒子下落时左移出列，
-    //    又未越界（x 仍在屏内）→ 右端底部长期空白（CDP 实测最右列密度仅最左列的 1/9）。
-    //    现生成带按风向加宽 [camX-|windShift|, camX+W+|windShift|]，漂移后仍覆盖全屏；
-    //    且风向为 0（南北风）时无水平漂移，全屏自然均匀。
-    const colsOf = (i, n, W2, H2) => {
-        const cols = Math.max(6, Math.ceil(Math.sqrt(n * W2 / Math.max(1, H2))));
-        return { gx: i % cols, cols };
-    };
-    // 生成 x 覆盖全屏 + 向漂移【反方向】延伸（保证漂移后仍全屏均匀，无"右侧无雨"）：
-    // 东风（windH>0，粒子向右漂）→ 左端粒子漂走 → 需向【左】延伸生成（genXMin 左移）；
-    // 西风（windH<0，粒子向左漂）→ 右端粒子漂走 → 需向【右】延伸生成（genXSpan 加宽向右）。
-    // 统一：x 落在 [camX - max(0, windH)*shiftW, camX - max(0, windH)*shiftW + W + shiftW]
-    //       = [camX - max(0,windH)*shiftW, camX + W + max(0,-windH)*shiftW]
-    const shiftW = Math.abs(windH) * 0.28 * H;   // 全屏单方向漂移量
-    const genXMin = camX - Math.max(0, windH) * shiftW;
-    const genXSpan = W + shiftW;   // 覆盖全屏 + 漂移方向的余量
-    const genTop = (p, c, W, H, camX) => {
-        p.x = genXMin + (c.gx + 0.5) * (genXSpan / c.cols) + (Math.random() - 0.5) * 20;
-        p.y = camY - 30 - Math.random() * 50;   // 顶部边界上方进入
-    };
-    const genFull = (p, c, W, H, camX, camY) => {
-        p.x = genXMin + (c.gx + 0.5) * (genXSpan / c.cols) + (Math.random() - 0.5) * 20;
-        p.y = camY + Math.random() * H;
-    };
-    if (wx.particles === 1) {   // 雨：斜线下落，倾斜角由风向决定；屏幕锚定；速度/长度/粗细随强度
-        // v3.65 天气类型淡入（fadeT=0→1 在 1.5s 内完成，淡入雪/雨切换）
-        ctx.globalAlpha = Math.max(0, Math.min(1, fadeT));
-        ctx.strokeStyle = 'rgba(140,180,220,0.55)';
-        ctx.lineWidth = 0.8 + level * 0.16;   // 雨丝粗细随强度（小雨 0.8 / 雷阵雨 1.6）
-        const hspd = windH * WX_PART_SPEED.rain * 0.28;   // 水平漂移速度（风向×基准侧风系数）
-        for (let i = 0; i < n; i++) {
-            const p = parts[i];
-            if (p.kind !== partKind || !p.spd) {
-                const c = colsOf(i, n, genXSpan, H);
-                genFull(p, c, W, H, camX, camY);
-                p.spd = WX_PART_SPEED.rain * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
-                const sm = wxSpeedMul(sv._weather, level); p.len = (6 + Math.random() * 9) * sm;
-                p.kind = partKind;
-            } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 60 || p.x > camX + W + 60) {
-                const c = colsOf(i, n, genXSpan, H);
-                genTop(p, c, W, H, camX);
-            }
-            p.x += camDx;   // 屏幕锚定：跟随相机平移（冲刺方向无空缺）
-            p.y += camDy + p.spd * fdt;   // 相机垂直平移 + 垂直下落
-            p.x += hspd * fdt;   // 风向水平漂移（东风向右、西风向左、南北风≈0）
-            const sx = p.x - camX, sy = p.y - camY;
-            ctx.beginPath();
-            ctx.moveTo(sx, sy);
-            ctx.lineTo(sx - windH * p.len * 0.28, sy - p.len);
-            ctx.stroke();
-        }
-    } else if (wx.particles === 2) {   // 雪：慢速飘落小点 + 左右摇摆 + 风向偏移；速度/大小随强度
-        // v3.65 天气类型淡入（fadeT=0→1 在 1.5s 内完成，淡入雪/雨切换）
-        ctx.globalAlpha = Math.max(0, Math.min(1, fadeT));
-        ctx.fillStyle = 'rgba(238,246,255,0.85)';
-        const pSize = 1.5 + level * 0.5;
-        const hspd = windH * WX_PART_SPEED.snow * 0.6;   // 雪更缓 → 风向水平占比略大
-        for (let i = 0; i < n; i++) {
-            const p = parts[i];
-            if (p.kind !== partKind || !p.spd) {
-                const c = colsOf(i, n, genXSpan, H);
-                genFull(p, c, W, H, camX, camY);
-                p.spd = WX_PART_SPEED.snow * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
-                p.seed = Math.random() * 6.28;
-                p.kind = partKind;
-            } else if (p.y > camY + H + 30 || p.y < camY - 90 || p.x < camX - 40 || p.x > camX + W + 40) {
-                const c = colsOf(i, n, genXSpan, H);
-                genTop(p, c, W, H, camX);
-            }
-            p.x += camDx;   // 屏幕锚定：跟随相机平移（冲刺方向无空缺）
-            p.y += camDy + p.spd * fdt;   // 相机垂直平移 + 垂直下落
-            p.x += hspd * fdt + Math.sin(sv.now * 1.2 + p.seed) * 16 * fdt;   // 风向偏移 + 原有左右摇摆
-            ctx.fillRect(p.x - camX, p.y - camY, pSize, pSize);
-        }
-    } else if (wx.particles === 4) {   // 沙尘：横向飞沙，风向主导方向（原随机左右 → 单一风向）；速度/长度/粗细随强度
-        ctx.globalAlpha = Math.max(0, Math.min(1, fadeT));
-        ctx.strokeStyle = 'rgba(205,175,115,0.5)';
-        ctx.lineWidth = 0.8 + level * 0.2;
-        // 沙尘主要受风向水平分量驱动：风向越偏横向越强；南北风时沙尘缓慢飘落
-        const sandH = windH * WX_PART_SPEED.sand;
-        const sandV = Math.abs(windH) < 0.3 ? -30 : 0;   // 南北风（近垂直）→ 沙尘缓慢下沉
-        for (let i = 0; i < n; i++) {
-            const p = parts[i];
-            if (p.kind !== partKind || !p.spd) {
-                const c = colsOf(i, n, genXSpan, H);
-                p.x = camX + (windH >= 0 ? -40 : W + 40) + (Math.random() - 0.5) * 40;   // 从风向逆侧进入
-                p.y = camY + Math.random() * H;
-                p.spd = WX_PART_SPEED.sand * wxSpeedMul(sv._weather, level) * (0.94 + Math.random() * 0.12);
-                p.len = (4 + Math.random() * 7) * wxSpeedMul(sv._weather, level);
-                p.kind = partKind;
-            } else if (p.x < camX - 60 || p.x > camX + W + 60 || p.y < camY - 80 || p.y > camY + H + 80) {
-                const c = colsOf(i, n, genXSpan, H);
-                p.x = camX + (windH >= 0 ? -40 : W + 40) + (Math.random() - 0.5) * 40;
-                p.y = camY + (c.gx + 0.5) * (H / c.cols) + (Math.random() - 0.5) * 16;
-            }
-            p.x += camDx + sandH * fdt;   // 相机平移 + 风向水平驱动（东风右、西风左）
-            p.y += camDy + sandV * fdt + (Math.random() - 0.5) * 20 * fdt;   // 相机平移 + 轻微下沉/抖动
-            const sx = p.x - camX, sy = p.y - camY;
-            ctx.beginPath();
-            ctx.moveTo(sx, sy);
-            ctx.lineTo(sx - (windH >= 0 ? 1 : -1) * p.len, sy);
-            ctx.stroke();
-        }
-    }
-    ctx.restore();
-    ctx.globalAlpha = 1;
-}
-
-// ---------- 雷阵雨：闪电+全屏闪光（§13.2 确定性触发：sv.t 由 wsync 快照同步 → 双端同刻） ----------
-function drawThunder(ctx, sv, W, H) {
-    if (!sv || sv._weather !== 'rain') return;
-    if (sv._devGfx === 0) return;   // 低画质跳过（§7）
-    const inten = wxIntensity(sv._weather, wxLevelCur(sv));
-    if (!inten.flash) return;
-    const seed = sv.world.seed;
-    const PER = 5;   // 判定周期（秒）：每 5s 窗口最多一道闪电
-    const win = Math.floor(sv.t / PER);
-    const ph = sv.t - win * PER;
-    if (hash2(seed, win | 0, 0x51E1) < 0.7) {   // 70% 窗口有闪电（确定性）
-        const at = 0.15 + hash2(seed, win | 0, 0x31A9) * 1.45;   // 窗口内闪电时刻
-        const dt2 = ph - at;
-        if (dt2 >= 0 && dt2 < 0.2) {
-            const a = (1 - dt2 / 0.2) * 0.8;
-            ctx.fillStyle = `rgba(232,240,255,${a.toFixed(3)})`;   // 全屏闪白
-            ctx.fillRect(0, 0, W, H);
-            // 闪电枝（确定性随机位置竖折线）
-            const lx = hash2(seed, win | 0, 0x71C3) * W;
-            const bend = (hash2(seed, win | 0, 0x91E7) - 0.5) * 90;
-            ctx.strokeStyle = `rgba(210,232,255,${Math.min(1, a * 1.3).toFixed(3)})`;
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(lx, 0);
-            ctx.lineTo(lx + bend * 0.3, H * 0.3);
-            ctx.lineTo(lx + bend, H * 0.55);
-            ctx.lineTo(lx + bend * 0.7, H * 0.8);
-            ctx.stroke();
-        }
-    }
-}
-
-// ---------- 感染屏幕覆盖层：阶段越高绿灰侵蚀越明显（呼吸 + 噪点，§13.1 INF_VIS 收口） ----------
-function drawInfectionOverlay(ctx, sv, W, H) {
-    if (!sv || sv.infection <= 0) return;
-    if (sv._devGfx === 0) return;   // 低画质跳过（§7）
-    const stage = playerInfectionEffects(sv.infection).stage;
-    const vis = infVis(stage);
-    if (vis.alpha <= 0) return;
-    const breathe = 0.5 + 0.5 * Math.sin(sv.now * (stage >= 4 ? 3.2 : 1.8));
-    const a = vis.alpha * (0.75 + 0.25 * breathe);
-    // 边缘侵蚀暗角（文字剥落感：灰绿调）
-    const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.85);
-    g.addColorStop(0, 'rgba(40,55,48,0)');
-    g.addColorStop(1, `rgba(30,48,40,${a.toFixed(3)})`);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-    // 噪点：文字侵蚀闪烁（stage 4+ 失名/文尸），稀疏灰绿小像素（表现类随机）
-    // 2026-08-12 v3.58 性能优化（用户反馈"感染后慢慢变卡"）：原每帧 Math.random()*n 次 fillRect，
-    // 1920×1080 下约 230 次/帧，感染全程累积明显卡顿。改为①确定性伪随机（按帧序号播种的 LCG，
-    // 位置稳定不闪烁），②噪点密度减半，③用 fillStyle 批量矩形路径一次 fill（GPU 单次调用）。
-    if (vis.noise) {
-        const n = Math.floor(W * H / 18000) * (sv._devGfx === 2 ? 1 : 0.6);
-        if (n > 0) {
-            const seed = (sv._infNoiseSeed = ((sv._infNoiseSeed || 0) + 1) & 0x7fffffff) || 1;
-            const alpha = 0.28 + 0.22 * breathe;
-            ctx.fillStyle = `rgba(150,178,162,${alpha.toFixed(3)})`;
-            ctx.beginPath();
-            let r = seed >>> 0;
-            for (let i = 0; i < n; i++) {
-                r = (r * 1664525 + 1013904223) >>> 0;   // LCG 确定性伪随机
-                const x = r % W;
-                r = (r * 1664525 + 1013904223) >>> 0;
-                const y = r % H;
-                ctx.rect(x, y, 1, 1);
-            }
-            ctx.fill();
-        }
-    }
-}
-
-// ---------- 危急状态晕眩：镜头轻微摇摆（饥饿/缺水 or 低血量 ≤20%） ----------
-function hungerShake(sv) {
-    if (!sv || sv.food == null) return { x: 0, y: 0 };
-    if (sv.food > 0 && (sv.water == null || sv.water > 0) && sv.hp > (sv.maxHp || 100) * 0.2) return { x: 0, y: 0 };
-    const t = sv.now;
-    return {
-        x: Math.sin(t * 7.3) * 1.2,
-        y: Math.cos(t * 6.1) * 1.0,
-    };
-}
-
-// ---------- 危急状态光晕：昏黄呼吸光 + 边缘暗角（饥饿/缺水或低血量，快晕倒的眩晕感） ----------
-function drawStarveVignette(ctx, sv, W, H) {
-    if (!sv || sv.food == null) return;
-    if (sv.food > 0 && (sv.water == null || sv.water > 0) && sv.hp > (sv.maxHp || 100) * 0.2) return;
-    const breathe = 0.5 + 0.5 * Math.sin(sv.now * 1.8);
-    // 室内背景已被 drawDayNight 压暗一层 + 暗角叠加会把棕色光晕完全掩盖成纯黑
-    // → 室内减弱暗角、提亮棕色光晕，让低状态警示在室内也清晰可见（与室外"同步"）
-    const isIn = !!sv.interior;
-    const ringA = isIn ? 0.50 + 0.30 * breathe : 0.30 + 0.22 * breathe;
-    const darkA = isIn ? 0.12 + 0.10 * breathe : 0.32 + 0.20 * breathe;
-    // 昏黄光晕（低血糖/失血发晕感）：中心稍透，向四周变浓，随呼吸脉动
-    const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.78);
-    g.addColorStop(0, 'rgba(130,66,22,0)');
-    g.addColorStop(1, `rgba(70,32,10,${ringA.toFixed(3)})`);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-    // 边缘暗角（视野收窄）：呼吸脉动
-    const v = ctx.createRadialGradient(W / 2, H / 2, H * 0.30, W / 2, H / 2, H * 0.82);
-    v.addColorStop(0, 'rgba(0,0,0,0)');
-    v.addColorStop(1, `rgba(0,0,0,${darkA.toFixed(3)})`);
-    ctx.fillStyle = v;
-    ctx.fillRect(0, 0, W, H);
-}
+// v4.26 屏幕覆盖层已拆到 wrender-overlay.js（drawWakeOverlay / drawDayNight / drawEventOverlay / drawSquatOverlay / drawInfectionOverlay / hungerShake / drawStarveVignette）
 
 // ---------- 可采集资源（像素风格图标） ----------
 function drawCollectible(ctx, sx, sy, text, color, now, tx, ty, highlight) {
@@ -2892,11 +2335,51 @@ function drawWorldDynamic(ctx, sv, camX, camY, W, H, dyn) {
     }
     // 交互目标金色描边（碎石不是容器：可 F 开采但无宝箱式交互框，避免误导；
     // 2026-08-10 汽车也不画金色十字框——靠近汽车只保留 F 提示（操作汽车），去掉描边框）
-    if (sv.promptTarget && sv.promptTarget.t !== T.RUBBLE
-        && sv.promptTarget.t !== T.CAR && sv.promptTarget.t !== T.CARWRECK) {
-        ctx.strokeStyle = '#FFD700';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(sv.promptTarget.x * TS - camX + 2, sv.promptTarget.y * TS - camY + 2, TS - 4, TS - 4);
+    // v4.41 室外尸体/队友（指针指向时 aim=1）：画金色长方体边框（与室内 drawInteriorPromptGlow 一致），
+    // 让"指针指到哪里金框就转移到哪里"在室外同样可见。
+    // v4.57 室外躺地 NPC（尸体/倒地）金框：之前缺 promptTarget.bodyAct 分支 → 金框画错位置或不画。
+    // v4.58 距离回退的尸体/队友也画金框：drawHUD 条件从 `aim` 放宽为 `aim || x != null`
+    // （updatePrompt 距离回退已补 x/y 坐标；室内 drawInteriorPromptGlow 无 aim 检查所以一直显示）。
+    if (sv.promptTarget) {
+        if (sv.promptTarget.downed && sv.promptTarget.x != null) {
+            // v4.58 室外倒地主控金框：与室内 drawInteriorPromptGlow 的 downed 分支一致（红色描边+文字）
+            const px0 = sv.promptTarget.x * TS - camX, py0 = sv.promptTarget.y * TS - camY;
+            ctx.strokeStyle = '#E8836A';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(px0 + 2, py0 + 2, TS - 4, TS - 4);
+            ctx.font = 'bold 11px "Microsoft YaHei", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#E8836A';
+            ctx.fillText(sv._carryDowned ? '放下 [F]' : '救治 [F]', px0 + TS / 2, py0 - 6);
+        } else if (sv.promptTarget.corpse && (sv.promptTarget.aim || sv.promptTarget.x != null)) {
+            const sx = (sv.promptTarget.x != null ? sv.promptTarget.x : 0) - camX, sy = (sv.promptTarget.y != null ? sv.promptTarget.y : 0) - camY;
+            const bw = 26, bh = 32;
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(sx - bw / 2, sy - bh + 2, bw, bh);
+        } else if (sv.promptTarget.npc && (sv.promptTarget.aim || sv.promptTarget.x != null)) {
+            const sx = (sv.promptTarget.x != null ? sv.promptTarget.x : 0) - camX, sy = (sv.promptTarget.y != null ? sv.promptTarget.y : 0) - camY;
+            const bw = 26, bh = 50;
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(sx - bw / 2, sy - bh + 2, bw, bh);
+        } else if (sv.promptTarget.bodyAct) {
+            // v4.57 修复：室外躺地 NPC 金框（之前缺此分支 → 指针命中躺地 NPC 时金框画错/不画）
+            // 按 npcId 找 NPC 实际像素坐标（与室内 drawInteriorPromptGlow 的 bodyAct 分支对称）
+            const _bn = sv.npcs && sv.npcs.find(x => x && x.id === sv.promptTarget.bodyAct);
+            if (_bn) {
+                const sx = _bn.x - camX, sy = _bn.y - camY;
+                const bw = 26, bh = 32;
+                ctx.strokeStyle = '#FFD700';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(sx - bw / 2, sy - bh + 2, bw, bh);
+            }
+        } else if (sv.promptTarget.t !== T.RUBBLE
+            && sv.promptTarget.t !== T.CAR && sv.promptTarget.t !== T.CARWRECK) {
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(sv.promptTarget.x * TS - camX + 2, sv.promptTarget.y * TS - camY + 2, TS - 4, TS - 4);
+        }
     }
     // 受损建筑/路障/汽车血条
     if (sv._damagedKeys && sv._damagedKeys.size > 0) {
@@ -4249,7 +3732,9 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
         if (n.downed) {
             // 站姿定格：dir='down' 取正面朝南单图，frame=1 强制不播放待机呼吸动画（静态一帧）
             const shirt = (n.look && n.look.shirt) || '#8f9baa';
-            drawPixelPlayerBody(ctx, sx, sy, shirt, 0, n.look, { dir: 'down', moving: false, frame: 1 });
+            // v4.29 修复"倒地成员侵蚀粒子消失"（用户反馈）：此前硬编码 infection=0，
+            // 倒地的感染者无侵蚀视觉效果。改为传 n.infection——倒地也持续显示侵蚀（粒子/灰绿侵蚀）。
+            drawPixelPlayerBody(ctx, sx, sy, shirt, n.infection || 0, n.look, { dir: 'down', moving: false, frame: 1 });
             // 濒死画面效果：红圈呼吸光圈 + 头顶倒悬红标
             const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 1000 * 3);
             ctx.strokeStyle = 'rgba(255,60,50,' + (0.5 + 0.4 * pulse) + ')';
@@ -4282,7 +3767,8 @@ function drawNpcs(ctx, sv, camX, camY, W, H) {
         // 上衣取 NPC 的捏脸外观；无外观时用中性灰（不再按阵营发光/染色）
         // 2026-08-11 性能：远处待机 NPC 用静态帧（跳过呼吸动画 bbox 拆分，省 1 次 drawImage）
         const nAnimR = (farNpc && !nMoving) ? { dir: nDir, moving: false, frame: 1 } : nAnim;
-        drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', 0, n.look, nAnimR);
+        // v4.22 NPC 感染粒子效果：传 n.infection 让 drawPixelPlayerBody 渲染侵蚀像素/灰绿色
+        drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', n.infection || 0, n.look, nAnimR);
         // 近战挥击特效（与玩家同一套：按武器样式差异化绘制）
         // 圆心取角色身体中部（sy 是脚底）；远处看不清不画，省特效路径
         if (!farNpc) drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, n.swingT, n.swingDir, n.swingWeapon);
@@ -4480,7 +3966,10 @@ function drawCampFlag(ctx, sv, camX, camY) {
 // ---------- 左侧队伍成员 UI（最多 4 人）：圆角卡片 + 渐变血条 + 状态徽标 ----------
 function drawTeamPanel(ctx, sv, W, H) {
     if (!sv.npcs) return;
-    const members = sv.npcs.filter(n => n.alive && n.party).slice(0, 4);
+    // 2026-08-17 v4.23 用户定稿："倒地后死亡不会立刻移除队伍成员列表，而是该成员完全尸变后，才会移除成员列表"。
+    // 队伍成员状态机：n.alive && n.party（活的） + !n.alive && n.party && n._revived!==true（已死待尸变，3 分钟内）——
+    // 血条显示 0/0 灰色条 + 状态徽标"尸"（红色），与活人区分。n._revived=true（尸变完成）→ 真正移除（n.party=false 已由 updateCorpseRevive 设置）。
+    const members = sv.npcs.filter(n => n.party && n._revived !== true).slice(0, 4);
     if (!members.length) return;
     const x = 8, pw = 178, rowH = 32, padT = 26, startY = 118;
     const boxH = padT + members.length * rowH + 6;
@@ -4515,7 +4004,7 @@ function drawTeamPanel(ctx, sv, W, H) {
         }
         // 第一行：名字 + 武器（名字右边）+ 状态徽标
         ctx.font = 'bold 11px "Microsoft YaHei", monospace';
-        ctx.fillStyle = isCtrl ? '#39d98a' : '#E8E8E8';
+        ctx.fillStyle = n.alive ? (isCtrl ? '#39d98a' : '#E8E8E8') : '#5C636A';   // v4.23 已死待尸变：名字灰色
         // 2026-08-10 用户要求：幸存者操控的 NPC 名字右边加「（幸存者）」标记——
         // 一眼识别当前操控的队友；"清除NPC"按 controllerId 保护此 NPC 不被误删。
         // 注意：isPlayer 记录（幸存者自己）不加标记，否则会显示"幸存者（幸存者）"。
@@ -4523,12 +4012,15 @@ function drawTeamPanel(ctx, sv, W, H) {
         const nameText = isSurvivorNpc ? n.name + '（幸存者）' : n.name;
         const nameW = Math.min(ctx.measureText(nameText).width, pw - 56);
         ctx.fillText(nameText, x + 10, y + 9, pw - 56);
-        ctx.font = '9px "Microsoft YaHei", monospace';
-        ctx.fillStyle = '#7a8b95';
-        ctx.fillText(n.wpnName || '拳头', x + 14 + nameW, y + 10, Math.max(18, pw - 56 - nameW));
-        // 状态徽标（濒/病/累/营/随/战）
+        if (n.alive) {   // v4.23 已死待尸变：武器栏隐藏
+            ctx.font = '9px "Microsoft YaHei", monospace';
+            ctx.fillStyle = '#7a8b95';
+            ctx.fillText(n.wpnName || '拳头', x + 14 + nameW, y + 10, Math.max(18, pw - 56 - nameW));
+        }
+        // 状态徽标（濒/病/累/营/随/战/尸）
         let st = '', sc = '#8a9aa2';
-        if (n.downed) { st = '濒'; sc = '#FF5544'; }   // 2026-08-10 用户要求：倒地主角 UI 标注"濒临死亡"
+        if (!n.alive) { st = '尸'; sc = '#FF5544'; }   // 2026-08-17 v4.23 用户定稿：已死待尸变尸体（party 仍 true、_revived!==true）UI 标注"尸"，与活人区分
+        else if (n.downed) { st = '濒'; sc = '#FF5544'; }   // 2026-08-10 用户要求：倒地主角 UI 标注"濒临死亡"
         else if (n.sick) { st = '病'; sc = '#FF8866'; }
         else if (n.exhausted) { st = '累'; sc = '#9FB4C0'; }   // 2026-08-10 与玩家一致：体力耗尽力竭
         else if (n.state === 'camp') { st = '营'; sc = '#FFD700'; }
@@ -4537,21 +4029,85 @@ function drawTeamPanel(ctx, sv, W, H) {
         ctx.fillStyle = sc;
         ctx.font = 'bold 11px "Microsoft YaHei", monospace';
         ctx.fillText(st, x + pw - 16, y + 9, 14);
-        // 第二行：HP 渐变条 + 血量数值
+        // 第二行：HP 格子条 + 血量数值（v4.31 与主控 HUD 一致：100 血 = 10 格 ■/□）
+        // v4.32 感染侵蚀【连续渐进】：基础 100 血 = 10 格；感染每 1% 削 0.5% 血上限。
+        // 血上限从 100 缓慢降到 95 时，被侵蚀的灰格【平滑从右往左填充】（连续 0→1，非一格一跳），
+        // 上限 95 → 第 10 格只有一半是灰（灰填充 50%），血量上限越低灰格越多，循序渐进。
+        // 关键：灰格宽度 = 该格被侵蚀的连续比例（随 maxHp 变化，无离散跳变感）。
         const bx = x + 10, bw2 = 116, by = y + 18;
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
-        ctx.fillRect(bx, by, bw2, 6);
-        const ratio = clamp(n.hp / n.maxHp, 0, 1);
+        const ROWS = 10;   // 基础 100 血 = 10 格
+        const cellW = bw2 / ROWS, cellH = 6;
+        const baseHp = 100;   // 基础血上限（无感染 = 100 → 10 格全有效）
+        // 有效上限格数（连续）：100 血 → 10.0 格；95 血 → 9.5 格；70 血 → 7.0 格。
+        // clamp 到 [0, ROWS] 并保留小数 → 灰格宽度连续跟随 maxHp。
+        const validCells = clamp(n.maxHp / (baseHp / ROWS), 0, ROWS);   // maxHp/10 → 9.5（含小数）
+        const hpCells = clamp(n.hp / (baseHp / ROWS), 0, validCells);    // 当前血量格（含小数）
+        const ratio = n.maxHp > 0 ? n.hp / n.maxHp : 0;
         const c0 = ratio > 0.5 ? '#3DDC84' : (ratio > 0.25 ? '#FFB347' : '#FF5544');
         const c1 = ratio > 0.5 ? '#7CFC9C' : (ratio > 0.25 ? '#FFD08A' : '#FF8877');
-        const grad = ctx.createLinearGradient(bx, 0, bx + bw2, 0);
-        grad.addColorStop(0, c0);
-        grad.addColorStop(1, c1);
-        ctx.fillStyle = grad;
-        ctx.fillRect(bx, by, bw2 * ratio, 6);
+        // 侵蚀起点：第 validCells 格向右为被侵蚀区（从该格内部开始连续变灰）
+        for (let g = 0; g < ROWS; g++) {
+            const gx = bx + g * cellW;
+            // 底槽（保留格子分隔感）
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.fillRect(gx, by, cellW - 1, cellH);
+            ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(gx, by, cellW - 1, cellH);
+            // 该格被侵蚀的比例（0 = 完全有效，1 = 完全被侵蚀）：
+            // 第 g 格 [g, g+1)，侵蚀从 validCells 开始向右铺开 → 该格侵蚀比例 = clamp((g+1 - validCells), 0, 1)。
+            // 随 maxHp 缓慢下降，validCells 连续变小 → 每格侵蚀比例平滑从 0→1（循序渐进，非一格一跳）。
+            const eroded = clamp(g + 1 - validCells, 0, 1);
+            if (eroded < 1) {
+                // 有效区（含该格未侵蚀的部分）
+                const fill = clamp(hpCells - g, 0, 1);   // hp 覆盖到该格的比例
+                if (fill > 0) {
+                    ctx.fillStyle = (g % 2 === 0) ? c0 : c1;
+                    ctx.fillRect(gx, by, (cellW - 1) * fill * (1 - eroded), cellH);
+                }
+                // 该格内被侵蚀的部分（灰色，连续填充）
+                if (eroded > 0.02) {
+                    ctx.fillStyle = 'rgba(120,130,140,0.38)';
+                    const ex = gx + (cellW - 1) * (1 - eroded);
+                    ctx.fillRect(ex, by, (cellW - 1) * eroded, cellH);
+                }
+            } else {
+                // 完全被侵蚀的上限格：纯灰
+                ctx.fillStyle = 'rgba(120,130,140,0.38)';
+                ctx.fillRect(gx, by, cellW - 1, cellH);
+            }
+        }
         ctx.font = '9px "Microsoft YaHei", monospace';
         ctx.fillStyle = '#9FB4C0';
-        ctx.fillText(`${Math.ceil(n.hp)}/${n.maxHp}`, bx + bw2 + 5, by + 3, pw - bw2 - 30);
+        ctx.fillText(`${Math.ceil(n.hp)}/${Math.ceil(n.maxHp)}`, bx + bw2 + 5, by + 3, pw - bw2 - 30);
+        // v4.39 濒死 / 尸变倒计时（用户定稿"左侧队伍界面会显示濒死倒计时、尸变倒计时"）：
+        // 濒死（n.downed）→ 救援剩余秒数（红色加粗）；待尸变（!n.alive && n._revived!==true && n._corpse）→ 倒计到尸变剩余秒数（橙色加粗）。
+        let cdtTxt = null, cdtCol = '#FF5544';
+        if (n.downed) {
+            if (n._downedAtReal == null) n._downedAtReal = sv.now != null ? sv.now : 0;
+            if (n._penaltySec == null) n._penaltySec = 0;
+            const _spentM = Math.max(0, (sv.now != null ? sv.now : 0) - n._downedAtReal) + (n._penaltySec || 0);
+            const _mLim = n.limitSec || 1200;
+            const _remainM = Math.max(0, _mLim - _spentM);
+            cdtTxt = '濒 ' + (Math.floor(_remainM / 60) > 0 ? (Math.floor(_remainM / 60) + '分' + String(Math.floor(_remainM % 60)).padStart(2, '0') + '秒') : Math.floor(_remainM) + '秒');
+            cdtCol = '#FF5544';
+        } else if (!n.alive && n._corpse && n._revived !== true) {
+            // 待尸变尸体倒计时：v3.80 设 3 分钟现实时间 = 180 秒
+            const _corpseAt = n._corpseAtReal != null ? n._corpseAtReal : (n._corpseDay != null ? n._corpseAtReal : 0);
+            const _age = (sv.now != null ? sv.now : 0) - _corpseAt;
+            const _remainC = Math.max(0, 180 - _age);
+            cdtTxt = '变 ' + (_remainC >= 60 ? (Math.floor(_remainC / 60) + '分' + String(Math.floor(_remainC % 60)).padStart(2, '0') + '秒') : Math.floor(_remainC) + '秒');
+            cdtCol = '#FF7744';
+        }
+        if (cdtTxt) {
+            ctx.font = 'bold 9px "Microsoft YaHei", monospace';
+            ctx.fillStyle = cdtCol;
+            ctx.textAlign = 'right';
+            ctx.fillText(cdtTxt, x + pw - 30, by + 3);
+            ctx.textAlign = 'left';   // 还原（v4.1 队伍对齐是 left）
+        }
+        // v4.54 用户定稿："队伍列表下面的文字不需要"——移除 v4.51 的背包摘要行（"包:XX +N"），
+        // 用户反馈该行在血条下方显得杂乱，且顶部弹幕提示已告知拾取内容，不需要 H 面板重复展示。
     });
     ctx.restore();
 }
@@ -4955,27 +4511,68 @@ function drawP2Guide(ctx, sv, W, H, sharedDrawn) {
 const MATE_GUIDE_COLORS = ['#FFD24A', '#7EE0A2', '#7EC8FF', '#FF9BD6', '#B8A0FF', '#FFB347'];
 function drawMateGuide(ctx, sv, W, H, sharedDrawn) {
     if (!sv.npcs) return;
-    const mates = sv.npcs.filter(n => n.alive && n.party && !n.downed && !n.isPlayer
+    // v4.38 指引覆盖所有 party 成员【无论死活/状态】（用户反馈："队伍中的成员不管在什么状态，
+    // 尽管是即将尸变的状态，也会有队友指引的标志，不管在室内还是在室外，在任意楼层"）：
+    // ① 去掉 n.alive —— 倒地（待救）、待尸变（补刀）、已死尸体都要指引，玩家才知道去哪处理；
+    // ② 去掉 !n.downed —— 倒地成员跑出屏幕也要指引（红色"倒地"标记）；
+    // ③ 切到 NPC 当主控后，原主角(isPlayer)作为队员也要指引（v4.21 已实现）。
+    // 成员顺序：正常活人优先（颜色轮换稳定），倒地/待尸变/尸体排后（固定红色/灰色）。
+    const mates = sv.npcs.filter(n => n.party
         && n.id !== sv.controllerId && !n.riding);
     if (!mates.length) return;
+    // 室内场景信息（楼层标签）：当前房间 + 楼层，用于跨楼层指引
+    const curIt = sv.interior;
+    const curFloor = curIt ? (curIt.floor || 1) : null;
     const drawn = sharedDrawn || [];
+    // 先画活人（正常颜色轮换），再画倒地/待尸变/尸体（固定红/灰）
     let i = 0;
+    const deadish = [];
     for (const m of mates) {
-        drawOneP2Guide(ctx, sv, W, H, { tx: m.x, ty: m.y, name: m.name }, MATE_GUIDE_COLORS[i % MATE_GUIDE_COLORS.length], drawn);
+        if (m.downed || !m.alive) { deadish.push(m); continue; }
+        const floorTag = mateGuideFloorTag(sv, curIt, curFloor, m);
+        drawOneP2Guide(ctx, sv, W, H, { tx: m.x, ty: m.y, name: m.name, floorTag }, MATE_GUIDE_COLORS[i % MATE_GUIDE_COLORS.length], drawn);
         i++;
     }
+    for (const m of deadish) {
+        // 倒地：红色"（倒地）"；待尸变（已死但未补刀）：暗红"（待尸变）"；已补刀/尸变尸体：灰"（尸）"
+        let tag, color;
+        if (m.downed) { tag = m.name + '（倒地）'; color = '#FF5555'; }
+        else if (m._revived === true || m._revivedCorpse) { tag = m.name + '（尸）'; color = '#9AA3B0'; }
+        else { tag = m.name + '（待尸变）'; color = '#FF7744'; }
+        const floorTag = mateGuideFloorTag(sv, curIt, curFloor, m);
+        drawOneP2Guide(ctx, sv, W, H, { tx: m.x, ty: m.y, name: tag, floorTag }, color, drawn);
+    }
+}
+// v4.38 跨楼层指引标签：队友在同一房间但不同楼层 → 返回"↑X楼/↓X楼"箭头标签
+// （室内不同楼层共享坐标空间，屏幕坐标相同但实际不可见 → 指引强制显示并标明楼层）。
+function mateGuideFloorTag(sv, curIt, curFloor, m) {
+    if (!curIt || !m || !m.inInterior) return null;
+    if (m.interiorKey !== curIt.key) return null;
+    const mFloor = m.interiorFloor == null ? 1 : m.interiorFloor;
+    if (curFloor == null || mFloor === curFloor) return null;
+    return mFloor > curFloor ? '↑' + mFloor + '楼' : '↓' + mFloor + '楼';
 }
 function drawOneP2Guide(ctx, sv, W, H, p, color, drawn) {
     const dx = p.tx - sv.px, dy = p.ty - sv.py;
     const dist = Math.hypot(dx, dy);
     const sx = p.tx - sv.camX, sy = p.ty - sv.camY;
     const margin = 52;
-    // 同屏：双方都能看到对方小人，不再显示距离（用户要求）
-    if (sx >= margin && sx <= W - margin && sy >= margin && sy <= H - margin) return;
-    // 屏幕外：屏幕边缘画箭头（指向队友方向）+ 距离格数
-    const ang = Math.atan2(dy, dx);
-    const px2 = clamp(W / 2 + Math.cos(ang) * (W / 2 - 40), margin, W - margin);
+    // v4.38 跨楼层：队友在别的楼层（floorTag 非空）→ 强制显示指引（忽略同屏判定），
+    // 因为不同楼层共享坐标空间、屏幕坐标虽然可能在"屏幕内"，但实际看不见对方。
+    // 跨楼层时箭头指向屏幕中央（往楼梯方向走），标签显示 ↑/↓楼层。
+    const crossFloor = !!p.floorTag;
+    // 同屏：双方都能看到对方小人，不再显示距离（用户要求）；跨楼层不适用
+    if (!crossFloor && sx >= margin && sx <= W - margin && sy >= margin && sy <= H - margin) return;
+    // 屏幕外/跨楼层：屏幕边缘画箭头（指向队友方向）+ 距离格数
+    // v4.45 修复：ang 改为 let（v4.38 跨楼层分支会重赋值，原 const 会抛 TypeError）
+    let ang = Math.atan2(dy, dx);
+    let px2 = clamp(W / 2 + Math.cos(ang) * (W / 2 - 40), margin, W - margin);
     let py2 = clamp(H / 2 + Math.sin(ang) * (H / 2 - 40), margin, H - margin);
+    // v4.38 跨楼层：箭头固定指屏幕中心（队友在上/下楼，朝楼梯方向找），避免乱指
+    if (crossFloor) {
+        px2 = W / 2; py2 = H / 2 + 40;
+        ang = p.floorTag.startsWith('↑') ? -Math.PI / 2 : Math.PI / 2;
+    }
     // 多个队友落在同一边缘位置：逐个下移 48px 防重叠（超出下边界改向上叠）
     for (const d of drawn) {
         if (Math.abs(d.x - px2) < 40 && Math.abs(d.y - py2) < 44) {
@@ -4999,13 +4596,14 @@ function drawOneP2Guide(ctx, sv, W, H, p, color, drawn) {
     ctx.moveTo(8, 0); ctx.lineTo(-4, -6); ctx.lineTo(-1, 0); ctx.lineTo(-4, 6);
     ctx.closePath(); ctx.fill();
     ctx.restore();
-    // 下方标签：队友名 + 距离（格）
+    // 下方标签：队友名 + 距离（格）；v4.38 跨楼层追加"↑X楼"提示
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 11px "Microsoft YaHei", monospace';
     ctx.fillStyle = 'rgba(8,20,32,0.82)';
-    const label = (p.name || '队友') + ' · ' + Math.round(dist / TS) + ' 格';
+    let label = (p.name || '队友') + ' · ' + Math.round(dist / TS) + '米';
+    if (p.floorTag) label = p.floorTag + ' ' + (p.name || '队友') + ' · ' + Math.round(dist / TS) + '米';
     const lw = ctx.measureText(label).width + 10;
     roundRectPath(ctx, px2 - lw / 2, py2 + 22, lw, 18, 4);
     ctx.fill();
@@ -5479,6 +5077,94 @@ function drawScrollBanner(ctx, sv, W, H, text, color) {
     ctx.restore();
 }
 
+// 2026-08-18 v4.33 躺地 NPC 交互选择框绘制（搜索/补刀/救治）：
+// 靠近倒地/尸体 NPC 时绘制小 UI 框，滚轮上下选择（sel 高亮），F / 左键确认。
+// v4.61 位置调整：之前 by = H - 96 - boxH 与底部滚动横幅（y ≈ H-30）、[F] 提示（y = H-92）、尸潮警告（顶部 y=17）冲突重叠。
+// 改为屏幕右侧中下部（不受左右两侧 HUD 干扰，远离底部提示/横幅），bx = W - boxW - 16，by = H - 200。
+// 同时支持画布缩放：boxW 随 W<460 等小画布按比例缩小。
+function drawBodyAct(ctx, sv, W, H) {
+    const act = sv._bodyAct;
+    if (!act || !act.opts || !act.opts.length) return;
+    const boxW = Math.min(350, W - 32);
+    const lineH = 22, pad = 10;
+    const title = `${act.name}（${act.state || '躺地'}）`;
+    const rows = act.opts.length;
+    const boxH = 30 + rows * lineH + pad * 2;
+    // v4.61 位置：右下角（避底部滚动横幅 + [F] 提示 + 尸潮警告）：bx = W - boxW - 12, by = H - boxH - 110
+    // v4.63.1 改为屏幕中上部（与文字提示对齐、位于文字提示上方）：bx = W/2 - boxW/2, by = H/2 - boxH - 30
+    // v4.63.2 以快捷栏顶部为基准（drawHotbar y = H - 72）：选择框 by = H - 80 - boxH - 8，紧贴快捷栏上方
+    // v4.63.3 以快捷栏第3-4格中间线为基准（drawHotbar size=40, gap=4, n=6：x = (W-260)/2 + 3.5*40 + 2.5*4 = 500），
+    // 提示 x = 500、选择框 bx = 500 - boxW/2（中心对齐到基准线），by 仍在 H - 80 - boxH - 8 上方，
+    // 相对中心位置（提示 y = 460）的上方。
+    // v4.63.7 用户反馈室内文字提示看不到：曾改 y = H/2 + 80 = 350 避开画布缩放黑边（实测并非该问题，
+    // v4.63.8 修室内 drawInterior 漏渲染后已恢复显示，但位置仍偏中部）。
+    // v4.63.9 用户定稿回到 v4.63.2 快捷栏上方基准：by = H - 80 - boxH - 8（紧贴快捷栏上方 8px），
+    // 文字提示 y = H - 80（紧贴快捷栏顶部上方 8px，drawHotbar 顶部 y = H - 72）。
+    const _baseX = Math.max(boxW / 2 + 8, 500);
+    const bx = Math.max(8, _baseX - boxW / 2);
+    const by = Math.max(40, H - 80 - boxH - 8);
+    ctx.save();
+    ctx.font = '13px "Microsoft YaHei", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    // 半透明底 + 金色描边
+    ctx.fillStyle = 'rgba(10,14,18,0.9)';
+    ctx.strokeStyle = 'rgba(255,215,0,0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.rect(bx, by, boxW, boxH);
+    ctx.fill();
+    ctx.stroke();
+    // 标题行
+    ctx.fillStyle = '#FFD700';
+    ctx.fillText(title, bx + pad + 4, by + 15);
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.beginPath();
+    ctx.moveTo(bx + 6, by + 28);
+    ctx.lineTo(bx + boxW - 6, by + 28);
+    ctx.stroke();
+    // 选项列表（当前选中项高亮 ▶）
+    for (let i = 0; i < rows; i++) {
+        const o = act.opts[i];
+        const isSel = i === act.sel;
+        const y = by + 42 + i * lineH;
+        if (isSel) {
+            ctx.fillStyle = 'rgba(255,215,0,0.15)';
+            ctx.fillRect(bx + 4, y - lineH / 2 + 2, boxW - 8, lineH - 2);
+        }
+        ctx.fillStyle = isSel ? '#FFD700' : '#C8D2DC';
+        ctx.fillText((isSel ? '▶ ' : '  ') + o.label, bx + pad + 8, y);
+    }
+    // 底部操作提示
+    ctx.fillStyle = 'rgba(160,170,180,0.85)';
+    ctx.font = '11px "Microsoft YaHei", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('滚轮切换 · F / 左键确认', W / 2, by + boxH - pad + 4);
+    ctx.restore();
+}
+
+// v4.63.8 室内外交互文字提示统一渲染（用户定稿："室内文字提示的位置和室外一模一样"）。
+// 根因：v4.63.4~v4.63.7 一直在修数据源（sv.prompt 设置/被覆盖）与位置（y 坐标），但室内渲染层
+// drawInterior 从未绘制 sv.prompt → 室内金框有、文字提示永远没有。抽公共函数供室外 drawHUD 与
+// 室内 drawInterior 共用同一位置：x=500（快捷栏第3-4格中间线），y=H-80（v4.63.9 回到快捷栏上方
+// 基准：drawHotbar 顶部 y = H-72，提示 y = H-80 紧贴上方 8px）。
+// v4.63.9 用户定稿"提示在快捷栏上方 + 选择框在文字上方 + 一点间隔"：提示 y = H-80（紧贴快捷栏），
+// 选择框 by = H - 80 - boxH - 8（提示上方 8px 间隔）。"位置一模一样"由单一来源保证。
+function drawInteractPrompt(ctx, sv, W, H) {
+    if (!sv.prompt) return;
+    ctx.save();
+    ctx.font = 'bold 16px "Microsoft YaHei", monospace';
+    // 统一剥尾部 [F]/[按F确认] 变体再加前缀，避免 "[F] [F]" 重复；非可交互物体提示
+    // （如"已驯服"）也会被剥尾部 [F] 后正常显示（不带前缀）。
+    const _p = String(sv.prompt).replace(/\s*\[(按)?F(?:[^\]]*)?\]\s*$/, '').trim();
+    ctx.fillStyle = '#FFD700';
+    ctx.shadowColor = '#FFD700';
+    ctx.shadowBlur = 8;
+    ctx.textAlign = 'center';
+    ctx.fillText(`[按F] ${_p}`, 500, H - 80);
+    ctx.restore();
+}
+
 function drawHUD(ctx, sv, W, H) {
     ctx.textBaseline = 'middle';
     drawStatusHUD(ctx, sv, W);
@@ -5504,17 +5190,14 @@ function drawHUD(ctx, sv, W, H) {
     // 底部操作提示（2026-08-10 循环滚动横幅：从右飘到左，往复循环；不含开发者模式）
     drawScrollBanner(ctx, sv, W, H, sv.build
         ? '建造模式：1-5 选择 · 左键放置 · F 拆除 · G/ESC 退出'
-        : 'WASD 移动 · Shift 奔跑 · Q 闪避 · E 格挡 · 空格 跳跃 · J/左键 攻击 · R 换弹 · X 切武器 · F 交互 · N 扫描 · V 切武器全自动/半自动（背起/放下）· K 拼字台 · G 建造 · B 背包 · C 属性 · H 队伍 · T 队伍指令 · F1 教程 · P 暂停 · F11 全屏 · ALT+ESC 退全屏 · v4.11：感染每1%→属性-0.5%(不治必死) · 脱战自愈 · 死亡红箭头指引');
+        : 'WASD 移动 · Shift 奔跑 · Q 闪避 · E 格挡 · 空格 跳跃 · J/左键 攻击 · R 换弹 · X 切武器 · F 交互 · N 扫描 · V 切武器全自动/半自动（背起/放下）· K 拼字台 · G 建造 · B 背包 · C 属性 · H 队伍 · T 集合信号（最高命令）· F1 教程 · P 暂停 · F11 全屏 · ALT+ESC 退全屏 · v4.64.4：交互扫描统一以玩家为中心 3×3 九宫格');
 
-    // 交互提示
-    ctx.font = 'bold 16px "Microsoft YaHei", monospace';
-    if (sv.prompt) {
-        ctx.fillStyle = '#FFD700';
-        ctx.shadowColor = '#FFD700';
-        ctx.shadowBlur = 8;
-        ctx.fillText(`[F] ${sv.prompt}`, W / 2, H - 92);
-        ctx.shadowBlur = 0;
-    }
+    // 交互提示（v4.63.8 抽公共函数 drawInteractPrompt：室内外共用同一位置）
+    drawInteractPrompt(ctx, sv, W, H);
+
+    // 2026-08-18 v4.33 躺地 NPC 交互选择框：靠近倒地/尸体 NPC 时显示"搜索/补刀/救治"，
+    // 鼠标滚轮（中键）上下切换选项，F / 左键点击确认（drawBodyAct 定义见 drawHUD 之前）。
+    drawBodyAct(ctx, sv, W, H);
 
     // 滚动消息队列（3~5 条，淡出）
     drawMsg(ctx, sv, W);
@@ -5565,7 +5248,9 @@ function drawInterior(ctx, sv, W, H) {
     if (!it) return;
     const iw = it.w, ih = it.h;
     const totalW = iw * TS, totalH = ih * TS;
-    const ox = (W - totalW) / 2, oy = (H - totalH) / 2;
+    // v4.16 室内相机（与 updateInteriorMode 同源 computeInteriorCam）：小房间居中，大房间玩家居中
+    // 此前 ox = (W - totalW) / 2 写死，大房间（>画布，玩家自建超大房）被裁剪（玩家走出屏幕）
+    const { ox, oy } = computeInteriorCam(sv, W, H);
 
     ctx.fillStyle = '#0A0A12';
     ctx.fillRect(0, 0, W, H);
@@ -5836,7 +5521,8 @@ function drawInterior(ctx, sv, W, H) {
             // 队友在室内也能看到倒地主角前来救助（此前室内无 downed 处理 → 主角站姿无标记）
             if (n.downed) {
                 const shirt = (n.look && n.look.shirt) || '#8f9baa';
-                drawPixelPlayerBody(ctx, sx, sy, shirt, 0, n.look, { dir: 'down', moving: false, frame: 1 });
+                // v4.29 同室外：倒地感染者持续显示侵蚀粒子（此前硬编码 0）
+                drawPixelPlayerBody(ctx, sx, sy, shirt, n.infection || 0, n.look, { dir: 'down', moving: false, frame: 1 });
                 const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 1000 * 3);
                 ctx.strokeStyle = 'rgba(255,60,50,' + (0.5 + 0.4 * pulse) + ')';
                 ctx.lineWidth = 2;
@@ -5881,7 +5567,8 @@ function drawInterior(ctx, sv, W, H) {
             }
             // 2026-08-10 室内奔跑动画与室外一致：run→动作振幅 ×2
             const nAnim2 = { dir: nDir, moving: nMv, frame: nMv ? (n._walkT || 0) : 0, run: !!n._running };
-            drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', 0, n.look || sv.character || null, nAnim2);
+            // v4.22 NPC 感染粒子效果：传 n.infection 让 drawPixelPlayerBody 渲染侵蚀像素/灰绿色
+            drawPixelPlayerBody(ctx, sx, sy, (n.look && n.look.shirt) || '#8f9baa', n.infection || 0, n.look || sv.character || null, nAnim2);
             // 2026-08-10 与室外一致：近战挥击特效（按武器样式差异化绘制；圆心取身体中部）
             if (n.swingT > 0) drawSwingEffect(ctx, sx, sy - PLAYER_BODY_MID, n.swingT, n.swingDir, n.swingWeapon);
             if (Math.hypot(n.x - sv.px, n.y - sv.py) < 2.2 * TS) {
@@ -5955,8 +5642,17 @@ function drawInterior(ctx, sv, W, H) {
 
     // 底部提示（2026-08-10 循环滚动横幅：从右飘到左，往复循环）
     drawScrollBanner(ctx, sv, W, H, curFloor === 1
-        ? 'WASD 移动 · 左键/J 攻击 · F 交互 · N 扫描 · V 切武器全自动/半自动（背起/放下）· K 拼字台 · H 队伍 · 走到绿色[出]字离开室内 · v4.11：感染每1%→属性-0.5%(不治必死) · 脱战自愈 · 死亡红箭头指引'
-        : 'WASD 移动 · J/左键 攻击 · F 交互 · N 扫描 · V 切武器全自动/半自动（背起/放下）· K 拼字台 · H 队伍 · 靠近楼梯按 F 上楼下楼 · v4.11：感染每1%→属性-0.5%(不治必死) · 脱战自愈 · 死亡红箭头指引');
+        ? 'WASD 移动 · 左键/J 攻击 · F 交互 · N 扫描 · V 切武器全自动/半自动（背起/放下）· K 拼字台 · H 队伍 · 走到绿色[出]字离开室内 · v4.64.4：交互扫描统一以玩家为中心 3×3 九宫格'
+        : 'WASD 移动 · J/左键 攻击 · F 交互 · N 扫描 · V 切武器全自动/半自动（背起/放下）· K 拼字台 · H 队伍 · 靠近楼梯按 F 上楼下楼 · v4.64.4：交互扫描统一以玩家为中心 3×3 九宫格');
+
+    // v4.63.8 室内交互文字提示（用户定稿：与室外一模一样的位置）：v4.63.4~v4.63.7 只修了数据源
+    // sv.prompt（室内 updateInteriorPrompt 已正确设置 + updatePrompt 室内守卫已加），但室内渲染层
+    // drawInterior 从未绘制 sv.prompt → 金框有、提示无。抽公共函数与室外共用，位置天然一致。
+    drawInteractPrompt(ctx, sv, W, H);
+
+    // v4.35 室内躺地 NPC 交互选择框（与室外同步）：之前只有室外 drawHUD 调用 drawBodyAct，
+    // 室内 updateInteriorPrompt 计算了 sv._bodyAct 却无人绘制 → 室内"救助/补刀/搜索"小 UI 不显示。
+    drawBodyAct(ctx, sv, W, H);
 
     drawMsg(ctx, sv, W);
 }
@@ -5976,7 +5672,9 @@ function drawInteriorPromptGlow(ctx, sv, it, ox, oy) {
         // 2026-08-12 v3.58 准星指向 NPC 时（pt.aim）画金色长方体边框（与容器一致）：
         // 围绕 NPC 渲染形象（drawPixelPlayerBody 高度 48px，宽约 24px）画呼吸描边，
         // 明确"鼠标指到它、F 会作用到它"。
-        if (pt.aim) {
+        // v4.58 放宽为 `aim || x != null`：室内距离回退队友 {npc:1,mate:1,id,x,y} 无 aim 时
+        // 金框也要显示（与室外 drawHUD 对称，避免"室内距离回退队友金框缺失"）。
+        if (pt.aim || pt.x != null) {
             const px0 = ox + (pt.x != null ? pt.x : 0);
             const py0 = oy + (pt.y != null ? pt.y : 0);
             const bw = 26, bh = 50;   // 与角色渲染尺寸匹配（宽 26 高 50 的长方体）
@@ -5996,6 +5694,26 @@ function drawInteriorPromptGlow(ctx, sv, it, ox, oy) {
         ctx.fillStyle = '#E8836A';
         ctx.globalAlpha = 1;
         ctx.fillText(sv._carryDowned ? '放下 [F]' : '救治 [F]', px0 + TS / 2, py0 - 6);
+    } else if (pt.bodyAct) {
+        // v4.55 修复：按 npcId 找 NPC 实际像素坐标（之前用 pt.x/pt.y 但 promptTarget.bodyAct 结构是
+        // {bodyAct: id, x, y, aim:1}，x/y 可能 undefined 或与 n.x/n.y 无关→金框画在左上角错位）
+        const _bn = sv.npcs && sv.npcs.find(x => x && x.id === pt.bodyAct);
+        if (_bn) {
+            const bw = 26, bh = 32;
+            ctx.globalAlpha = clamp(pulse, 0, 1);
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(ox + _bn.x - bw / 2, oy + _bn.y - bh + 2, bw, bh);
+        }
+    } else if (pt.corpse) {
+        // v4.39 室内尸体准星指向：金色描边（v3.58 aim 风格 + npc 风格长方体），
+        // 修复"鼠标指针指到尸体没有金色框（仍锁定距离最近的）"——加 aim 字段后画金色长方体边框。
+        const px0 = ox + pt.x, py0 = oy + pt.y;
+        const bw = 26, bh = 32;
+        ctx.globalAlpha = clamp(pulse, 0, 1);
+        ctx.strokeStyle = '#FFD700';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(px0 - bw / 2, py0 - bh + 2, bw, bh);
     } else if (pt.stairs) {
         // 2026-08-10 楼梯：金色描边 + 文字"上楼/下楼 [F]"（交互式上下楼提示）
         const px0 = ox + pt.x * TS, py0 = oy + pt.y * TS;
@@ -6014,241 +5732,11 @@ function drawInteriorPromptGlow(ctx, sv, it, ox, oy) {
 }
 
 // ================= v3.66 全局粒子背景层 #wsl-bg-fx（跨弹窗共享） =================
-// 用户需求：从开始游戏 → 创建新世界 → 创建绑定角色 → 捏脸 整个流程中保持同一个连续的粒子
-// 动态效果背景（不需要出现创意工坊 UI）；粒子提前加载，避免进入捏脸时卡顿。
-let _bgFxEl = null, _bgFxCv = null, _bgFxRaf = 0, _bgFxParts = null;
+// v4.26 背景粒子特效已拆到 wbgfx.js（preloadBgFxParts / ensureBgFx / destroyBgFx / destroyBgFxNow / attachParticleBg / clearBgFxPrevScreen）
 // v3.71 修复感染 sprite 缓存 ReferenceError：v3.69 把 _infSpriteCache 放在 drawPixelPlayerBody
 // 函数内部但**没有 let/const 声明**（裸赋值），在 ESM 严格模式下访问 ReferenceError。
 // 提升到模块顶层，与 _bgFxEl 等同列，跨函数调用共享。
 let _infSpriteCache = new Map();   // v3.71 模块级感染 sprite 缓存（v3.69 引入，v3.71 修正作用域 + 立即初始化避免 null 检查）
-function blobRoundRectPath(ctx, x, y, w, h, r) {
-    ctx.moveTo(x - w / 2 + r, y - h / 2);
-    ctx.arcTo(x + w / 2, y - h / 2, x + w / 2, y + h / 2, r);
-    ctx.arcTo(x + w / 2, y + h / 2, x - w / 2, y + h / 2, r);
-    ctx.arcTo(x - w / 2, y + h / 2, x - w / 2, y - h / 2, r);
-    ctx.arcTo(x - w / 2, y - h / 2, x + w / 2, y - h / 2, r);
-    ctx.closePath();
-}
-// v3.66 提前预热粒子（不挂 DOM），下次 ensureBgFx 直接复用已生成的粒子数据，避免新弹窗打开瞬间未生成。
-export function preloadBgFxParts() {
-    if (_bgFxParts) return;
-    _bgFxParts = {};
-    // v3.74 用户选定方案 I「末世废土」：黄橙暮色天空 + 尘埃飞扬 + 灰烬飘落 + 余烬红光 + 废墟剪影。
-    // 数据分三组：
-    //   dust  ：120 个尘埃（黄橙/土色，横向飘动 + 呼吸闪烁）
-    //   ash   ：30 个灰烬（深灰，缓慢下飘）
-    //   ember ：10 个余烬（红点，闪烁）
-    // 渐变背景/阳光带/废墟剪影在 _startBgFxAnim 中每帧绘制（废墟剪影为静态轮廓数组）。
-    _bgFxParts.dust = [];
-    for (let i = 0; i < 120; i++) {
-        _bgFxParts.dust.push({
-            x: Math.random(), y: Math.random(),
-            r: 0.5 + Math.random() * 2.5,
-            vx: -(Math.random() * 0.001 + 0.0005),          // 向左飘（风）
-            vy: (Math.random() - 0.5) * 0.0005,
-            phase: Math.random() * Math.PI * 2,
-            speed: 0.3 + Math.random() * 1.5,
-            color: Math.random() < 0.5 ? '#d8a86a' : '#8a7a5a',
-        });
-    }
-    _bgFxParts.ash = [];
-    for (let i = 0; i < 30; i++) {
-        _bgFxParts.ash.push({
-            x: Math.random(), y: Math.random(),
-            r: 0.8 + Math.random() * 2,
-            vy: 0.0003 + Math.random() * 0.0008,            // 缓慢下飘
-            vx: (Math.random() - 0.5) * 0.0008,
-        });
-    }
-    _bgFxParts.ember = [];
-    for (let i = 0; i < 10; i++) {
-        _bgFxParts.ember.push({
-            x: Math.random(), y: 0.3 + Math.random() * 0.6,
-            r: 1 + Math.random() * 2.5,
-            phase: Math.random() * Math.PI * 2,
-            speed: 0.5 + Math.random() * 2,
-        });
-    }
-    // 废墟剪影轮廓（底部 30% 高度，锯齿状破损天际线）
-    _bgFxParts.ruins = [0.05, 0.12, 0.08, 0.18, 0.10, 0.15, 0.06, 0.13, 0.09, 0.16, 0.07, 0.11, 0.05, 0.12];
-}
-// v3.66 全局背景层：z-index 1095（高于创意工坊，避免创意工坊 UI 透出），fixed inset:0 全屏
-// 透明容器内挂粒子 canvas（z-index 1）。所有弹窗（创建世界/创建角色/捏脸等）都附加到此容器内。
-// 注意：弹窗本身必须用 position:absolute;inset:0（不是 fixed），这样它们相对 bg-fx 全屏；
-// bg-fx 全屏 → 弹窗 absolute inset:0 也全屏。
-// v3.76 修复"背景后透出创意工坊 UI"：bg-fx 末世废土渐变是半透明（alpha 0.90~0.97），
-// 若底层 #workshop-screen 仍显示会透出工坊界面。建立背景层时记录并隐藏当前可见 .screen
-//（创意工坊），destroyBgFx 时恢复（取消返回工坊）；进入游戏由 startRun 的 showScreen('game') 接管。
-let _bgFxPrevScreen = null;
-// v3.78 清除 bg-fx 记录的被隐藏 screen（进入游戏流程时调用）：
-// 消除"开始游戏 → 创意工坊 UI 弹出来一下"的割裂——bg-fx 淡出结束时不再恢复被隐藏的创意工坊。
-export function clearBgFxPrevScreen() { _bgFxPrevScreen = null; }
-export function ensureBgFx() {
-    if (_bgFxEl && _bgFxEl.isConnected) return _bgFxEl;
-    // 隐藏底层 screen（创意工坊），记录以便恢复
-    const vis = [...document.querySelectorAll('.screen')].find(s => !s.classList.contains('hidden'));
-    if (vis && vis.id && vis.id !== 'game-screen') {
-        _bgFxPrevScreen = vis.id;
-        vis.classList.add('hidden');
-    }
-    _bgFxEl = document.createElement('div');
-    _bgFxEl.id = 'wsl-bg-fx';
-    _bgFxEl.style.cssText = 'position:fixed;inset:0;z-index:1095;background:transparent;pointer-events:none;';   // v3.79 背景层不拦截点击
-    _bgFxCv = document.createElement('canvas');
-    _bgFxCv.id = 'wsl-bg-fx-cv';
-    _bgFxCv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;';
-    _bgFxEl.appendChild(_bgFxCv);
-    document.body.appendChild(_bgFxEl);
-    _startBgFxAnim(_bgFxCv);
-    return _bgFxEl;
-}
-function _startBgFxAnim(cv) {
-    preloadBgFxParts();   // 确保粒子数据已就绪
-    if (_bgFxRaf) { cancelAnimationFrame(_bgFxRaf); _bgFxRaf = 0; }
-    const ctx = cv.getContext('2d');
-    const dpr = Math.max(1, (window.devicePixelRatio || 1));
-    let W = 0, H = 0;
-    const resize = () => {
-        W = cv.clientWidth || window.innerWidth;
-        H = cv.clientHeight || window.innerHeight;
-        cv.width = Math.max(1, Math.round(W * dpr));
-        cv.height = Math.max(1, Math.round(H * dpr));
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-    resize();
-    window.addEventListener('resize', resize);
-    const start = performance.now();
-    const tick = (now) => {
-        if (!_bgFxEl || !cv.isConnected) { _bgFxRaf = 0; return; }
-        if (cv.clientWidth !== W || cv.clientHeight !== H) resize();
-        const t = (now - start) / 1000;
-        ctx.clearRect(0, 0, W, H);
-        // v3.76 点开始游戏后的过渡：背景"慢慢散开变淡"。
-        // _bgFxFade = { t0, dur } 存在时，粒子加速飞散（散开），末尾叠加渐白蒙层（变淡），
-        // 到 dur 后真正销毁。蒙层放在整帧绘制之后（见 tick 末尾），才不会被天空渐变覆盖。
-        if (_bgFxFade) {
-            const fp = Math.min(1, (now - _bgFxFade.t0) / _bgFxFade.dur);
-            const spdMul = 1 + 1.5 * fp;   // 粒子速度放大（缓慢散开，0.6s 内至多 ×2.5）
-            for (const d of _bgFxParts.dust) { d.vx *= spdMul; d.vy *= spdMul; }
-            for (const a of _bgFxParts.ash) { a.vy *= spdMul; a.vx *= spdMul; }
-            if (fp >= 1) { destroyBgFxNow(); return; }
-            _bgFxFade._fp = fp;
-        }
-        // v3.74 方案 I「末世废土」：黄橙暮色天空 + 尘埃飞扬 + 灰烬飘落 + 余烬红光 + 废墟剪影
-        // 1) 暮色天空渐变（上亮下暗的黄橙→深褐）
-        const grad = ctx.createLinearGradient(0, 0, W, H * 0.8);
-        grad.addColorStop(0, 'rgba(90,50,20,0.90)');
-        grad.addColorStop(0.5, 'rgba(70,40,18,0.94)');
-        grad.addColorStop(1, 'rgba(40,26,14,0.97)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, W, H);
-        // 2) 暮色阳光带（右上角径向橙光）
-        ctx.globalCompositeOperation = 'lighter';
-        const sun = ctx.createRadialGradient(W * 0.7, H * 0.3, 0, W * 0.7, H * 0.3, W * 0.35);
-        sun.addColorStop(0, 'rgba(255,180,80,0.35)');
-        sun.addColorStop(1, 'rgba(255,180,80,0)');
-        ctx.fillStyle = sun;
-        ctx.fillRect(0, 0, W, H);
-        // 3) 尘埃（横向飘动 + 呼吸闪烁）
-        for (const d of _bgFxParts.dust) {
-            d.x += d.vx; d.y += d.vy;
-            if (d.x < -0.1) d.x = 1.1;
-            if (d.y < -0.1) d.y = 1.1; if (d.y > 1.1) d.y = -0.1;
-            ctx.globalAlpha = 0.1 + 0.3 * Math.abs(Math.sin(t * d.speed + d.phase));
-            ctx.fillStyle = d.color;
-            ctx.beginPath();
-            ctx.arc(d.x * W, d.y * H, d.r, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        // 4) 灰烬（缓慢下飘）
-        for (const a of _bgFxParts.ash) {
-            a.y += a.vy; a.x += a.vx;
-            if (a.y > 1.1) { a.y = -0.1; a.x = Math.random(); }
-            ctx.globalAlpha = 0.15;
-            ctx.fillStyle = a.color || '#3a3a3a';
-            ctx.beginPath();
-            ctx.arc(a.x * W, a.y * H, a.r, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        // 5) 余烬红光（闪烁）
-        for (const e of _bgFxParts.ember) {
-            ctx.globalAlpha = 0.2 + 0.5 * Math.abs(Math.sin(t * e.speed + e.phase));
-            ctx.fillStyle = '#ff5544';
-            ctx.beginPath();
-            ctx.arc(e.x * W, e.y * H, e.r, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1;
-        // 6) 废墟剪影（底部 30% 锯齿状天际线）
-        const ruins = _bgFxParts.ruins || [];
-        const mh = H * 0.30;
-        ctx.fillStyle = 'rgba(20,14,10,0.9)';
-        ctx.beginPath();
-        ctx.moveTo(0, H);
-        const seg = W / Math.max(1, (ruins.length - 1) * 2);
-        for (let x = 0; x <= W; x += seg) {
-            const idx = Math.floor(x / seg) % ruins.length;
-            ctx.lineTo(x, H - mh * (ruins[idx] || 0.1));
-        }
-        ctx.lineTo(W, H);
-        ctx.closePath();
-        ctx.fill();
-        // 7) 地面尘土
-        ctx.fillStyle = 'rgba(60,40,20,0.6)';
-        ctx.fillRect(0, H - 10, W, 10);
-        // v3.76 渐白蒙层（背景整体变淡）：在整帧绘制之后叠加，随 _bgFxFade 进度由透明→微白，
-        // 配合睁眼动画的灰雾模糊，营造"背景散开、颜色变淡、睁眼慢慢显现"的过渡。
-        if (_bgFxFade && _bgFxFade._fp != null) {
-            const fp = _bgFxFade._fp;
-            ctx.save();
-            ctx.fillStyle = 'rgba(190,180,160,' + (0.30 * fp).toFixed(3) + ')';
-            ctx.fillRect(0, 0, W, H);
-            ctx.restore();
-            // 干净的一帧已画完，清掉临时进度标记
-            delete _bgFxFade._fp;
-        }
-        _bgFxRaf = requestAnimationFrame(tick);
-    };
-    _bgFxRaf = requestAnimationFrame(tick);
-}
-// v3.66 销毁背景层（进入游戏前调用，粒子不再消耗 RAF；再次弹窗时 ensureBgFx 会重建）
-// v3.76 销毁时恢复 ensureBgFx 隐藏的底层 screen（取消返回创意工坊场景）。
-// 进入游戏路径：destroyBgFx 之后 startRun 的 showScreen('game') 会覆盖显示 game，无残留。
-// v3.76 点开始游戏过渡：destroyBgFx(fadeDur>0) → 背景粒子散开 + 渐白变淡 fadeDur 秒后才真正销毁，
-// 与进入游戏后的睁眼动画（drawWakeOverlay 灰雾模糊）衔接成"背景散开 → 睁眼显现"连贯过渡。
-let _bgFxFade = null;
-export function destroyBgFx(fadeDur) {
-    if (_bgFxFade) { _bgFxFade.t0 = performance.now(); _bgFxFade.dur = Math.max(0.1, fadeDur || 0); return; }
-    if (fadeDur > 0 && _bgFxEl && _bgFxEl.isConnected) {
-        _bgFxFade = { t0: performance.now(), dur: fadeDur };
-        return;
-    }
-    destroyBgFxNow();
-}
-// 真正移除背景层（渐出结束 / 无渐出直接调用）
-// v3.78 守卫（全面加固）：只要满足以下任一条件，就【不】恢复被隐藏的底层 screen：
-//   ① #game-screen 已显示（进入游戏流程）；
-//   ② #wsl-loading 加载层存在（加载动画进行中，底层恢复无意义且会闪出创意工坊）；
-// 否则（正常取消返回弹窗场景）恢复被 bg-fx 隐藏的 screen（如创意工坊）。
-export function destroyBgFxNow() {
-    _bgFxFade = null;
-    if (_bgFxRaf) { cancelAnimationFrame(_bgFxRaf); _bgFxRaf = 0; }
-    if (_bgFxEl && _bgFxEl.parentNode) _bgFxEl.parentNode.removeChild(_bgFxEl);
-    _bgFxEl = null; _bgFxCv = null;
-    if (_bgFxPrevScreen) {
-        const gameEl = document.getElementById('game-screen');
-        const inGame = gameEl && !gameEl.classList.contains('hidden');
-        const loadingEl = document.getElementById('wsl-loading');
-        const inLoading = loadingEl && loadingEl.isConnected;
-        if (!inGame && !inLoading) {
-            const back = document.getElementById(_bgFxPrevScreen);
-            if (back) back.classList.remove('hidden');
-        }
-        _bgFxPrevScreen = null;
-    }
-    // 注意：保留 _bgFxParts 避免下次重建时再预热
-}
 
 // ================= v3.62 界面背景粒子（开始游戏/创建世界/捏脸等弹窗统一风格） =================
 // 抽象色块缓慢飘动/融合/变形：canvas 全屏层 + RAF，挂在弹窗容器内（背景层）。
@@ -6256,154 +5744,7 @@ export function destroyBgFxNow() {
 // 返回 cleanup；弹窗关闭时（元素脱离 DOM）自动停止并清理。
 // v3.66 此函数已被 ensureBgFx 全局背景层替代（保留是为了向后兼容 + 散弹窗 fallback）：
 // 当 ensureBgFx 尚未建立时（如旧的 showCreateCharacter 走单路径），仍可调此函数在弹窗内挂粒子。
-export function attachParticleBg(host, opts) {
-    if (typeof document === 'undefined' || !host) return () => {};
-    // v3.66 优先用全局 bg-fx（连续背景），仅当 bg-fx 不存在时挂本地粒子
-    if (typeof ensureBgFx === 'function') {
-        try {
-            const bg = ensureBgFx();
-            bg.appendChild(host);
-            // bg 容器已经 fixed inset:0 全屏覆盖 → host 用 absolute inset:0 全屏
-            host.style.position = 'absolute';
-            host.style.inset = '0';
-            // v3.80 关键：bg-fx 外层是 pointer-events:none（不拦截点击），会继承给子元素 →
-            // 挂载的弹窗必须显式恢复 pointer-events:auto，否则弹窗按钮全部点不了。
-            host.style.pointerEvents = 'auto';
-            return () => { /* 关闭时仅移除 host；bg-fx 不动 */ };
-        } catch (e) { /* 走 fallback */ }
-    }
-    const cv = document.createElement('canvas');
-    cv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;';
-    host.insertBefore(cv, host.firstChild);
-    const hostPos = getComputedStyle(host).position;
-    if (hostPos === 'static' || hostPos === '') host.style.position = 'relative';
-    for (const ch of host.children) {
-        if (ch !== cv) { ch.style.position = 'relative'; ch.style.zIndex = '2'; }
-    }
-    const ctx = cv.getContext('2d');
-    const dpr = Math.max(1, (window.devicePixelRatio || 1));
-    let W = 0, H = 0, raf = 0;
-    const resize = () => {
-        W = host.clientWidth || window.innerWidth;
-        H = host.clientHeight || window.innerHeight;
-        cv.width = Math.max(1, Math.round(W * dpr));
-        cv.height = Math.max(1, Math.round(H * dpr));
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-    resize();
-    // 色板：荒原主题（v3.73 + 6 色辅助色让色彩更丰富）
-    // v3.74 方案 I「末世废土」fallback：与 bg-fx 视觉一致（dust/ash/ember + 废墟剪影）
-    const parts = { dust: [], ash: [], ember: [] };
-    for (let i = 0; i < 120; i++) {
-        parts.dust.push({
-            x: Math.random(), y: Math.random(),
-            r: 0.5 + Math.random() * 2.5,
-            vx: -(Math.random() * 0.001 + 0.0005),
-            vy: (Math.random() - 0.5) * 0.0005,
-            phase: Math.random() * Math.PI * 2,
-            speed: 0.3 + Math.random() * 1.5,
-            color: Math.random() < 0.5 ? '#d8a86a' : '#8a7a5a',
-        });
-    }
-    for (let i = 0; i < 30; i++) {
-        parts.ash.push({
-            x: Math.random(), y: Math.random(),
-            r: 0.8 + Math.random() * 2,
-            vy: 0.0003 + Math.random() * 0.0008,
-            vx: (Math.random() - 0.5) * 0.0008,
-            color: '#3a3a3a',
-        });
-    }
-    for (let i = 0; i < 10; i++) {
-        parts.ember.push({
-            x: Math.random(), y: 0.3 + Math.random() * 0.6,
-            r: 1 + Math.random() * 2.5,
-            phase: Math.random() * Math.PI * 2,
-            speed: 0.5 + Math.random() * 2,
-        });
-    }
-    const ruins = [0.05, 0.12, 0.08, 0.18, 0.10, 0.15, 0.06, 0.13, 0.09, 0.16, 0.07, 0.11, 0.05, 0.12];
-    const start = performance.now();
-    let dead = false;
-    const cleanup = () => {
-        if (dead) return;
-        dead = true;
-        if (raf) cancelAnimationFrame(raf);
-        raf = 0;
-        window.removeEventListener('resize', resize);
-        if (cv.parentNode) cv.parentNode.removeChild(cv);
-    };
-    const tick = (now) => {
-        if (!cv.isConnected) { cleanup(); return; }  // 弹窗已关闭，自动停止并清理
-        const t = (now - start) / 1000;
-        // 1) 暮色天空渐变
-        const grad = ctx.createLinearGradient(0, 0, W, H * 0.8);
-        grad.addColorStop(0, 'rgba(90,50,20,0.90)');
-        grad.addColorStop(0.5, 'rgba(70,40,18,0.94)');
-        grad.addColorStop(1, 'rgba(40,26,14,0.97)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, W, H);
-        // 2) 暮色阳光带
-        ctx.globalCompositeOperation = 'lighter';
-        const sun = ctx.createRadialGradient(W * 0.7, H * 0.3, 0, W * 0.7, H * 0.3, W * 0.35);
-        sun.addColorStop(0, 'rgba(255,180,80,0.35)');
-        sun.addColorStop(1, 'rgba(255,180,80,0)');
-        ctx.fillStyle = sun;
-        ctx.fillRect(0, 0, W, H);
-        // 3) 尘埃
-        for (const d of parts.dust) {
-            d.x += d.vx; d.y += d.vy;
-            if (d.x < -0.1) d.x = 1.1;
-            if (d.y < -0.1) d.y = 1.1; if (d.y > 1.1) d.y = -0.1;
-            ctx.globalAlpha = 0.1 + 0.3 * Math.abs(Math.sin(t * d.speed + d.phase));
-            ctx.fillStyle = d.color;
-            ctx.beginPath();
-            ctx.arc(d.x * W, d.y * H, d.r, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        // 4) 灰烬
-        for (const a of parts.ash) {
-            a.y += a.vy; a.x += a.vx;
-            if (a.y > 1.1) { a.y = -0.1; a.x = Math.random(); }
-            ctx.globalAlpha = 0.15;
-            ctx.fillStyle = a.color;
-            ctx.beginPath();
-            ctx.arc(a.x * W, a.y * H, a.r, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        // 5) 余烬红光
-        for (const e of parts.ember) {
-            ctx.globalAlpha = 0.2 + 0.5 * Math.abs(Math.sin(t * e.speed + e.phase));
-            ctx.fillStyle = '#ff5544';
-            ctx.beginPath();
-            ctx.arc(e.x * W, e.y * H, e.r, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1;
-        // 6) 废墟剪影
-        const mh = H * 0.30;
-        ctx.fillStyle = 'rgba(20,14,10,0.9)';
-        ctx.beginPath();
-        ctx.moveTo(0, H);
-        const seg = W / Math.max(1, (ruins.length - 1) * 2);
-        for (let x = 0; x <= W; x += seg) {
-            const idx = Math.floor(x / seg) % ruins.length;
-            ctx.lineTo(x, H - mh * (ruins[idx] || 0.1));
-        }
-        ctx.lineTo(W, H);
-        ctx.closePath();
-        ctx.fill();
-        // 7) 地面尘土
-        ctx.fillStyle = 'rgba(60,40,20,0.6)';
-        ctx.fillRect(0, H - 10, W, 10);
-        raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    window.addEventListener('resize', resize);
-    return cleanup;
-}
-// v3.66 blobRoundRectPath 已移到 attachParticleBg 上方（ensureBgFx 共享此函数）
+// v4.26 attachParticleBg 已拆到 wbgfx.js（含本地粒子 fallback）
 
 // ================= v3.67 反馈 toast 动画（从底部向上淡入 → 停留 → 慢慢向上淡出） =================
 // ================= v3.97 反馈弹窗串行队列（左贴边 + 同步跟上） =================
@@ -6415,100 +5756,4 @@ export function attachParticleBg(host, opts) {
 //      顶部补上来的那一条立即开始它自己的停留→淡出 → 动画衔接更自然不生硬。
 //   ③ 频繁点击防抖：相同 text+color 已在队列中（含正在淡出）→ 忽略本次调用。
 //   ④ 上限 8 条：超出拒绝 + 强制显示"请勿频繁点击"。
-const _toastMax = 8;
-const _toastGap = 12;          // 条目间距 px
-const _toastTop = 72;           // 顶部起始 Y px
-const _toastLife = 1600;        // 停留 ms
-const _toastFadeOut = 1200;     // 向上淡出动画 ms
-const _toastSlideIn = 550;      // 滑入动画 ms
-let _toastList = [];            // [{ text, color, el, height, removed }]
-let _toastRunning = false;      // 串行闸门：顶部条目的 停留→淡出 流程是否进行中
-function _toastKey(t, c) { return (t || '') + '|' + (c || '#39d98a'); }
-function _toastMeasure(el) {
-    const rect = el.getBoundingClientRect();
-    return Math.max(40, Math.ceil(rect.height || 50));
-}
-function _toastReorder(animate) {
-    // 按队列顺序从上到下堆叠（top = _toastTop + index*(height+gap)）。
-    // animate=true 时平滑过渡；false（首帧）时瞬移到目标位置。
-    let idx = 0;
-    for (const t of _toastList) {
-        if (t.removed) continue;
-        const top = _toastTop + idx * (t.height + _toastGap);
-        if (animate) {
-            t.el.style.transition = 'top 0.55s cubic-bezier(0.25,0.85,0.3,1), transform 0.55s cubic-bezier(0.25,0.85,0.3,1), opacity 0.55s ease';
-        } else {
-            t.el.style.transition = 'none';
-        }
-        t.el.style.top = top + 'px';
-        idx++;
-    }
-}
-function _toastMaybeRun() {
-    // 串行闸门：没有正在进行的流程，且队列非空 → 启动顶部第一条的"停留→淡出"
-    if (_toastRunning) return;
-    const first = _toastList.find(t => !t.removed);
-    if (!first) return;
-    _toastRunning = true;
-    // 停留（滑入已由 spawn 完成后延迟触发，此处确保已滑入）
-    setTimeout(() => {
-        if (first.removed) { _toastRunning = false; _toastMaybeRun(); return; }
-        // 原地向上淡出：保持 translateX(0)（左贴边、水平位置不变），只轻微上浮 + opacity 淡出
-        const el = first.el;
-        el.style.transition = 'transform 1.2s ease, opacity 1.2s ease, top 0.55s ease';
-        el.style.transform = 'translateX(0) translateY(-18px)';
-        el.style.opacity = '0';
-        // v3.97 关键：第一条开始淡出时，【立即】让后续条目缓慢上移补位（不是等淡出结束才补），
-        // 顶部补上来的那一条立即开始它自己的停留→淡出 → 动画衔接更自然不生硬。
-        _toastReorder(true);
-        setTimeout(() => {
-            // 完全淡出 → 移除
-            if (!first.removed) {
-                first.removed = true;
-                if (el.parentNode) el.parentNode.removeChild(el);
-            }
-            _toastList = _toastList.filter(x => x !== first);
-            _toastReorder(true);   // 二次补位（淡出已完成的条目已移除）
-            _toastRunning = false;
-            _toastMaybeRun();      // 下一条立即开始
-        }, _toastFadeOut);
-    }, _toastLife);
-}
-function _toastSpawn(text, color) {
-    if (typeof document === 'undefined') return;
-    const c = color || '#39d98a';
-    const el = document.createElement('div');
-    // v3.98 弹窗停在【屏幕右侧 1/4 处】（以"世界创建成功"为标准）：left:75% 使弹窗左边缘
-    // 位于视窗 75% 处（右侧 1/4 区域），从右外滑入 translateX(100%)→0 停在此处。
-    el.style.cssText = 'position:fixed;top:' + _toastTop + 'px;left:75%;z-index:9999;background:rgba(10,18,14,0.92);border:1px solid ' + c + ';color:' + c + ';padding:12px 28px;border-radius:8px;font-family:"Microsoft YaHei",monospace;font-size:15px;letter-spacing:2px;box-shadow:0 0 24px rgba(0,0,0,0.5);pointer-events:none;text-align:left;white-space:nowrap;opacity:0;transform:translateX(100%) translateY(0);transition:transform 0.55s cubic-bezier(0.25,0.85,0.3,1),opacity 0.55s ease,top 0.55s cubic-bezier(0.25,0.85,0.3,1);max-width:min(540px,20vw);';
-    el.textContent = text;
-    document.body.appendChild(el);
-    const height = _toastMeasure(el);
-    const item = { text, color: c, el, height, removed: false };
-    _toastList.push(item);
-    _toastReorder(false);
-    // 滑入：translateX 100% → 0（从右外滑入到右 1/4 处，保持水平位置）
-    requestAnimationFrame(() => {
-        if (item.removed) return;
-        el.style.opacity = '1';
-        el.style.transform = 'translateX(0) translateY(0)';
-    });
-    // 等滑入动画完成后，若队列空闲则启动顶部条目的停留流程
-    setTimeout(() => _toastMaybeRun(), _toastSlideIn + 60);
-}
-export function showToast(text, color) {
-    if (typeof document === 'undefined') return;
-    const c = color || '#39d98a';
-    const key = _toastKey(text, c);
-    // 频繁点击防抖：相同 text+color 已在队列中（未淡出 或 正在淡出）→ 忽略本次调用
-    const dup = _toastList.find(t => !t.removed && _toastKey(t.text, t.color) === key);
-    if (dup) return;
-    // 超出上限 8 条：拒绝 + 强制显示"请勿频繁点击"
-    if (_toastList.filter(t => !t.removed).length >= _toastMax) {
-        const warnKey = _toastKey('请勿频繁点击', '#FFB347');
-        const hasWarn = _toastList.find(t => !t.removed && _toastKey(t.text, t.color) === warnKey);
-        if (!hasWarn) _toastSpawn('请勿频繁点击', '#FFB347');
-        return;
-    }
-    _toastSpawn(text, c);
-}
+// v4.26 Toast 通知系统已拆到 wtoast.js（showToast）

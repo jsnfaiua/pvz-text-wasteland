@@ -19,7 +19,7 @@ import * as WW from './wwordcraft-rules.js';
 import * as WG from './wgrade.js';   // 2026-08-11 v2.98 品级系统：僵尸死亡掉落灵石
 import { infectionLevelFromRoll } from './winfection.js';
 import { interiorZombieCount } from './windoor.js';
-import { killNpc, maybeWound, maybeInfectNpc, inAnyCamp, npcApplyDownedHit } from './wnpc.js';
+import { killNpc, maybeWound, maybeInfectNpc, inAnyCamp, npcApplyDownedHit, npcDowned } from './wnpc.js';
 
 const PATH_MAX_NODES = 12000;
 const Z_GUEST_CHASE_RANGE = 12;   // 联机：僵尸转向追逐远端队友的半径（格，≈半屏内）
@@ -686,6 +686,13 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
                     if (Math.hypot(n.x - z.x, n.y - z.y) < B.Z_BITE_RANGE) {
                         z.faceDir = Math.atan2(n.y - z.y, n.x - z.x);
                         npcApplyDownedHit(sv, n, (dmgTo / (contact.biteCd || 1)) * 0.2);
+                        // 2026-08-18 v4.33 用户反馈"僵尸攻击所有生物要有啃食音效，包括倒地的"——
+                        // 倒地 NPC 被啃咬也播放啃食音效（按 Z_BITE_INTERVAL 0.3s 节拍，与玩家/植物一致）
+                        z._biteSfxT = (z._biteSfxT || 0) - 0.2;
+                        if (z._biteSfxT <= 0) {
+                            z._biteSfxT = B.Z_BITE_INTERVAL;
+                            AudioSystem.playZombieEating();
+                        }
                     }
                     continue;
                 }
@@ -708,16 +715,33 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
                     z.faceDir = Math.atan2(n.y - z.y, n.x - z.x);
                     // 持续掉血：0.2s 扫描间隔近似累计（DPS 与原咬击节奏平均一致）
                     const npcDps = dmgTo / (contact.biteCd || 1);
-                    n.hp -= npcDps * 0.2;
+                    // 2026-08-17 v4.23 啃咬路径：① hp 下限 0（防血量变负，用户反馈"血量还会成负的"）；
+                    // ② 已倒地队员扣救援时间（不扣血，每 1 点伤害扣 10 秒救援时间，与主控 survival.js:3708 / 恶意NPC wnpc.js:837 一致）；
+                    // ③ 记录"被什么击杀"死因（n._lastBiter = z），全灭弹窗显示"被XXX击杀"。
+                    if (n.downed) {
+                        // 倒地只扣救援时间，不扣血（与主控一致）
+                        if (n.party) {
+                            if (n._penaltySec == null) n._penaltySec = 0;
+                            n._penaltySec += (npcDps * 0.2) * B.DOWNED_HIT_PENALTY_SEC;
+                        }
+                    } else {
+                        n.hp = Math.max(0, n.hp - npcDps * 0.2);
+                    }
+                    n._lastBiter = z;   // v4.23 死因（僵尸啃咬致死"被<僵尸名>击杀"）
                     z._biteSfxT = (z._biteSfxT || 0) - 0.2;
                     if (z._biteSfxT <= 0) {
                         z._biteSfxT = B.Z_BITE_INTERVAL; n.hurtT = 0.3; maybeWound(sv, n);
                         maybeInfectNpc(sv, n);   // 2026-08-10 与玩家一致：被咬累积感染值（界面可查看/减除）
                         // NPC 被咬专属反馈：'咬' 特效（与玩家被咬 '击'、植物被啃 '啃' 区分）
                         sv.effects.push({ kind: 'hit', x: n.x, y: n.y, life: 0.2, maxLife: 0.2, label: '咬' });
+                        // 2026-08-18 v4.33 用户反馈"僵尸攻击所有生物要有啃食音效"——NPC 被咬（友善/中立/恶意）也播放啃食音效
+                        AudioSystem.playZombieEating();
                     }
-                    if (n.hp <= 0) killNpc(sv, n, '被僵尸啃咬致死');
-                    break;
+                    if (n.hp <= 0) {
+                        // v4.20 队员血归零 → 倒地（20分钟救助），非队员直接死亡
+                        npcDowned(sv, n, '被僵尸啃咬濒死');
+                        break;
+                    }
                 }
             }
         }
@@ -779,15 +803,18 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         // 感应范围与玩家一致（Z_CHASE_RANGE 警戒区），目标为最近的存活 party NPC 成员，
         // 比玩家更近时僵尸转向 NPC 直线追击（寻路/感应与追玩家同一套判定）。
         // 2026-08-12 v2.99 用户定稿：尸变丧尸攻击逻辑与正常僵尸一样，故参与 NPC 追击（不再跳过）
+        // 2026-08-17 v4.24 用户定稿（推翻 v4.23 的"倒地优先"）："倒地的生物和其余生物优先级是一样的，
+        // 敌对生物只会看生物的距离"——倒地成员与站立成员同优先级，谁近追谁（不再单独 bdDowned 优先候选）。
         let npcChase = null;
         if (!z.horde && !seekingPlant && sv.npcs) {
             const half = B.Z_CHASE_RANGE * TS / 2;
             let bd = pdist * 0.9, bn = null;
             for (const n of sv.npcs) {
-                if (!n.alive || !n.party || n.downed) continue;   // 2026-08-10 濒死角色不作为僵尸追逐目标
+                if (!n.alive || !n.party) continue;
                 if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控（玩家）已在 pdist 覆盖
                 if (Math.abs(n.x - z.x) >= half || Math.abs(n.y - z.y) >= half) continue;   // 感应范围同玩家
                 const nd = Math.hypot(n.x - z.x, n.y - z.y);
+                // v4.24 倒地成员参与距离比较（谁近追谁），与站立成员同优先级
                 if (nd < bd) { bd = nd; bn = n; }
             }
             if (bn) {
@@ -913,9 +940,14 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
         } catch (e) { /* 灵石掉落失败不阻塞 */ }
         // 2026-08-11 v2.98 尸变丧尸被击败 → 掉「XX（尸变）」尸体（物品 = 丧尸背包，守恒；搜索完彻底消失）
         // 内联自 survival.reviveZombieToCorpse（避免 wzombie ↔ survival 循环依赖）
+        // v4.37 修复"室内尸变丧尸被击败未生成尸变尸体"（用户反馈）：
+        // 原实现固定 `inInterior: false` + 坐标 = 死亡点（室内坐标）——坐标在室内却 inInterior=false，
+        // 室内驱动过滤 (interiorFloor===it.floor) 不认 → 尸体"看不见"。修复：检测当前场景（sv.interior），
+        // 室内击杀时尸体也放入 inInterior，并记录对应房间 key/floor → 玩家可搜。
         if (z._reviveFromCorpse) {
             const _revContents = (z.inv || []).filter(s => s && s.n > 0).map(s => ({ ...s }));
             const _revName = z._reviveCorpseName || (z.playerName || '幸存者') + B.CORPSE_REVIVE_TAG;
+            const _inInt = !!(sv.interior);
             if (!Array.isArray(sv.npcs)) sv.npcs = [];
             sv.npcs.push({
                 id: 'rev' + ((sv._revSeq = (sv._revSeq || 0) + 1)),
@@ -925,7 +957,10 @@ export function updateZombies(sv, dt, canStand, zCanStand, damageBuilding, damag
                 _corpseAtReal: sv.now != null ? sv.now : 0,
                 _corpseContents: _revContents, _corpseSearched: false,
                 _revivedCorpse: true,   // 尸变尸体：不二次尸变，搜索完彻底消失
-                inInterior: false, interiorKey: null, interiorFloor: null,
+                // v4.37 跟当前 sv.interior 同房间/楼层（不再固定 false → 室内击杀尸体可被看到/搜）
+                inInterior: _inInt,
+                interiorKey: _inInt && sv.interior.key ? sv.interior.key : null,
+                interiorFloor: _inInt && sv.interior.floor != null ? sv.interior.floor : null,
                 atkCd: 0, hurtT: 0, idleT: 0, workT: 0, campTask: null, _nextNeed: 2,
             });
             MSG.pushMsg(sv, `${_revName} 被击败，留下尸变的尸体（可搜索）……`, '#9fd6ff');

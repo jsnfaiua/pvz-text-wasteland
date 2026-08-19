@@ -89,6 +89,20 @@ export function addPlayerInfection(current, amount) {
     return Math.max(0, Math.min(PLAYER_INFECTION.max, current + amount));
 }
 
+// v4.28 感染随感染值升高而加速（用户需求："侵蚀效果随随时间加速而加速侵蚀"）：
+// 感染值越高，自动侵蚀速率越快——低感染时缓慢（有缓冲期），高感染时急速恶化（不治必死的压迫感）。
+// 基础速率由调用方传入（wbalance.INFECTION_AUTO_GROW_PER_SEC），加速系数按感染值：
+//   growthRate = 基础速率 × (1 + 感染值/50)
+//   0%  → ×1.0（0.4/s，约 4 分钟到满）
+//   25% → ×1.5（0.6/s）
+//   50% → ×2.0（0.8/s）
+//   75% → ×2.5（1.0/s）
+//   90% → ×2.8（1.12/s，最后 10% 极快）
+export function infectionAutoGrowAmount(basePerSec, currentInfection, dt) {
+    const rate = basePerSec * (1 + Math.max(0, Math.min(100, currentInfection || 0)) / 50);
+    return rate * dt;
+}
+
 export function rollZombieInfection(random = Math.random) {
     if (random() > PLAYER_INFECTION.zombieHitChance) return 0;
     const [lo, hi] = PLAYER_INFECTION.zombieHitAmount;

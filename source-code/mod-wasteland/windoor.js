@@ -16,6 +16,8 @@ import * as WA from './waction.js';
 import { rollQualityLoot, rollLootContents, zombieBagDropChance } from './wzombie.js';
 import { infectionLevelFromRoll } from './winfection.js';
 import { buildingTypeAt, BUILDING_TYPES, zombieStrengthAt, districtAt } from './wdistrict.js';
+import * as WNPC from './wnpc.js';   // v4.17 修复室内外切换：enterInterior/exitInterior 同步主控 inInterior
+import * as WCorpse from './wcorpse.js';   // v4.39 室内击杀尸变丧尸 → 生成同房间"XX（尸变）"尸体（按当前 sv.interior 落地）
 
 // 僵尸运行时 id 兜底（与室外 spawnZombie 同一自增序列 sv._zIdSeq，保证出门后 id 全局唯一）
 function ensureZId(sv, z) {
@@ -317,6 +319,11 @@ export function enterInterior(sv, doorKey, silent) {
     const districtKey = districtAt(sv.world.seed, cx, cy);
     const gen = generateInterior(sv.world.seed, doorKey, 1, meas.iw, meas.ih, { ...meas, districtKey });
     const tiles = (saved && Array.isArray(saved.tiles) && saved.tiles.length === gen.tiles.length) ? saved.tiles.slice() : gen.tiles;
+    // 2026-08-17 修复"进室内出不来"：进入室内时强制在出口位置设置 EXIT 瓦片
+    // 此前 enterInterior 未像 changeFloor 那样强制设置 EXIT，导致旧存档或异常情况下
+    // 出口位置可能是 WALL/FLOOR，玩家永远无法触发退出检测
+    const exitIdx = gen.exitY * gen.w + gen.exitX;
+    tiles[exitIdx] = IT.EXIT;
     const cleared = !!(saved && (saved === 1 || saved.cleared));
     const bType = buildingTypeAt(sv.world.seed, cx, cy);
     const bName = (bType && BUILDING_TYPES[bType]) ? BUILDING_TYPES[bType].name : '建筑';
@@ -351,31 +358,122 @@ export function enterInterior(sv, doorKey, silent) {
     // 2026-08-09 室内外 NPC 统一：室外跟随队员随玩家进室内——
     // party 且 state==='follow' 的 NPC 标记 inInterior（室内渲染/跟随），坐标映射到室内出生点旁。
     enterFollowers(sv, sv.interior);
+    // 2026-08-17 v4.17 修复"室外能到室内，但室内到不了室外"：
+    // 根因：主控 NPC（controllerId 默认 'player'）从未被标记 inInterior=true。
+    // 每帧 update 开头的 syncControllerInterior 拿 wantIn=cur.inInterior（undefined/false）vs haveIn=!!sv.interior（true），
+    // 立即触发 !wantIn && haveIn → WD.exitInterior(sv, true) → 玩家被强行拉回室外（甚至从未真正进入）。
+    // enterFollowers 只处理 party && state==='follow' 的队员，主控 isPlayer: true 默认无 party/state 字段。
+    // 修复：enterInterior / exitInterior 必须显式同步主控的 inInterior / interiorKey / interiorFloor。
+    const _ctrl = WNPC.controlledNpc(sv);
+    if (_ctrl) {
+        _ctrl.inInterior = true;
+        _ctrl.interiorKey = doorKey;
+        _ctrl.interiorFloor = 1;
+    }
     // 联机：室内改为各自独立进出（host/guest 各按自己的 F 键进出；同 key 确定性生成室内一致）。
     // 不再广播 interior 事件——否则"一个人进房间，另一个人被强行拉进去"。
     MSG.pushMsg(sv, cleared ? `进入${bName}（已清剿）` : `进入${bName}…`, '#D29A5B');
 }
 
-// 室外跟随队员进屋：把 sv.npcs 中 party && follow 的 NPC 带入室内（inInterior 标记）
+// 室外跟随队员进屋：v4.37 主控先进室，队员【陆续跟随】——主控先进 + 0.5s 延迟后队员
+// 错峰进入（每个 0.4s 间隔），从室外门口坐标（it.doorX/it.doorY）寻路至室内出生点。
+// 此前实现瞬移所有队员到出生点 → "我进去之后一瞬间，他们提前在里面准备好"，
+// 失去了"陆续到达"的真实感（修复按用户定稿）。
 function enterFollowers(sv, it) {
     if (!sv.npcs || !it) return;
     const cx = (it.spawnX + 0.5) * TS, cy = (it.spawnY + 0.5) * TS;
     const istand = (x, y) => interiorCanStand(sv, x, y);
-    let k = 0;
+    // v4.37 收集要跟随的队员（id 列表 + 延迟队列），主控单独立即摆放
+    const _queues = [];
     for (const n of sv.npcs) {
-        if (!n.alive || n.riding) continue;
+        if (!n || !n.alive || n.riding) continue;
         if (!(n.party && n.state === 'follow')) continue;
-        n.inInterior = true;
-        n.interiorKey = it.key;
-        n.interiorFloor = 1;
-        // 分散在玩家出生点旁（找可走格，最多带 4 名队员）
-        let px = cx, py = cy + 0.7 * TS;
-        const offs = [[0, 1.2], [0.8, 0.9], [-0.8, 0.9], [0, 1.8]];
-        if (k < offs.length) { px = cx + offs[k][0] * TS; py = cy + offs[k][1] * TS; }
-        if (istand(px, py)) { n.x = px; n.y = py; }
-        else if (istand(cx, cy)) { n.x = cx; n.y = cy; }
-        k++;
-        if (k >= 4) break;
+        if (sv.controllerId && n.id === sv.controllerId) continue;
+        // v4.52 进门时排除倒地/尸体成员：倒地和尸体的队员不应跟着主控穿入房间——
+        // 它们留在原来的位置（可能是室外/另一房间），主控进门后走过来交互（救援/搜索）。
+        if (n.downed || n._corpse) continue;
+        n._exitQueued = null;   // v4.41 进门时清出门等待标记（防卡门口不动）
+        _queues.push(n);
+    }
+    // v4.37 队长（最近主控）排第一优先入室，按与主控距离从近到远排队
+    const _ctrl = WNPC.controlledNpc(sv);
+    if (_ctrl) _queues.sort((a, b) => {
+        const da = Math.hypot((a.x || 0) - _ctrl.x, (a.y || 0) - _ctrl.y);
+        const db = Math.hypot((b.x || 0) - _ctrl.x, (b.y || 0) - _ctrl.y);
+        return da - db;
+    });
+    // 每人错峰 0.5/0.9/1.3s ... 到达，最多 6 名（防卡墙）
+    let idx = 0;
+    const _doorX = it.doorX != null ? it.doorX : sv.px;
+    const _doorY = it.doorY != null ? it.doorY : sv.py;
+    for (const n of _queues) {
+        if (idx >= 6) break;
+        // 队列状态：队员仍留在室外门口，但标记进入调度（防止 ai 把他们拉去别的任务）
+        n._enteringInterior = true;
+        n._enterQDelay = 0.5 + idx * 0.4;
+        // 在室外路径上标记 target（出生点），让他们开始往门口走再传送到室内
+        if (idx === 0) {
+            // 第一个跟随队员 0.5s 后立即穿入
+            n._enterInterior = { key: it.key, floor: 1, cx, cy };
+        } else {
+            // 后续队员按延迟穿入（call 时机由 enterFollowersTick 触发）
+            n._enterInteriorQueued = { key: it.key, floor: 1, cx, cy, dueAt: (sv.now || 0) + n._enterQDelay };
+            n._enterQueueNote = 'entering interior soon';
+            // 临时让队员立刻寻路到门口附近的临时出口点（视觉上"走向门口"）
+            n._followTo = { x: _doorX + (Math.random() - 0.5) * 1.2 * TS, y: _doorY + 0.5 * TS + Math.random() * 0.6 * TS };
+        }
+        idx++;
+    }
+    // 启用渐进每帧驱动（updateInteriorMode 头部调用）
+    enterFollowersTick(sv, it, cx, cy);
+}
+
+// v4.37 每帧推进队员【陆续】穿入：
+// - _enterInterior 立即穿入（0.5s 后由第一个队员触发）；
+// - _enterInteriorQueued 到 dueAt 时间穿入；
+// - 已穿入队员在室内摆放到出生点旁（不再瞬移，用 searchSeats 给 N+1 个可走格中找空位）。
+export function enterFollowersTick(sv, it, cx, cy) {
+    if (!sv || !sv.npcs) return;
+    const now = sv.now || 0;
+    const istand = (x, y) => interiorCanStand(sv, x, y);
+    const used = new Set();   // 已占据的格（避免重叠）
+    const seat = (nx, ny) => {
+        for (let r = 0; r < 3; r++) for (let cx2 = -r; cx2 <= r; cx2++) for (let cy2 = -r; cy2 <= r; cy2++) {
+            if (Math.max(Math.abs(cx2), Math.abs(cy2)) !== r) continue;
+            const tx = (nx + cx2 * 1.4 * TS), ty = (ny + cy2 * 1.0 * TS);
+            if (!istand(tx, ty)) continue;
+            const key = Math.floor(tx / (TS / 2)) + ',' + Math.floor(ty / (TS / 2));
+            if (used.has(key)) continue;
+            used.add(key);
+            return { x: tx, y: ty };
+        }
+        return { x: nx, y: ny };
+    };
+    for (const n of sv.npcs) {
+        if (!n || !n.alive) continue;
+        if (n._enterInterior) {
+            n.inInterior = true;
+            n.interiorKey = n._enterInterior.key;
+            n.interiorFloor = n._enterInterior.floor;
+            const s = seat(n._enterInterior.cx, n._enterInterior.cy);
+            n.x = s.x; n.y = s.y;
+            n._enterInterior = null;
+            n._enteringInterior = false;
+            n._followTo = null;
+            n._path = null;
+            n._probeDir = null;
+        } else if (n._enterInteriorQueued && now >= n._enterInteriorQueued.dueAt) {
+            n.inInterior = true;
+            n.interiorKey = n._enterInteriorQueued.key;
+            n.interiorFloor = n._enterInteriorQueued.floor;
+            const s = seat(n._enterInteriorQueued.cx, n._enterInteriorQueued.cy);
+            n.x = s.x; n.y = s.y;
+            n._enterInteriorQueued = null;
+            n._enteringInterior = false;
+            n._followTo = null;
+            n._path = null;
+            n._probeDir = null;
+        }
     }
 }
 
@@ -410,8 +508,74 @@ export function exitInterior(sv, silent) {
     sv.px = it.doorX;
     sv.py = it.doorY;
     sv.interior = null;
+    // 2026-08-17 v4.17 修复"室内到不了室外"：主控的 inInterior 标记必须随 sv.interior=null 同步清掉，
+    // 否则下一帧 syncControllerInterior 看到 wantIn=true && haveIn=false 又会调 enterInterior 把玩家拉回室内。
+    // （主控 isPlayer=true 在 enterInterior 中被显式设 inInterior=true，对称地 exitInterior 必须清掉）
+    const _ctrl = WNPC.controlledNpc(sv);
+    if (_ctrl) {
+        _ctrl.inInterior = false;
+        _ctrl.interiorKey = null;
+        _ctrl.interiorFloor = null;
+    }
+    // v4.39 队伍成员跟着主控出门（用户反馈"出了房间队友没有跟着我出来"）：
+    // 同房间的活 party 队员 inInterior 设为 false，放到门口世界坐标 sv.px/sv.py 偏移处。
+    // 与 changeFloor（v4.35）"同房间同层队员跟着"语义一致——出房间 = 跨场景的"跟随"。
+    // v4.41 修复"出房间一次性瞬移卡进建筑"（用户反馈）：① 不再固定 +0.6TS 偏移（可能卡墙），
+    // 改为在门口格 3×3 环形找【最近可走格】；② 出门错峰——队员站门口 0.25/0.6/0.95s… 后逐个
+    // 恢复跟随（exitFollowersTick 每帧到点唤醒），与"进屋陆续穿入"（v4.37）对称，不再是"一瞬间全出来"。
+    if (sv.npcs) {
+        const used = new Set();
+        const seat = (nx, ny) => {
+            for (let r = 0; r <= 3; r++) {
+                for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                    const gx = nx + dx, gy = ny + dy;
+                    if (!isWalk(getTile(sv, gx, gy))) continue;
+                    const gkey = gx + ',' + gy;
+                    if (used.has(gkey)) continue;
+                    used.add(gkey);
+                    return { x: (gx + 0.5) * TS, y: (gy + 0.5) * TS };
+                }
+            }
+            return { x: nx * TS + TS / 2, y: ny * TS + TS / 2 };   // 兜底：门口中心（玩家能站，队友大概率也能站）
+        };
+        const _dgx = Math.floor(sv.px / TS), _dgy = Math.floor(sv.py / TS);
+        let _seq = 0;
+        for (const n of sv.npcs) {
+            if (!n || !n.alive || n.riding) continue;
+            if (!(n.party && n.inInterior)) continue;
+            if (n.interiorKey !== key) continue;
+            if (_ctrl && n.id === _ctrl.id) continue;
+            // v4.52 排除倒地/尸体成员：倒地（downed）和尸体（_corpse）NPC 不应跟随主控切换场景——
+            // 它们留在原地（inInterior 保留+原坐标），后续队友可在该房间交互（救援/搜索）。
+            // 用户反馈"从室内出来时，尸体也跟出来了"——根因是 exitInterior 没过滤非活体。
+            if (n.downed || n._corpse) continue;
+            n.inInterior = false;
+            n.interiorKey = null;
+            n.interiorFloor = null;
+            const s = seat(_dgx, _dgy);
+            n.x = s.x; n.y = s.y;
+            // 出门错峰：第 1 个 0.25s 后走，后续每个 +0.35s（与进屋 enterQDelay 对称）
+            n._exitQueued = { dueAt: (sv.now != null ? sv.now : 0) + 0.25 + _seq * 0.35 };
+            n._path = null;
+            n._probeDir = null;
+            n._lastSlideDir = null;
+            _seq++;
+        }
+    }
     // 联机：退出室内不再广播（各自独立进出）
     MSG.pushMsg(sv, allDead ? '已清剿，回到室外' : '回到室外（室内僵尸仍在）');
+}
+
+// v4.41 出门错峰：队员标记 _exitQueued 期间站在门口等待（AI 由 updateNpcs 跳过），
+// 到 dueAt 时间清除标记恢复跟随——视觉上"从门里陆续走出来"而非一次性瞬移。
+export function exitFollowersTick(sv) {
+    if (!sv || !sv.npcs) return;
+    const now = sv.now || 0;
+    for (const n of sv.npcs) {
+        if (!n || !n.alive || !n._exitQueued) continue;
+        if (now >= n._exitQueued.dueAt) n._exitQueued = null;
+    }
 }
 
 // 僵尸存档序列化（进出门/换层/迁徙共用；不携带迁移临时状态）
@@ -544,6 +708,49 @@ export function updateInterior(sv, dt) {
             const dps = dmgTo / (contact.biteCd || 1);
             WA.resolvePlayerBiteTick(sv, z, dps, dt, istand);
         }
+        // v4.11 室内僵尸也咬 NPC（与室外 wzombie.js 同款咬扫；此前室内只咬主控 → 队友/敌对NPC
+        // 在室内免疫僵尸攻击，室内外玩法不同步）：
+        //   · 已倒地成员：npcApplyDownedHit 扣救援时间（每 1 点伤害 -10 秒，v4.11 已修）；
+        //   · 存活 NPC：持续扣血（hp 下限 0）+ 节拍触发 maybeWound/maybeInfectNpc（感染/侵蚀/属性降）；
+        //   · hp≤0：队员（n.party）走 npcDowned 倒地待救，非队员直接死亡；
+        //   · 只咬"当前房间"的 NPC（inInterior 且 interiorKey 匹配当前房），室外 NPC 坐标不同不能咬。
+        z._npcScanT = (z._npcScanT || 0) - dt;
+        if (sv.npcs && z._npcScanT <= 0) {
+            z._npcScanT = 0.2;
+            for (const n of sv.npcs) {
+                if (!n.alive) continue;
+                if (!n.inInterior || (sv.interior && n.interiorKey && sv.interior.key && n.interiorKey !== sv.interior.key)) continue;
+                // v4.35 只咬当前楼层 NPC：不同楼层共享坐标空间，不隔离会"隔层啃咬"（楼上僵尸咬楼下队员）
+                if ((n.interiorFloor == null ? 1 : n.interiorFloor) !== (it.floor || 1)) continue;
+                if (sv.controllerId && n.id === sv.controllerId) continue;   // 主控走玩家受伤路径
+                if (Math.hypot(n.x - z.x, n.y - z.y) >= B.Z_BITE_RANGE) continue;
+                if (n.downed) {
+                    z.faceDir = Math.atan2(n.y - z.y, n.x - z.x);
+                    WNPC.npcApplyDownedHit(sv, n, (dmgTo / (contact.biteCd || 1)) * 0.2);
+                    continue;
+                }
+                // 车内护甲（与室外一致）：乘车成员不受伤，车壳吃半伤
+                if (n.riding && sv.driving) {
+                    if (sv.driving.hp > 0) sv.driving.hp = Math.max(0, sv.driving.hp - (dmgTo / (contact.biteCd || 1)) * 0.5 * 0.2);
+                    continue;
+                }
+                z.faceDir = Math.atan2(n.y - z.y, n.x - z.x);
+                const npcDps = dmgTo / (contact.biteCd || 1);
+                n.hp = Math.max(0, n.hp - npcDps * 0.2);
+                n._lastBiter = z;   // v4.23 死因（"被<僵尸名>击杀"）
+                z._biteSfxT = (z._biteSfxT || 0) - 0.2;
+                if (z._biteSfxT <= 0) {
+                    z._biteSfxT = B.Z_BITE_INTERVAL; n.hurtT = 0.3;
+                    WNPC.maybeWound(sv, n);
+                    WNPC.maybeInfectNpc(sv, n);   // 被咬累积感染（所有 NPC 生效，v4.11）
+                    sv.effects.push({ kind: 'hit', x: n.x, y: n.y, life: 0.2, maxLife: 0.2, label: '咬' });
+                }
+                if (n.hp <= 0) {
+                    WNPC.npcDowned(sv, n, '被僵尸啃咬濒死');
+                    break;
+                }
+            }
+        }
         // 扑咬（快速型：中距离突进 + 命中控制）
         if (contact.lunge > 0 && z.lungeCd <= 0 && dist < B.Z_LUNGE_TRIGGER_DIST && dist > B.Z_CONTACT_DIST) {
             z.lungeCd = B.Z_LUNGE_CD;
@@ -621,6 +828,12 @@ export function updateInterior(sv, dt) {
         const z = it.zombies[i];
         if (z._migOut) { it.zombies.splice(i, 1); continue; }   // 已下楼 / 已出门
         if (z.hp > 0) continue;
+        // v4.39 用户反馈"室内队员尸变丧尸被击败未生成对应尸体"：原实现室内击杀走 loot 掉落 + 移除 it.zombies，
+        // 漏掉 wzombie.js 处的 `z._reviveFromCorpse` 分支（生成"XX（尸变）"尸体），导致室内的尸变丧尸击杀没产生可搜尸体。
+        // 修复：调用 WCorpse.reviveZombieToCorpse（已按 sv.interior 落地同房间/楼层，v4.37）。
+        if (z._reviveFromCorpse && typeof WCorpse !== 'undefined' && WCorpse.reviveZombieToCorpse) {
+            WCorpse.reviveZombieToCorpse(sv, z);
+        }
         if (Math.random() < zombieBagDropChance(z.type)) {
             const quality = rollQualityLoot(z.type);
             const contents = rollLootContents(quality, z.type);
@@ -685,11 +898,11 @@ export function updateInterior(sv, dt) {
         const tile = it.tiles[pgy * it.w + pgx];
         if (tile === IT.EXIT) {
             exitInterior(sv);
-        } else if (tile === IT.STAIRS_UP || tile === IT.STAIRS_DOWN) {
-            const dir = tile === IT.STAIRS_UP ? 1 : -1;
-            changeFloor(sv, dir);
-            sv._floorCd = 1.0;
+            sv._floorCd = 0.5;
+            return;
         }
+        // v4.43 用户定稿："上下楼梯必须要用交互按F才能上下楼，角色接触是不会上下楼的"——
+        // 楼梯不自动换层（角色接触/踩到楼梯均不触发），只走 F 交互（doInteriorInteract 读 promptTarget.stairs）。
     }
 }
 
@@ -759,8 +972,61 @@ export function changeFloor(sv, dir, silent) {
         spawnInteriorNpcs(sv, it, nextFloor);
     }
     const floorName = nextFloor > 1 ? `${nextFloor}层` : nextFloor < 0 ? `地下${Math.abs(nextFloor)}层` : '1层';
+    const _ctrl = WNPC.controlledNpc(sv);
+    // v4.35 队伍成员跟着上下楼（用户反馈"主控上楼，队伍成员没跟着上楼，却在二楼隔层造成伤害"）：
+    // 同房间、同楼层的 party 队员（非主控）切到新楼层，位置放到新楼层对应楼梯口
+    //（上楼 → 新楼层 STAIRS_DOWN 格旁；下楼 → 新楼层 STAIRS_UP 格旁），与主控瞬移上楼一致。
+    // 否则队员 interiorFloor 停留在旧楼层：室内驱动仍会驱动它（updateInteriorMode 只查 inInterior），
+    // 且不同楼层共享坐标空间 → 队员"看不见人影却能对其它楼层僵尸造成伤害"。
+    {
+        let _destStair = null;
+        const _want = dir > 0 ? IT.STAIRS_DOWN : IT.STAIRS_UP;
+        for (let y = 0; y < it.h && !_destStair; y++) for (let x = 0; x < it.w; x++) {
+            if (tiles[y * it.w + x] === _want) { _destStair = { x: (x + 0.5) * TS, y: (y + 0.5) * TS }; break; }
+        }
+        if (sv.npcs) for (const n of sv.npcs) {
+            if (!n || !n.alive || n.inInterior !== true) continue;
+            if (n.interiorKey !== it.key) continue;
+            if ((n.interiorFloor == null ? 1 : n.interiorFloor) !== curFloor) continue;
+            if (_ctrl && n.id === _ctrl.id) continue;   // 主控已在出生点
+            // v4.52 排除倒地/尸体成员：倒地和尸体的队员留在原楼层（不跟着上楼/下楼），
+            // 后续主控或队友可在该楼层原位置交互（救援/搜索）。
+            if (n.downed || n._corpse) continue;
+            n.interiorFloor = nextFloor;
+            if (_destStair) { n.x = _destStair.x; n.y = _destStair.y; }
+            n._path = null;   // 清寻路缓存（新楼层布局不同）
+            n._pathF = null;
+            n._lastSlideDir = null;
+        }
+    }
+    // 2026-08-17 v4.17 同步主控的 interiorFloor（与 enterInterior 配对）：changeFloor 不改 inInterior（玩家始终在室内），
+    // 但 interiorFloor 必须更新，否则 syncControllerInterior 拿 wantIn=true && haveIn=true → 不会重入，
+    // 但 saved 重新进入同房间会跳回旧楼层（curFloor=1）→ 玩家被困在旧层。
+    if (_ctrl) _ctrl.interiorFloor = nextFloor;
     // 联机：楼层切换不再广播（各自独立进出室内）
     MSG.pushMsg(sv, `${dir > 0 ? '上楼' : '下楼'} → ${floorName}`, '#D29A5B');
 }
 
 // （联机楼层切换已随室内独立进出取消：changeFloor 只由 updateInterior 本地触发）
+
+// 2026-08-17 v4.16 室内相机：小房间（≤画布）居中显示；大房间（>画布，玩家自建超大房）让玩家居中跟随。
+// 此前 ox = (W - totalW) / 2 写死导致大房间被裁剪（左/上/右/下出屏），玩家走出屏幕。
+// 抽成公共函数供 drawInterior（render.js）和 updateInteriorMode（survival.js）共用——
+// 两处必须算同一份 ox/oy，否则 sv.camX/camY（外部代码用）与 draw 内部偏移不一致，
+// 鼠标→世界坐标换算会偏，玩家屏幕位置错乱。
+export function computeInteriorCam(sv, W, H) {
+    const it = sv && sv.interior;
+    if (!it) return { ox: 0, oy: 0 };
+    const totalW = it.w * TS, totalH = it.h * TS;
+    if (totalW <= W && totalH <= H) {
+        // 小房间：完整居中（四边有黑边）
+        return { ox: (W - totalW) / 2, oy: (H - totalH) / 2 };
+    }
+    // 大房间：玩家居中（屏幕中心），相机夹紧到房间边界（保证房间不出屏）
+    // 玩家屏幕 x = ox + sv.px = W/2 → ox = W/2 - sv.px
+    // 夹紧：ox >= W - totalW（右边贴屏幕）且 ox <= 0（左边贴屏幕）
+    return {
+        ox: Math.max(W - totalW, Math.min(0, W / 2 - sv.px)),
+        oy: Math.max(H - totalH, Math.min(0, H / 2 - sv.py)),
+    };
+}

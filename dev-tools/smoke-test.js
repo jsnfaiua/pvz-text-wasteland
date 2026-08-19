@@ -62,6 +62,20 @@ import { genChunkTiles, T, CHUNK, gridRoadKept, SPAWN, getTile, isWalk, plannedS
 import { districtAt, arterialClassAt, blockAt } from '../source-code/mod-wasteland/wdistrict.js';
 import { serializeSV, createRunDefaults, applySnapshot, serializeCharacter, applyCharacter, serializeWorld, applyWorld, serializeMpSnapshot, mergeZombieList } from '../source-code/mod-wasteland/wstate.js';
 
+// v4.26 模块拆分后：wdowned/wcorpse 等被拆出。辅助函数按文件读取各模块源码，
+// 供静态断言在【正确的文件】中查找（indexOf 边界不会被跨文件拼接破坏）。
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+const _req = createRequire(import.meta.url);
+const _fs2 = _req('node:fs');
+const _path2 = _req('node:path');
+// Windows 下 new URL().pathname 返回 /C:/... 且中文乱码；用 fileURLToPath 正确解码
+const _projRoot2 = _path2.resolve(_path2.dirname(fileURLToPath(import.meta.url)), '..');
+const _wslDir2 = () => _path2.join(_projRoot2, 'source-code/mod-wasteland');
+function wslSrc(name) {
+    try { return _fs2.readFileSync(_path2.join(_wslDir2(), name), 'utf8'); } catch { return ''; }
+}
+
 let pass = 0, fail = 0;
 
 function assert(cond, label) {
@@ -1481,7 +1495,7 @@ for (const m of browserOnly) {
 // 只允许出现在注释里（删除死代码分支时留下的说明），不允许作为代码标识符出现。
 {
     const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    const src = wslSrc('survival.js');
     const badRefs = [];
     for (const line of src.split('\n')) {
         const code = line.split('//')[0];   // 去掉行尾注释
@@ -1494,9 +1508,10 @@ for (const m of browserOnly) {
 // 室外 updatePrompt、室内 updateInteriorPrompt、doInteract、doInteriorInteract 四处都要排除。
 {
     const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
-    // 只统计"排除倒地者"的代码行（n.downed 或 n.downed continue 出现处）
-    const guardCount = (src.match(/if \(n\.downed\) continue;/g) || []).length;
+    // v4.26 doInteract/updatePrompt 在 survival.js，室内循环在 windoor.js → 拼接两文件查 downed 守卫
+    const src = wslSrc('survival.js') + '\n' + wslSrc('windoor.js') + '\n' + wslSrc('wmenu.js');
+    // v4.49 室内 downed 分支改为多行（感染推进 + continue），统计"downed 分支含 continue"的组合
+    const guardCount = (src.match(/if \(n\.downed\)[\s\S]{0,220}?continue;/g) || []).length;
     assert(guardCount >= 2, `survival: downed guard present in outdoor+indoor npc loops (found ${guardCount})`);
     // doInteract 防御：命中已倒地记录时不打开命令面板而是 openRescue
     assert(src.includes('if (npc && npc.downed)'), 'survival: doInteract guards downed npc from command menu');
@@ -1505,8 +1520,8 @@ for (const m of browserOnly) {
 // 只保留超时管理；药品消耗逻辑移到 mateSubmitRescueMed（队友）与 submitRescueMed（主控），
 // 两处都必须用 `let need` 计数（防 TypeError: Assignment to constant variable）。
 {
-    const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    // v4.26 updateDownedMembersTimeout/mateMedSubmit 已拆到 wdowned.js
+    const src = wslSrc('wdowned.js');
     // updateDownedMembersTimeout 只保留超时管理：无自动救助消耗药品逻辑（const rescuer = ... find 已移除）
     const funcStart = src.indexOf('function updateDownedMembersTimeout');
     const funcEnd = funcStart > 0 ? src.indexOf('\nfunction ', funcStart + 10) : -1;
@@ -1530,7 +1545,7 @@ for (const m of browserOnly) {
 // onDeath 软核全灭分支必须显式 include isPlayer 处理（否则旧主控 alive 残留）。
 {
     const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    const src = wslSrc('survival.js') + '\n' + wslSrc('wdowned.js');
     // softRespawn 必须含 initRoster 调用 + 重建新主控分支
     const srStart = src.indexOf('function softRespawn');
     const srEnd = srStart > 0 ? src.indexOf('\nfunction ', srStart + 10) : -1;
@@ -1552,7 +1567,6 @@ for (const m of browserOnly) {
 {
     const fs = await import('node:fs');
     const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
     const rsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/render.js', import.meta.url), 'utf8');
     // [v4.15] 以下功能未实装，暂跳过
     // assert(wsrc.includes('sv.controllerId && sv.npcs && !sv.npcs.some(n => n.id === sv.controllerId)'),
@@ -1567,32 +1581,39 @@ for (const m of browserOnly) {
 // 2026-08-10 静态回归：救活幸存者后死亡地点指引（_legacyDrop）必须清除（用户要求）。
 {
     const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    // v4.26 downedMedSubmit 已拆到 wdowned.js（参数名 sv2）
+    const src = wslSrc('wdowned.js');
     const medStart = src.indexOf('export function downedMedSubmit');
     const medEnd = medStart > 0 ? src.indexOf('\nexport function', medStart + 10) : -1;
     const medBody = medStart > 0 && medEnd > 0 ? src.slice(medStart, medEnd) : '';
-    assert(medBody.includes('sv._legacyDrop = null;'),
+    assert(medBody.includes('sv2._legacyDrop = null;') || medBody.includes('sv._legacyDrop = null;'),
         'survival: downedMedSubmit clears death-location guide on rescue');
-    assert(medBody.includes('sv._lastDeathPos') === false,
+    assert(medBody.includes('_lastDeathPos') === false,
         'survival: rescue keeps _lastDeathPos for dev tp-death');
 }
 // 2026-08-10 静态回归：①提示链必须使用 downedMatePrompt（修复"濒死队友按F无反应"——
 // 计算了却从未写入 promptTarget 的 bug）；②尸体搜索要有过程（updateCorpseSearch 读条结算）；
 // ③主控被远程攻击扣血后不得回满（updateNpcBullets 后补一次写回记录）。
+// 2026-08-18 v4.33 用户定稿：倒地队友/待尸变尸体统一进入"搜索/补刀/救治"选择框（_bodyAct），
+// 提示链改用 sv._bodyAct（computeBodyAct 生成 / execBodyAct 确认），优先级仍在命令面板之前。
 {
     const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    // v4.26 updatePrompt 在 survival.js，corpse 搜索 UI 在 wcorpse.js（WSearch.openSearch 调用）
+    const src = wslSrc('survival.js') + '\n' + wslSrc('wcorpse.js');
     const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
-    // 提示链使用 downedMatePrompt
+    // v4.52 用户定稿："靠近倒下的队友不会自动弹出选择框，只有交互（F/扫描点击）才弹"——
+    // 提示链不再自动 computeBodyAct（距离回退 sv._bodyAct=null）；选择框由 F 交互（doInteract 的
+    // tg.downedMate/tg.corpse 调 openBodyActFor）或扫描面板点击打开；execBodyAct 仍执行选中项。
     const promptStart = src.indexOf('function updatePrompt');
     const promptEnd = promptStart > 0 ? src.indexOf('\nfunction ', promptStart + 10) : -1;
     const promptBody = promptStart > 0 && promptEnd > 0 ? src.slice(promptStart, promptEnd) : '';
-    assert(promptBody.includes('downedMatePrompt.target') && promptBody.includes('downedMatePrompt.prompt'),
-        'survival: updatePrompt uses downedMatePrompt in prompt chain (fix no-F-on-downed-mate)');
-    // 2026-08-11 优先级：救治倒地队友必须在"命令队友"之前（濒死角色不显示命令面板）
-    const dmpIdx = promptBody.indexOf('downedMatePrompt)');
-    const nbestIdx = promptBody.indexOf('nbest)');
-    assert(dmpIdx > 0 && nbestIdx > dmpIdx, 'survival: downedMate rescue priority before command panel (v2.90)');
+    assert(promptBody.includes('sv._bodyAct = null') && src.includes('function execBodyAct(sv)')
+        && src.includes('openBodyActFor(sv, m)') && src.includes('openBodyActFor(sv, c)'),
+        'survival: bodyAct selector only opens via F interact / scan click (v4.52 no auto-popup)');
+    // v4.33 原始语义保留：execBodyAct 支持救治/搜索/补刀三操作
+    assert(src.includes("opt.act === 'rescue'") && src.includes("opt.act === 'search'")
+        && src.includes("opt.act === 'finish'"),
+        'survival: execBodyAct supports rescue/search/finish actions (v4.33)');
     // 尸体搜索过程：2026-08-11 用户定稿"与容器一样即可"——复用容器 WSearch 界面（逐件渐亮），
     // 不再有独立读条进度条；拿取用 corpseFull 完整对象入包（保留武器耐久/附魔属性）。
     assert(src.includes('corpseFull') && src.includes('WSearch.openSearch(sv, {'),
@@ -1631,7 +1652,8 @@ for (const m of browserOnly) {
 // 否则该队友尸体消失、遗物全丢（用户要求成员死亡留尸体在尸体上搜索）。
 {
     const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    // v4.26 updateDownedMembersTimeout 已拆到 wdowned.js
+    const src = wslSrc('wdowned.js');
     const tmStart = src.indexOf('function updateDownedMembersTimeout');
     const tmEnd = tmStart > 0 ? src.indexOf('\nfunction ', tmStart + 10) : -1;
     const tmBody = tmStart > 0 && tmEnd > 0 ? src.slice(tmStart, tmEnd) : '';
@@ -1651,7 +1673,7 @@ for (const m of browserOnly) {
     const pathMod = (await import('node:path')).default;
     const urlMod = (await import('node:url')).default;
     const projRoot = pathMod.resolve(pathMod.dirname(urlMod.fileURLToPath(import.meta.url)), '..');
-    const src = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/survival.js'), 'utf8');
+    const src = wslSrc('survival.js') + '\n' + wslSrc('wdowned.js');
     const ws = fs.readFileSync(pathMod.join(projRoot, 'source-code/ui/workshop.js'), 'utf8');
     const mp = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/mpWasteland.js'), 'utf8');
     // ① showAllDeadChoices 必须是 export const 箭头函数
@@ -1664,11 +1686,11 @@ for (const m of browserOnly) {
     assert(guardOnDeath >= 2, `survival: typeof-guard on showAllDeadChoices in 2 sites (found ${guardOnDeath})`);
     assert(src.includes('_softRespawnAllDeadFallback'),
         'survival: fallback _softRespawnAllDeadFallback defined when showAllDeadChoices unavailable');
-    //  workshop.js + mpWasteland.js 必须加 ?v= cache-busting（动态 import 用 ?v= 拼接变量，静态 import 用 ?v=4.15 字面量）
-    assert(/import\(['"]\.\.\/mod-wasteland\/survival\.js\?v=/.test(ws) && /_WSL_VER\s*=\s*['"]4\.15['"]/.test(ws),
-        'workshop: dynamic import uses ?v=4.15 cache-busting (via _WSL_VER)');
-    assert(/from\s+['"]\.\/survival\.js\?v=4\.15['"]/.test(mp),
-        'mpWasteland: static import uses ?v=4.15 cache-busting');
+    //  workshop.js + mpWasteland.js 必须加 ?v= cache-busting（动态 import 用 ?v= 拼接变量，静态 import 用 ?v=4.26 字面量）
+    assert(/import\(['"]\.\.\/mod-wasteland\/survival\.js\?v=/.test(ws) && /_WSL_VER\s*=\s*['"]4\.64\.4['"]/.test(ws),
+        'workshop: dynamic import uses ?v=4.64.4 cache-busting (via _WSL_VER)');
+    assert(/from\s+['"]\.\/survival\.js\?v=4\.64\.4['"]/.test(mp),
+        'mpWasteland: static import uses ?v=4.64.4 cache-busting');
 }
 
 // 2026-08-11 v2.97 静态回归：①濒死救援时间系统改为【现实时间 20 分钟】（被攻击每点伤害扣 10 秒，
@@ -1679,7 +1701,11 @@ for (const m of browserOnly) {
     const urlMod = (await import('node:url')).default;
     const projRoot = pathMod.resolve(pathMod.dirname(urlMod.fileURLToPath(import.meta.url)), '..');
     const bal = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wbalance.js'), 'utf8');
-    const surv = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/survival.js'), 'utf8');
+    // v4.26 拆分后：onDeath/softRespawn/植物子弹/全灭弹窗 在 survival.js；
+    // 倒地救援/背起/_devInf 救治/成员超时 在 wdowned.js（用 sv2 参数名）。
+    const surv = wslSrc('survival.js');
+    const down = wslSrc('wdowned.js');
+    const corpse = wslSrc('wcorpse.js');
     const wnpc = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wnpc.js'), 'utf8');
     const wzombie = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wzombie.js'), 'utf8');
     const waction = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/waction.js'), 'utf8');
@@ -1688,15 +1714,16 @@ for (const m of browserOnly) {
     // ① 救援时间常量（20 分钟现实时间 + 每点伤害扣 10 秒）
     assert(bal.includes('DOWNED_LIMIT_SECONDS = 1200'), 'wbalance: DOWNED_LIMIT_SECONDS = 1200 (20 分钟现实时间)');
     assert(bal.includes('DOWNED_HIT_PENALTY_SEC = 10'), 'wbalance: DOWNED_HIT_PENALTY_SEC = 10');
-    // ② _downed 初始化含现实时间戳 + 惩罚累计
-    assert(surv.includes('downedAtReal: sv.now != null ? sv.now : 0'), 'survival: _downed 含 downedAtReal');
-    assert(surv.includes('_penaltySec: 0'), 'survival: _downed 含 _penaltySec');
-    // ③ updateDowned 超时判定 = 现实流逝 + 被攻击惩罚 ≥ 20 分钟
-    assert(surv.includes('const spent = Math.max(0, nowReal - dwn.downedAtReal) + (dwn._penaltySec || 0);'),
+    // ② _downed 初始化含现实时间戳 + 惩罚累计（v4.26 在 survival.js onDeath 与 wdowned.js）
+    assert(surv.includes('downedAtReal: sv.now != null ? sv.now : 0') || down.includes('downedAtReal: sv2.now != null ? sv2.now : 0') || down.includes('downedAtReal: sv.now != null ? sv.now : 0'),
+        'survival: _downed 含 downedAtReal');
+    assert(surv.includes('_penaltySec: 0') || down.includes('_penaltySec: 0'), 'survival: _downed 含 _penaltySec');
+    // ③ updateDowned 超时判定 = 现实流逝 + 被攻击惩罚 ≥ 20 分钟（v4.26 在 wdowned.js）
+    assert(down.includes('const spent = Math.max(0, nowReal - dwn.downedAtReal) + (dwn._penaltySec || 0);'),
         'survival: updateDowned 超时 = 现实流逝 + 惩罚');
-    assert(surv.includes('spent >= dwnLimitSec'), 'survival: 超时判定');
+    assert(down.includes('spent >= dwnLimitSec'), 'survival: 超时判定');
     // ④ 成员超时同规则（现实时间）
-    assert(surv.includes('spentM >= mLimit') || surv.includes('spentM >= B.DOWNED_LIMIT_SECONDS'), 'survival: 成员超时用现实时间（支持递减 limitSec）');
+    assert(down.includes('spentM >= mLimit') || down.includes('spentM >= B.DOWNED_LIMIT_SECONDS'), 'survival: 成员超时用现实时间（支持递减 limitSec）');
     // ⑤ killNpc 对 downed 角色走补刀扣时分支
     assert(wnpc.includes('export function npcApplyDownedHit'), 'wnpc: npcApplyDownedHit 导出');
     // [v4.15] 补刀扣时功能未实装，暂跳过
@@ -1778,13 +1805,14 @@ for (const m of browserOnly) {
     const mateGuideCall = (render.match(/drawMateGuide\(ctx, sv, W, H, guideDrawn\);/g) || []).length;
     assert(mateGuideCall >= 2, `render: drawMateGuide 室外+室内均调用 (found ${mateGuideCall})`);
     // ⑱ 2026-08-11 v2.97 开发者无限资源（_devInf）支持救治药品提交：开启后背包无药也能直接提交（测试用）
-    const devInfTakeCount = (surv.match(/if \(WDEV\.isDev\(\) && sv\._devInf\) return true;   \/\/ 开发者无限资源/g) || []).length;
+    // v4.26 拆分后 _devInf 救治逻辑在 wdowned.js（模块级 sv 注入，非参数 sv2）
+    const devInfTakeCount = (down.match(/WDEV\.isDev\(\) && sv\._devInf\) return true;/g) || []).length;
     assert(devInfTakeCount >= 2, `survival: 主控/队友救治 take() 均支持 _devInf (found ${devInfTakeCount})`);
-    assert(surv.includes("const devInfHerb = WDEV.isDev() && sv._devInf;"),
+    assert(down.includes("const devInfHerb = WDEV.isDev() && sv._devInf;"),
         'survival: 草药提交支持 _devInf（无草药视为已满足所需）');
-    assert(surv.includes('const devInf = WDEV.isDev() && sv._devInf;   // 开发者无限资源：视为药品无限'),
+    assert(down.includes('const devInf = WDEV.isDev() && sv._devInf;'),
         'survival: 主控救治 UI 显示开发者无限资源');
-    assert(surv.includes('const devInfM = WDEV.isDev() && sv._devInf;   // 开发者无限资源：视为药品无限'),
+    assert(down.includes('const devInfM = WDEV.isDev() && sv._devInf;'),
         'survival: 队友救治 UI 显示开发者无限资源');
     // ⑲ 2026-08-11 v2.97 恶意 NPC 稳定伤害（简化方案：任何武器/任何状态都能造成伤害或扣救援时间，
     // 绝不 0 伤害；开发者无敌模式除外）——控制变量断言
@@ -1829,7 +1857,7 @@ for (const m of browserOnly) {
     // ㉒ 2026-08-11 v2.97 恶意 NPC 伤害 × 队友数量 全矩阵（用户要求加队友数量变量叠加）：
     // 队友数量(0/1/2/4) × 状态(满血/半血/倒地/重生/切视角) × 武器(10) 全组合验证
     assert(surv.includes('if (mates.length >= 1) {'), 'survival: onDeath 用 mates.length≥1 判断有队友');
-    assert(surv.includes('const mates = (sv.npcs || []).filter(n => n.alive && !n.downed && n.party && n.id !== sv.controllerId && !n.isPlayer);'),
+    assert(surv.includes('const mates = (sv.npcs || []).filter(n => n.alive && !n.downed && n.party && n.id !== sv.controllerId && !n.isPlayer)'),
         'survival: mates 筛选可行动队友');
     assert(surv.includes('// ---- 从头就无队友：重生 + 重生点刷"玩家名"僵尸 ----'),
         'survival: 队友=0 走软核重生分支');
@@ -1855,8 +1883,9 @@ for (const m of browserOnly) {
     // （含倒地/已死尸体）各一条；存活成员不收；历史尸体靠 softRespawn 重生清 party 标记排除。
     assert(surv.includes('队伍里有几个角色就写几条死因'),
         'survival: 全灭弹窗收集所有成员死因');
-    assert(surv.includes('pushDeath(m.name || m.id, m._deathReason)'),
-        'survival: 收集全部 party 成员死因');
+    // v4.23 救援超时不写"救援超时"——回退用 m._killedByReason / m._cause（倒下前击倒原因）
+    assert(/pushDeath\(m\.name \|\| m\.id,\s*_mFinal\)/.test(surv) || surv.includes('pushDeath(m.name || m.id, m._deathReason)'),
+        'survival: 收集全部 party 成员死因（v4.23 救援超时回退用击倒原因）');
     assert(surv.includes('if (m.alive && !m.downed) continue;'),
         'survival: 存活成员（无死因）不收');
     // ㉔ 2026-08-11 v2.97 修复"传送后队友靠拢极慢（过几秒才走一格）"（用户反馈）：
@@ -1929,24 +1958,25 @@ for (const m of browserOnly) {
     // 幸存者作为 sv._downed（主控倒地）被队友 F 救活走 mateMedSubmit——此前只清 _downedMembers，
     // 不清 sv._downed → 渲染层（drawPlayer 的 drawDownedTimeBar）在当前主控头顶画救援倒计时；
     // 且 sv._downed 残留 → updateDowned 误判"主控倒地" → 死一个成员就触发全灭检测。
-    assert(surv.includes('// 幸存者作为 sv._downed（主控倒地）被队友 F 救活走的是 mateMedSubmit'),
+    // v4.26 mateMedSubmit 已拆到 wdowned.js（参数名 sv2，注释文本随拆分精简）
+    assert(down.includes('同步清 sv._downed（含相关状态）') || surv.includes('幸存者作为 sv._downed（主控倒地）被队友 F 救活走的是 mateMedSubmit'),
         'survival: mateMedSubmit 清 sv._downed 修复注释');
-    assert(surv.includes('if ((dId != null && m.id === dId) || (dName && m.name === dName)) {'),
+    assert(down.includes('if ((dId != null && m.id === dId) || (dName && m.name === dName)) {') || surv.includes('if ((dId != null && m.id === dId) || (dName && m.name === dName)) {'),
         'survival: 救活目标 == sv._downed 对应角色 → 清 _downed');
-    // 检查 mateMedSubmit 救活块内（5204-5212 区域）是否清 waitDowned/carryDowned
-    const mateIdx = surv.indexOf('const dId = sv._downed.id;');
-    const mateBlock = mateIdx > 0 ? surv.slice(mateIdx, mateIdx + 300) : '';
-    assert(mateBlock.includes('sv._downed = null') && mateBlock.includes('sv._waitDowned = false') && mateBlock.includes('sv._carryDowned = false'),
+    // 检查 mateMedSubmit 救活块内是否清 waitDowned/carryDowned（wdowned.js 用参数 sv2）
+    const mateIdx = down.indexOf('const dId = sv2._downed.id;') !== -1 ? down.indexOf('const dId = sv2._downed.id;') : down.indexOf('const dId = sv._downed.id;');
+    const mateBlock = mateIdx > 0 ? down.slice(mateIdx, mateIdx + 300) : '';
+    assert(mateBlock.includes('_downed = null') && (mateBlock.includes('_waitDowned = false') || mateBlock.includes('sv2._waitDowned = false')) && (mateBlock.includes('_carryDowned = false') || mateBlock.includes('sv2._carryDowned = false')),
         'survival: 清 _downed 连带清 waitDowned/carryDowned');
     // ㉛ 2026-08-11 v2.97 修复"药品已集齐但点不动按钮，救不了队友"：
     // 之前 done 时按钮 disabled，玩家看到"药品已集齐"灰按钮——已集齐但不知道需要点，队友反复倒下。
     // 改为 enabled 绿字"集齐·完成救治"，点击明确触发救活（主控 + 队友界面都修）。
-    assert(surv.indexOf('done ? \'集齐·完成救治\'') > 0, 'survival: 队友救活界面 done 按钮改为 集齐·完成救治');
+    assert(down.indexOf('done ? \'集齐·完成救治\'') > 0, 'survival: 队友救活界面 done 按钮改为 集齐·完成救治');
     // 注释里"药品已集齐"是设计文档说明，不算——只检查按钮 HTML 文字是否还有
-    assert(surv.indexOf('>药品已集齐<') < 0, 'survival: 移除"药品已集齐"按钮文字（注释里的说明保留）');
+    assert(down.indexOf('>药品已集齐<') < 0, 'survival: 移除"药品已集齐"按钮文字（注释里的说明保留）');
     // 主控界面 — 同样修复（用函数定义定位，避免匹配到 updateDowned 里新增的 renderRescue() 调用）
-    const mainStart = surv.indexOf('function renderRescue()');
-    const mainBlock = mainStart > 0 ? surv.slice(mainStart, mainStart + 5000) : '';
+    const mainStart = down.indexOf('function renderRescue()') !== -1 ? down.indexOf('function renderRescue()') : down.indexOf('export function renderRescue()');
+    const mainBlock = mainStart > 0 ? down.slice(mainStart, mainStart + 5000) : '';
     assert(mainBlock.indexOf('done ? \'集齐·完成救治\'') > 0, 'survival: 主控救活界面 done 按钮改为 集齐·完成救治');
     // ㉜ 2026-08-11 v2.97 修复"NPC 在玩家周围游荡动画抽搐 + 移动过快"（用户反馈）：
     // 游荡到达目标点（<0.15 格）→ 站定停动画（此前每帧微移+方向抖动 → 抽搐）；
@@ -1983,7 +2013,8 @@ for (const m of browserOnly) {
     // anyAliveMate=false → 误判全灭。修复：controllerId 角色活着 / isPlayer 角色活着
     // 任一即 anyAliveMate=true（不算全灭）。onDeath 与 updateDowned 都修。
     const onDeathAnyIdx = surv.indexOf('// 2026-08-11 v2.97 修复"只剩当前主控活着却弹全员阵亡"');
-    const updateDownedAnyIdx = surv.indexOf('// 2026-08-11 v2.97 "当前主控自己活着"也算可行动者');
+    // v4.26 updateDowned 已拆到 wdowned.js（参数名 sv2，注释结构不同）——改为直接检查逻辑代码
+    const updateDownedAnyIdx = down.indexOf('const _udc = sv2.npcs && sv2.npcs.find(n => n.id === sv2.controllerId);');
     assert(onDeathAnyIdx > 0, 'survival: onDeath 增加"当前主控/原主角活着也算可行动者"修复注释');
     assert(updateDownedAnyIdx > 0, 'survival: updateDowned 同款修复注释');
     assert(surv.indexOf('const cur = sv.npcs && sv.npcs.find(n => n.id === sv.controllerId);', onDeathAnyIdx) > onDeathAnyIdx,
@@ -1992,7 +2023,7 @@ for (const m of browserOnly) {
         'survival: onDeath 计算 controllerAlive');
     assert(surv.indexOf('|| controllerAlive || playerAlive', onDeathAnyIdx) > onDeathAnyIdx,
         'survival: onDeath anyAliveMate 含 controllerAlive/playerAlive');
-    assert(surv.indexOf('|| !!(_udc && _udc.alive && !_udc.downed) || _udp', updateDownedAnyIdx) > updateDownedAnyIdx,
+    assert(down.indexOf('|| !!(_udc && _udc.alive && !_udc.downed) || _udp', updateDownedAnyIdx) > updateDownedAnyIdx,
         'survival: updateDowned anyMateAlive 含 _udc/_udp');
     // ㊱ 2026-08-11 v2.97 修复"切队友视角后主控濒死状态转移到队友身上"（用户反馈）：
     // 根因 = enterDownedView（onDeath 弹窗切视角）调用 switchControl 后未清 sv._downed →
@@ -2017,11 +2048,12 @@ for (const m of browserOnly) {
     assert(bal.includes('CORPSE_REVIVE_SECONDS = 180'), 'bal: CORPSE_REVIVE_SECONDS=180（3分钟，用户缩短）');
     assert(bal.includes("CORPSE_REVIVE_TAG = '（尸变）'"), 'bal: 尸变名字后缀');
     assert(bal.includes('DOWNED_RESPAWN_PZ_SECONDS = 180'), 'bal: 重生刷尸 3 分钟（同步缩短）');
-    assert(surv.includes('function updateCorpseRevive(sv, dt, mode)'), 'survival: 尸变检测函数（场景过滤）');
-    assert(surv.includes('function corpseReviveZombie(sv, n'), 'survival: 尸变丧尸生成（v3.31 支持 roomKey 转存房间存档）');
-    assert(surv.includes('export function reviveZombieToCorpse(sv, z)'), 'survival: 尸变丧尸被击败掉尸体');
+    // v4.26 尸变函数已拆到 wcorpse.js（调用点在 survival.js update 主循环）
+    assert(corpse.includes('function updateCorpseRevive(sv, dt, mode)') || corpse.includes('export function updateCorpseRevive(sv, dt, mode)'), 'survival: 尸变检测函数（场景过滤）');
+    assert(corpse.includes('function corpseReviveZombie(sv, n') || corpse.includes('export function corpseReviveZombie(sv, n'), 'survival: 尸变丧尸生成（v3.31 支持 roomKey 转存房间存档）');
+    assert(corpse.includes('export function reviveZombieToCorpse(sv, z)'), 'survival: 尸变丧尸被击败掉尸体');
     assert(surv.includes('updateCorpseRevive(sv, dt);'), 'survival: 大世界调用尸变检测');
-    assert(surv.includes('if (!n._corpse || n._revived) continue;'), 'survival: 尸变检测跳过条件');
+    assert(corpse.includes('if (!n._corpse || n._revived) continue;'), 'survival: 尸变检测跳过条件');
     // 2026-08-11 v2.99 修复"玩家尸化僵尸在脚下生成"：刷尸位置改用死亡地点（_lastDeathPos），不用重生点
     assert(surv.includes("const _pzX = (sv._lastDeathPos && sv._lastDeathPos.x != null) ? sv._lastDeathPos.x : rx"), 'survival: 刷尸位置 = 死亡地点(_lastDeathPos)');
     assert(surv.includes('atReal: sv.now != null ? sv.now : 0'), 'survival: 重生刷尸加 atReal');
@@ -2040,18 +2072,18 @@ for (const m of browserOnly) {
     // assert(wstateSrc2.includes('_corpseAtReal: 0,'), 'wstate: 旧档遗留尸体给 _corpseAtReal（读档尸变倒计时）');
     // ㊶ 2026-08-11 v2.98 测试玩家发现：主控补刀/超时彻底死亡后没有 _corpse 标记 → 尸体不能搜索。
     // 修复：updateDowned 超时分支（3959）补设 _corpse + 内容 + 尸变时刻 + 可搜索提示。
-    assert(surv.includes('pc._corpse = true;') && surv.includes('pc._corpseContents = [];'),
+    assert(down.includes('pc._corpse = true;') && down.includes('pc._corpseContents = [];'),
         'survival: 主控超时/补刀致死生尸体（可搜索遗物）');
-    assert(surv.includes('pc._corpseAtReal = sv.now != null ? sv.now : 0;'),
+    assert(down.includes('pc._corpseAtReal = sv2.now != null ? sv2.now : 0;') || down.includes('pc._corpseAtReal = sv.now != null ? sv.now : 0;'),
         'survival: 主控尸体记录尸变时刻');
     // ㊷ 2026-08-11 v2.98 测试玩家发现：重生后角色头顶残留尸变倒计时 + 脚下双尸体。
     // ① softRespawn 清 _downedMembers/_carryDowned/_carryMateId（防倒地状态残留到新角色）；
     // ② updateDowned 超时分支只给【非 isPlayer】倒地主控补尸体——isPlayer 主角遗物已由
     //    deathDropLegacy 生成独立 corpse: 尸体，再给 player 记录生成 _corpse 会双尸体。
-    assert(surv.includes('sv._downedMembers = [];   // 2026-08-11 v2.98 重生清倒地成员列表'),
+    assert(surv.includes('sv._downedMembers = [];   // 2026-08-11 v2.98 重生清倒地成员列表') || down.includes('sv2._downedMembers = [];'),
         'survival: softRespawn 清 _downedMembers（防残留）');
-    assert(surv.includes('sv._carryMateId = null;'), 'survival: softRespawn 清 _carryMateId');
-    assert(surv.includes('if (!pc.isPlayer && !pc._corpse) {'),
+    assert(surv.includes('sv._carryMateId = null;') || down.includes('sv2._carryMateId = null;') || down.includes('sv._carryMateId = null;'), 'survival: softRespawn 清 _carryMateId');
+    assert(down.includes('if (!pc.isPlayer && !pc._corpse) {') || surv.includes('if (!pc.isPlayer && !pc._corpse) {'),
         'survival: 超时补尸体仅非 isPlayer（防双尸体）');
     const wzombieSrc2 = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/wzombie.js'), 'utf8');
     const windoorSrc2 = fs.readFileSync(pathMod.join(projRoot, 'source-code/mod-wasteland/windoor.js'), 'utf8');
@@ -2071,10 +2103,10 @@ for (const m of browserOnly) {
         'survival: corpseBest 排除 downed（濒死不弹搜索）+ 所有尸体可反复提示搜索');
     assert(surv.includes('const c = sv.npcs && sv.npcs.find(n => n && n._corpse && !n.downed && n.id === tg.corpse);'),
         'survival: doInteract 尸体搜索排除 downed（防御双保险）+ 所有尸体可重开');
-    // onClose 掏空处理（2026-08-11 v2.98 用户定稿）：普通尸体掏空保留（可反复打开）；
-    // 尸变尸体（_revivedCorpse）搜索完彻底消失（splice）。
-    assert(surv.includes('if (c._revivedCorpse)'),
-        'survival: 尸变尸体/普通尸体区分（尸变尸体搜完消失）');
+    // onClose 掏空处理（v4.37 用户定稿修订）：补刀致死的尸体（_revived）和尸变尸体（_revivedCorpse）
+    // 掏空都消失；普通尸体（!_revived && !_revivedCorpse）掏空保留（像容器可反复打开）。
+    assert(surv.includes('isFinishedRevived = !!c._revived || !!c._revivedCorpse'),
+        'v4.37: onClose 区分补刀致死/尸变/普通尸体（前两类掏空消失）');
     assert(surv.includes('sv.npcs.splice(idx, 1)'),
         'survival: 尸变尸体掏空从世界移除（splice）');
     assert(surv.includes('c._corpseSearched = true') && surv.includes('// —— 普通尸体：掏空保留（像容器可反复打开），未尸变照样 15 分钟尸变 ——'),
@@ -2082,23 +2114,24 @@ for (const m of browserOnly) {
     // ㊸ 2026-08-11 v2.98 濒死队友互动提示（用户反馈"濒临死亡的队友不能救援，没有提示"）：
     // downedMatePrompt 依赖 _downedMembers 中 m.alive && m.downed——补刀未超时保持 downed 有提示；
     // 防御修复：updateDownedMembersTimeout 移除异常成员时若 party 且无 _corpse → 补成尸体（防凭空消失）。
-    assert(surv.includes('if (!m || !m.alive || !m.downed) continue;'),
+    // v4.26 濒死队友提示/背起/异常成员补尸体 逻辑已拆到 wdowned.js（参数名 sv2）
+    assert(down.includes('if (!m || !m.alive || !m.downed) continue;') || surv.includes('if (!m || !m.alive || !m.downed) continue;'),
         'survival: 濒死队友救治提示需 alive+downed');
-    assert(surv.includes('// 若成员【活着但非 downed】（异常状态被移除，如某路径误清 downed）且无 _corpse →'),
+    assert(down.includes('若成员【活着但非 downed】（异常状态被移除') || surv.includes('// 若成员【活着但非 downed】（异常状态被移除，如某路径误清 downed）且无 _corpse →'),
         'survival: 异常成员补尸体防御注释');
-    assert(surv.includes('m._corpse = true;') && surv.includes('m._corpseAtReal = sv.now != null ? sv.now : 0;'),
+    assert(down.includes('m._corpse = true;') && (down.includes('m._corpseAtReal = sv2.now != null ? sv2.now : 0;') || down.includes('m._corpseAtReal = sv.now != null ? sv.now : 0;')),
         'survival: 异常成员转尸体（可搜索，防凭空消失）');
     // ④ 救助界面一致：队友界面补"背起/放下"按钮 + 全宽关闭 + 统一提示（与主控界面一致）
     //   v3.29 起主控/队友共用 buildRescuePanel，按钮 data-act 由 carryAct 参数传入（队友 = 'carrymate'）
-    assert(surv.includes('sv._carryMateId === m.id ? \'putdown\' : \'carrymate\''), 'survival: 队友救助界面背起/放下按钮（v3.29 共享模板 + carryAct 参数）');
-    assert(surv.includes('data-act="${p.carryAct}"'), 'survival: 救助面板模板用 carryAct 参数化 data-act');
-    assert(surv.includes("'carrymate'") && surv.includes("'carry'") && surv.includes("'putdown'"), 'survival: carryAct 三个取值（主控/队友背起 + 放下）');
-    assert(surv.includes("sv._carryMateId = m.id;"), 'survival: 队友背起设置 _carryMateId');
-    assert(surv.includes('提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间'),
+    assert(down.includes('sv._carryMateId === m.id ? \'putdown\' : \'carrymate\'') || down.includes("carryAct: sv._carryMateId === m.id ? 'putdown' : 'carrymate'"), 'survival: 队友救助界面背起/放下按钮（v3.29 共享模板 + carryAct 参数）');
+    assert(down.includes('data-act="${p.carryAct}"') || down.includes('data-act="\${p.carryAct}"') || down.includes("data-act='\${p.carryAct}'"), 'survival: 救助面板模板用 carryAct 参数化 data-act');
+    assert(down.includes("'carrymate'") && down.includes("'carry'") && down.includes("'putdown'"), 'survival: carryAct 三个取值（主控/队友背起 + 放下）');
+    assert(down.includes("sv._carryMateId = m.id;") || down.includes("sv2._carryMateId = m.id;"), 'survival: 队友背起设置 _carryMateId');
+    assert(down.includes('提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间') || surv.includes('提示：关闭界面不会导致濒死玩家死亡 · 背到床旁躺下可延长存活时间'),
         'survival: 队友界面提示文案统一');
-    assert(surv.includes('const cm = Array.isArray(sv._downedMembers) ? sv._downedMembers.find(x => x && x.id === sv._carryMateId) : null;'),
+    assert(down.includes('const cm = Array.isArray(sv2._downedMembers) ? sv2._downedMembers.find(x => x && x.id === sv2._carryMateId) : null;') || down.includes('const cm = Array.isArray(sv._downedMembers) ? sv._downedMembers.find(x => x && x.id === sv._carryMateId) : null;'),
         'survival: updateDownedMembersTimeout 队友背起坐标跟随');
-    assert(surv.includes('if (sv._carryMateId === m.id) sv._carryMateId = null;'),
+    assert(down.includes('if (sv2._carryMateId === m.id) sv2._carryMateId = null;') || down.includes('if (sv._carryMateId === m.id) sv._carryMateId = null;'),
         'survival: 救活被背起队友 → 清 _carryMateId');
 }
 
@@ -2108,7 +2141,7 @@ for (const m of browserOnly) {
     const fs = await import('node:fs');
     const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
     const vsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wvehicle.js', import.meta.url), 'utf8');
-    const src = fs.readFileSync(new URL('../source-code/mod-wasteland/survival.js', import.meta.url), 'utf8');
+    const src = wslSrc('survival.js') + '\n' + wslSrc('wdowned.js');
     // [v4.15] 友军子弹命中/骑乘NPC射击功能未实装，暂跳过
     // assert(wsrc.includes("if (b.hostile)") && wsrc.includes("o.role === 'friendly'"),
     //     'wnpc: hostile bullets hit friendly/party npc (fix invincible teammates)');
@@ -2129,6 +2162,225 @@ for (const m of browserOnly) {
     // [v4.15] switchControl 濒死转换未实装，暂跳过
     // assert(swBody.includes('nearDeath') && swBody.includes('cur.downed = nearDeath'),
     //     'wnpc: switchControl converts near-death old controller to downed (no instant respawn)');
+}
+// 2026-08-18 v4.33 静态回归：躺地 NPC 交互选择框（搜索/补刀/救治，覆盖友善/中立/敌对）+ 感染倒地不停。
+{
+    const fs = await import('node:fs');
+    const surv = wslSrc('survival.js');
+    const rndr = wslSrc('render.js');
+    const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    const wdown = fs.readFileSync(new URL('../source-code/mod-wasteland/wdowned.js', import.meta.url), 'utf8');
+    // ① 选择框生成：computeBodyAct 存在（v4.41 双参：aim 命中优先），选项含 search/finish（倒地队友另有 rescue）
+    assert(surv.includes('function computeBodyAct(sv, aim)') && surv.includes("opts.push({ act: 'search'") && surv.includes("opts.push({ act: 'finish'"),
+        'v4.33: computeBodyAct generates search/finish options');
+    assert(surv.includes('function execBodyAct(sv)'), 'v4.33: execBodyAct exists');
+    // ② 补刀覆盖所有 NPC：doBodyFinish 对倒地成员 killNpc + _revived，对尸体阻止尸变；openCorpseFinish 不再限 party
+    assert(surv.includes('function doBodyFinish(m)') && surv.includes('WNPC.killNpc(sv, m,') && surv.includes("m._revived = true"),
+        'v4.33: doBodyFinish covers downed members (kill + block revive)');
+    assert(wdown.includes('!m || m.alive || m._revived || m._revivedCorpse') && !wdown.includes('!m.party'),
+        'v4.33: openCorpseFinish no longer requires party (hostile/neutral bodies finishable)');
+    // ③ 感染倒地不停：updateNpc downed 分支调用 updateNpcInfection（感染满在救援时间结束前尸化）
+    assert(wsrc.includes('if (n.downed) {\n        updateNpcInfection(sv, n, dt);'),
+        'v4.33: downed npc keeps advancing infection (dies before rescue timeout)');
+    // ④ 选择框绘制：render.drawBodyAct 存在且被 drawHUD 调用
+    assert(rndr.includes('function drawBodyAct') && rndr.includes('drawBodyAct(ctx, sv, W, H);'),
+        'v4.33: render draws bodyAct selector in HUD');
+    // ⑤ 滚轮切换 + 左键确认：canvas wheel 监听 + mousedown 点击选项
+    assert(surv.includes("canvas.addEventListener('wheel'") && surv.includes('sv._bodyAct.sel ='),
+        'v4.33: wheel scroll switches bodyAct option');
+    assert(surv.includes('if (execBodyAct(sv)) return;'), 'v4.33: execBodyAct wired into interact (outdoor+interior)');
+    // ⑥ 倒地成员搜刮：searchDownedBody 写回背包（物品守恒）
+    assert(surv.includes('function searchDownedBody(n)') && surv.includes('n.inv = rest'),
+        'v4.33: searchDownedBody loots downed npc inventory (writeback)');
+    // ⑦ 选择框覆盖敌/中/友尸体：computeBodyAct 排除 _revivedCorpse（已尸变尸体不二次尸变）
+    assert(surv.includes('!m._revivedCorpse'), 'v4.33: computeBodyAct excludes revived corpses');
+    // ⑧ 啃食音效：僵尸攻击 NPC（含倒地/中立/恶意）播放啃食音效（用户反馈"僵尸攻击所有生物要有啃食音效，包括倒地的"）
+    const wz = fs.readFileSync(new URL('../source-code/mod-wasteland/wzombie.js', import.meta.url), 'utf8');
+    assert(wz.includes("label: '咬'") && wz.includes('AudioSystem.playZombieEating();'),
+        'v4.33: zombie eating sfx on NPC bite (all npcs)');
+    const downedHitIdx = wz.indexOf('npcApplyDownedHit(sv');
+    assert(downedHitIdx > 0 && wz.slice(downedHitIdx, downedHitIdx + 600).includes('AudioSystem.playZombieEating()'),
+        'v4.33: zombie eating sfx plays for downed npc bite (within downed branch)');
+}
+// 2026-08-18 v4.34 静态回归：集合信号聚拢卡障碍修复 + NPC 战斗寻路 + 感染死切视角 UI + 创意工坊预热。
+{
+    const fs = await import('node:fs');
+    const surv = wslSrc('survival.js');
+    const ws = fs.readFileSync(new URL('../source-code/ui/workshop.js', import.meta.url), 'utf8');
+    const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    // ① 绕障：moveToward 多方向候选探测 + _lastSlideDir 记忆成功方向（修复集合聚拢卡墙）
+    const mvStart = wsrc.indexOf('function moveToward(sv');
+    const mvEnd = wsrc.indexOf('\n// 单点 A* 寻路', mvStart);
+    const mvBody = wsrc.slice(mvStart, mvEnd > 0 ? mvEnd : mvStart + 5000);
+    assert(mvBody.includes('_lastSlideDir') && mvBody.includes('bestScore') && mvBody.includes('Math.cos(cand - targetAng)'),
+        'v4.34: moveToward probes multi-direction candidates and remembers slide dir (obstacle bypass)');
+    // ② 寻路不可达降级：reachableNearGoal + slideTowardGoal 在 A* 失败时兜底（不再直线硬撞卡死）
+    assert(wsrc.includes('function reachableNearGoal(') && wsrc.includes('function slideTowardGoal(')
+        && wsrc.includes('step = reachableNearGoal(sx, sy, gx, gy, canStand) || slideTowardGoal(sx, sy, gx, gy, canStand);'),
+        'v4.34: pathStepTo falls back to reachable-near-goal / slide-toward on A* failure');
+    // ③ 战斗逻辑：远程 NPC 没弹药不再站桩（降级近战肉搏）
+    assert(wsrc.includes("if (w && w.kind === 'ranged' && !wpnItem.broken && npcAmmoCount(n, w.ammoType) > 0) {"),
+        'v4.34: ranged npc without ammo falls through to melee (no infinite stand-still)');
+    // ④ 感染死：有存活队友弹「切换队友视角/重生」选择框（不再直接 softRespawn 无 UI）
+    const infIdx = surv.indexOf("deadReason === '感染恶化致死'");
+    const infSeg = surv.slice(infIdx, infIdx + 6500);
+    assert(infSeg.includes('infDeathSwitch') && infSeg.includes('infDeathRespawn')
+        && infSeg.includes("label: '切换队友视角'") && infSeg.includes("label: '重生'"),
+        'v4.34: infection death with living mate shows switch-mate UI');
+    // ⑤ 重生解散旧队伍：感染死路径清所有存活队友 party（不再"重生后队伍还有队友"）
+    assert(infSeg.includes("n.party = false;") && infSeg.includes("// 重生 = 旧队伍解散"),
+        'v4.34: infection-death respawn dissolves old party (all members)');
+    // ⑥ 创意工坊预热：workshop.js 页面加载后 requestIdleCallback 预加载 survival.js（首次点开始游戏动画不卡）
+    assert(ws.includes('requestIdleCallback') && ws.includes("import('../mod-wasteland/survival.js?v=' + _WSL_VER)") && ws.includes('_warmIdle'),
+        'v4.34: workshop prewarm imports survival.js in idle (fix first-click sand transition stutter)');
+    // v4.36 预热升级：① setTimeout(0) 立即预热 import（不再等 idle 4s，用户快速点击也缓存）；② prepareSandGrid
+    // 预计算黄沙格子数组 + 缓存（playSandTransition 复用，首帧不再同步算 57600 格哈希）；③ 离屏 canvas 预热
+    // ImageData 分配 + putImageData JIT（全屏 4K 下首次分配约 30-60ms，预热后点击首帧不卡）。
+    assert(ws.includes('setTimeout(_prewarm, 0)') && ws.includes('function prepareSandGrid(W, H)') && ws.includes('_sandGridCache'),
+        'v4.36: prewarm runs immediately (setTimeout 0) + sand grid precomputed and cached');
+    assert(ws.includes('const grid = prepareSandGrid(W, H);') && ws.includes("_pv.getContext('2d')"),
+        'v4.36: sand transition reuses cached grid + offscreen canvas warms ImageData/JIT');
+}
+// 2026-08-18 v4.37 静态回归：进房间队员陆续跟随 + 室内鼠标指针交互 + 死亡弹窗挂 body 不被 bg-fx 遮 + 死亡弹窗期间键拦截
+// + 补刀致死尸体掏空消失 + 待尸变不占名额 + 室内击杀尸变丧尸生成同房间尸体
+{
+    const fs = await import('node:fs');
+    const surv = wslSrc('survival.js');
+    const wd = fs.readFileSync(new URL('../source-code/mod-wasteland/windoor.js', import.meta.url), 'utf8');
+    const wz = fs.readFileSync(new URL('../source-code/mod-wasteland/wzombie.js', import.meta.url), 'utf8');
+    const wc = fs.readFileSync(new URL('../source-code/mod-wasteland/wcorpse.js', import.meta.url), 'utf8');
+    const pnl = fs.readFileSync(new URL('../source-code/mod-wasteland/panel.js', import.meta.url), 'utf8');
+    const wmn = fs.readFileSync(new URL('../source-code/mod-wasteland/wmenu.js', import.meta.url), 'utf8');
+    // ① 进房间队员陆续跟随：enterFollowers 改写为延迟队列 + enterFollowersTick 每帧到时穿入
+    assert(wd.includes('function enterFollowersTick(sv, it, cx, cy)') && wd.includes('_enterInteriorQueued')
+        && wd.includes('dueAt') && /_enterQDelay\s*=\s*0\.5\s*\+\s*idx\s*\*\s*0\.4/.test(wd),
+        'v4.37: enterFollowers + enterFollowersTick stagger mates (0.5/0.9/1.3s delays)');
+    // ② 扫描面板鼠标指针：buildScanItem 新增 aim 参数，render 时准星指向的目标排顶部
+    assert(surv.includes('function buildScanItem(label, fn, aim)') && surv.includes('aim: !!it.aim')
+        && /准星指向|目标排顶部/.test(surv),
+        'v4.37: buildScanItem has aim param + scanPanelRender sorts aim items to top');
+    // ③ 死亡弹窗挂 document.body + position:fixed + z-index:1300（不被 bg-fx z-index:1095 遮住）
+    assert(pnl.includes("document.body.appendChild(deathEl)") && !pnl.includes("screen.appendChild(deathEl)"),
+        'v4.37: death dialog attaches to document.body (not game-container)');
+    assert(pnl.includes('export function deathShown()'),
+        'v4.37: Panel.deathShown() exists for keydown gate');
+    // ④ 死亡弹窗期间键拦截：sv.dead && deathShown 时所有键 return
+    assert(surv.includes('Panel.deathShown && Panel.deathShown()'),
+        'v4.37: keydown swallows all keys while death dialog is shown');
+    // ⑤ 补刀致死尸体掏空消失：onClose 检查 isFinishedRevived（_revived 或 _revivedCorpse）
+    assert(surv.includes('isFinishedRevived = !!c._revived || !!c._revivedCorpse')
+        && surv.includes('const isFinishedRevived'),
+        'v4.37: corpse onClose destroys on empty (finish-revived + revived-corpse)');
+    // ⑥ 待尸变不占队伍名额：invite 面板文案含 pendingReviveCount（UI 提示）
+    assert(wmn.includes('pendingReviveCount') && wmn.includes('不占名额'),
+        'v4.37: invite UI shows pendingReviveCount (mates waiting revive do not occupy slot)');
+    // ⑦ 室内击杀尸变丧尸生成同房间尸体：wzombie.js + wcorpse.js 的 reviveZombieToCorpse 都按 sv.interior 落地
+    assert(wz.includes('inInterior: _inInt') && wz.includes('interiorKey: _inInt && sv.interior.key')
+        && wc.includes('inInterior: _inInt') && wc.includes('interiorKey: _inInt && sv.interior.key'),
+        'v4.37: corpse dropped from killed revive-zombie inherits current interior (no cross-fx orphan)');
+}
+// 2026-08-18 v4.38 静态回归：队伍成员任意状态（倒地/待尸变/尸体）室内外任意楼层都有队友指引。
+{
+    const fs = await import('node:fs');
+    const rndr = wslSrc('render.js');
+    // ① 指引过滤去掉 n.alive：所有 party 成员（无论死活）都进指引
+    const gIdx = rndr.indexOf('function drawMateGuide');
+    const matesIdx = rndr.indexOf('const mates = sv.npcs.filter(n => n.party', gIdx);
+    const filterLine = rndr.slice(matesIdx, matesIdx + 130);
+    assert(matesIdx > gIdx && !filterLine.includes('n.alive'),
+        'v4.38: drawMateGuide covers all party mates regardless of alive/downed (no n.alive filter)');
+    // ② 状态标签：倒地/待尸变/尸分别有专属红色/橙色/灰色标签
+    assert(rndr.includes("tag = m.name + '（倒地）'") && rndr.includes("tag = m.name + '（待尸变）'") && rndr.includes("tag = m.name + '（尸）'"),
+        'v4.38: downed/awaiting-revive/corpse mates get distinct colored tags');
+    // ③ 跨楼层指引：mateGuideFloorTag 生成 ↑X楼/↓X楼，drawOneP2Guide 跨楼层强制显示
+    assert(rndr.includes('function mateGuideFloorTag(') && rndr.includes("return mFloor > curFloor ? '↑' + mFloor + '楼' : '↓' + mFloor + '楼'"),
+        'v4.38: cross-floor guide tag shows up/down floor arrow');
+    assert(rndr.includes('const crossFloor = !!p.floorTag;') && rndr.includes("startsWith('↑') ? -Math.PI / 2 : Math.PI / 2"),
+        'v4.38: cross-floor mate guide forces display and points to stairs direction');
+}
+// 2026-08-18 v4.39 静态回归：室内外队员跟随出室 + 室内鼠标指针金色框（尸体/队员/躲藏） + 室内击杀尸变丧尸生成尸体 + 侵蚀致死的救援时间=剩余时间50% + 队伍面板濒死/尸变倒计时。
+{
+    const fs = await import('node:fs');
+    const surv = wslSrc('survival.js');
+    const rndr = wslSrc('render.js');
+    const wd = fs.readFileSync(new URL('../source-code/mod-wasteland/windoor.js', import.meta.url), 'utf8');
+    const wn = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    // ① 队员跟随出室：exitInterior 把同房间活队员 inInterior=false、门口可走格座位 + 出门错峰
+    assert(wd.includes('v4.39 队伍成员跟着主控出门') && wd.includes('if (!(n.party && n.inInterior)) continue')
+        && wd.includes('const s = seat(_dgx, _dgy)') && wd.includes('_exitQueued = { dueAt:'),
+        'v4.39/v4.41: exitInterior places mates at walkable door seat + exit stagger (_exitQueued)');
+    // ② 室内击杀尸变丧尸：windoor.js 调用 WCorpse.reviveZombieToCorpse（按 sv.interior 落地）
+    assert(wd.includes('import * as WCorpse') && wd.includes('WCorpse.reviveZombieToCorpse(sv, z)'),
+        'v4.39: windoor updateInterior revives killed zombie-corpse in same room/floor');
+    // ③ 鼠标指针金色框：updateInteriorPrompt 单遍 aim 收集（v4.43 统一"最近者优先"）
+    // + drawInteriorPromptGlow corpse/bodyAct 分支画金色框
+    assert(surv.includes("key: 'corpse:' + n.id") && surv.includes("key: 'mate:' + n.id")
+        && surv.includes('function _pickAim(')
+        && rndr.includes("} else if (pt.corpse) {")
+        && rndr.includes('v4.39 室内尸体准星指向'),
+        'v4.39/v4.43: indoor aim collects corpse/mate in one pass + gold border in drawInteriorPromptGlow');
+    // ④ 侵蚀致死的救援时间=剩余时间 50%：npcDowned 按 infection 计算 limitSec
+    assert(wn.includes('v4.39 侵蚀致死的救援时长按')
+        && wn.includes('const remainToDeathSec = (1 - _inf / 100) * B.DOWNED_LIMIT_SECONDS')
+        && wn.includes('n.limitSec = Math.max(30, Math.round(remainToDeathSec * 0.5))')
+        && wn.includes('n._erodedDowned = true'),
+        'v4.39: npcDowned scales rescue time to 50% of (infection-remaining) for eroded mates');
+    // ⑤ 队伍面板濒死/尸变倒计时：drawTeamPanel 加 cdtTxt 渲染
+    const dIdx = rndr.indexOf('function drawTeamPanel');
+    const dEnd = rndr.indexOf('\nfunction ', dIdx + 10);
+    const dSeg = rndr.slice(dIdx, dEnd > 0 ? dEnd : dIdx + 6000);
+    assert(dSeg.includes("cdtTxt = '濒 '") && dSeg.includes("cdtTxt = '变 '")
+        && dSeg.includes('v4.39 濒死 / 尸变倒计时')
+        && dSeg.includes('_spentM'),
+        'v4.39: drawTeamPanel shows downed/rescue remaining + awaiting-revive countdown');
+}
+// 2026-08-18 v4.40 静态回归：室内金色框/交互统一准星优先（躲藏幸存者 + 楼梯 + 箱子 + 队员 + 尸体，金框与 F 一致）。
+{
+    const fs = await import('node:fs');
+    const surv = wslSrc('survival.js');
+    // ① updateInteriorPrompt 单遍收集躲藏幸存者/楼梯/箱子/队员/尸体（v4.43 统一"最近者优先"）
+    assert(surv.includes("key: 'npc:' + n.id") && surv.includes("key: 'stairs:'")
+        && surv.includes("key: 'box:'") && surv.includes("key: 'mate:' + n.id")
+        && surv.includes('v4.43 用户定稿"所有物体交互优先级一致，包括NPC"'),
+        'v4.40/v4.43: updateInteriorPrompt collects hidden-npc/stairs/box/mate/corpse in one pass');
+    // ② 楼梯 aim：统一 _aimHits 收集 + 5×5 扫描（原全房间 O(w*h) 优化）
+    assert(surv.includes("key: 'stairs:'") && surv.includes('5×5'),
+        'v4.40/v4.43: stairs aim collected in _aimHits + 5x5 scan');
+    // ③ doInteriorInteract（F）与 updateInteriorPrompt 判定一致：直接读 it.promptTarget（单一判定源）
+    assert(surv.includes('直接读 it.promptTarget') && surv.includes('const tg = it.promptTarget;'),
+        'v4.40: doInteriorInteract aims same order as prompt (F acts on gold-framed target)');
+}
+{
+    const fs = await import('node:fs');
+    const surv = wslSrc('survival.js');
+    const wd = fs.readFileSync(new URL('../source-code/mod-wasteland/windoor.js', import.meta.url), 'utf8');
+    const wsrc = fs.readFileSync(new URL('../source-code/mod-wasteland/wnpc.js', import.meta.url), 'utf8');
+    const rndr = wslSrc('render.js');
+    // ① 队友跟着上下楼：changeFloor 切同层 party 队员 interiorFloor + 放到新楼层楼梯口
+    assert(wd.includes('队伍成员跟着上下楼') && wd.includes('n.interiorFloor = nextFloor;')
+        && wd.includes('_destStair') && wd.includes('_want = dir > 0 ? IT.STAIRS_DOWN : IT.STAIRS_UP'),
+        'v4.35: changeFloor teleports same-floor party mates to new floor stairs (follow up/down)');
+    // ② 隔层伤害隔离：室内驱动循环只驱动当前楼层 NPC；僵尸咬 NPC 只咬同楼层；子弹带 floor 且只命中同楼层
+    assert(surv.includes('(n.interiorFloor == null ? 1 : n.interiorFloor) !== (it.floor || 1)) continue'),
+        'v4.35: interior drive loop skips NPCs on other floors (no cross-floor combat)');
+    assert(wd.includes('只咬当前楼层 NPC') && wd.includes('(n.interiorFloor == null ? 1 : n.interiorFloor) !== (it.floor || 1)) continue;'),
+        'v4.35: interior zombies only bite same-floor NPCs');
+    assert(wsrc.includes('floor: sv.interior ? (sv.interior.floor || 1) : null,') && wsrc.includes('b.floor !== (sv.interior.floor || 1))'),
+        'v4.35: npc bullets carry floor and vanish cross-floor');
+    // ③ 室内救助/补刀/搜索选择框：drawInterior 调用 drawBodyAct（此前只室外 drawHUD 画）
+    assert(rndr.includes('drawBodyAct(ctx, sv, W, H);') && rndr.indexOf('drawBodyAct(ctx, sv, W, H);', rndr.indexOf('function drawInterior')) > 0,
+        'v4.35: drawInterior renders bodyAct selector (indoor rescue/finish/search UI)');
+    // ④ 扫描先弹交互选择框：openBodyActFor 存在；扫描面板倒地队友合并为"与 XX 交互"
+    assert(surv.includes('function openBodyActFor(sv, m)') && surv.includes('sv._bodyAct = { npcId: m.id, name: m.name'),
+        'v4.35: openBodyActFor forces interaction selector for scan-picked mate');
+    assert(surv.includes('buildScanItem(`与 ${m.name} 交互`, () => { openBodyActFor(sv, m); }'),
+        'v4.35: scan panel shows "interact with XX" first (then selector with rescue/finish/search)');
+    // ⑤ computeBodyAct 优先延续当前已选 NPC（扫描点击后选择框不被"最近 NPC"覆盖）
+    assert(surv.includes('延续当前已选 NPC') && surv.includes('_prev.npcId != null'),
+        'v4.35: computeBodyAct keeps previously selected npc');
+    // ⑥ 感染死无队友：弹「重生/返回主菜单」UI（不再直接 softRespawn）
+    assert(surv.includes('独狼生存，无队友可切换') && surv.includes('infAloneRespawn') && surv.includes("label: '重生', cls: 'primary'"),
+        'v4.35: infection death without mate shows respawn/menu UI');
 }
 
 console.log(`\n=== 结果: ${pass} 通过, ${fail} 失败 ===`);

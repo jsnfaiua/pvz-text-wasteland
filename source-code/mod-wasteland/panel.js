@@ -437,10 +437,13 @@ export function initPanel(h) {
         screen.appendChild(chestEl);
     }
     if (!deathEl) {
+        // v4.37 死亡弹窗改挂 document.body（按 v4.6 全屏 UI 教训）：原挂 game-container
+        // （max-width:960px）会被 bg-fx（z-index:1095）黑沙遮住，玩家看不见弹窗但
+        // Enter 焦点自动触发 primary 按钮 → "立即切换已存活队友视角"（用户反馈定稿）。
         deathEl = document.createElement('div');
         deathEl.id = 'wsl-death';
         deathEl.className = 'wsl-death hidden';
-        screen.appendChild(deathEl);
+        document.body.appendChild(deathEl);
     }
 }
 
@@ -797,14 +800,18 @@ export function showDeathChoices(html, actions) {
     // 原代码 `if (!deathEl) return` 会静默吞掉弹窗——世界看似继续跑（HP/队伍 UI 还在更新）但无结算。
     // 修复：deathEl 缺失时按需创建（不依赖 initPanel 被调用），保证死亡弹窗必定显示。
     if (!deathEl) {
-        const screen = document.getElementById('game-container');
-        if (screen) {
+        // v4.37 死亡弹窗改挂 document.body + position:fixed + z-index 1300（按 v4.6 全屏 UI 教训）：
+        // 原挂 game-container（max-width:960px 容器）→ 被 bg-fx（z-index:1095）黑沙遮住 →
+        // 玩家看不见弹窗，但 Enter 焦点在第一个 primary 按钮（"切换队友视角"）自动触发 →
+        // 表现为"立即切换已存活队友视角"（用户反馈定稿）。
+        // 挂 document.body + 全屏 fixed + 高 z-index 必显示在所有图层之上。
+        if (document.body) {
             deathEl = document.createElement('div');
             deathEl.id = 'wsl-death';
             deathEl.className = 'wsl-death hidden';
-            screen.appendChild(deathEl);
+            document.body.appendChild(deathEl);
         } else {
-            return;   // 极端：容器都没有，无法显示
+            return;   // 极端：body 都没有，无法显示
         }
     }
     const btns = (actions || []).map(a =>
@@ -823,6 +830,8 @@ export function showDeathChoices(html, actions) {
     });
 }
 export function hideDeath() { if (deathEl) { deathEl.classList.add('hidden'); deathEl.classList.remove('show'); } }
+// v4.37 死亡弹窗是否显示中（用于键拦截守卫）：需 .show 状态才视为"已显示"
+export function deathShown() { return !!(deathEl && deathEl.classList.contains('show') && !deathEl.classList.contains('hidden')); }
 
 // ---------- 物品详情弹窗（右键查看：名称/类别/稀有度/介绍/属性；背包/储物柜/搜索界面可丢弃） ----------
 let detailEl = null;

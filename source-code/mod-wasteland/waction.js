@@ -34,6 +34,11 @@ export function moveInput(sv) {
     // 2026-08-09 昏迷苏醒状态：刚进入荒野时不能移动（黑灰眨眼过渡，等待醒来的感觉）
     // 2026-08-12 v3.58 苏醒期间全锁（走路/闪避/跳跃都锁，用户定稿"彻底静止"），满时长 2.4s 解锁
     if (sv._wake && sv._wake.t < sv._wake.dur) return { mx: 0, my: 0 };
+    // 2026-08-17 v4.20 倒地主控不能移动/攻击（用户反馈"倒地之后还能移动"）—— 倒地期间玩家只能等待救援/切队友
+    if (sv._downed) {
+        const cur = sv.controllerId ? (sv.npcs || []).find(n => n.id === sv.controllerId) : null;
+        if (!cur || cur.downed) return { mx: 0, my: 0 };
+    }
     let mx = 0, my = 0;
     if (sv.keys['a'] || sv.keys['arrowleft'])  mx -= 1;
     if (sv.keys['d'] || sv.keys['arrowright']) mx += 1;
@@ -116,6 +121,20 @@ export function tryJump(sv) {
 // ---------- 每帧推进（canStand 由主控注入，闪现也走轴分离碰撞） ----------
 // 返回 true 表示闪现中（主控应跳过正常 WASD 移动）
 export function updateActions(sv, dt, canStand) {
+    // 2026-08-17 v4.20 倒地主控不能移动/跳跃/格挡/攻击——只允许计时/UI/救援交互
+    if (sv._downed) {
+        const cur = sv.controllerId ? (sv.npcs || []).find(n => n.id === sv.controllerId) : null;
+        if (!cur || cur.downed) {
+            // 仅允许计时属性推进
+            if (sv.dashCooldown > 0) sv.dashCooldown -= dt;
+            if (sv.guardCooldown > 0) sv.guardCooldown -= dt;
+            if (sv.invuln > 0) sv.invuln -= dt;
+            if (sv.jumpCooldown > 0) sv.jumpCooldown -= dt;
+            if (sv._atkSlowT > 0) sv._atkSlowT -= dt;
+            if (sv._atkSlowImmune > 0) sv._atkSlowImmune -= dt;
+            return false;
+        }
+    }
     if (sv.dashCooldown > 0) sv.dashCooldown -= dt;
     if (sv.guardCooldown > 0) sv.guardCooldown -= dt;
     if (sv.invuln > 0) sv.invuln -= dt;

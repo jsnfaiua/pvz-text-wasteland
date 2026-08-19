@@ -6,6 +6,9 @@
 import { getStorage, setStorage, getSession } from '../persistence/storage.js';
 
 const WS_KEY = 'workshop';
+// v4.45 修复：_WSL_VER 必须声明在模块作用域（之前误放在 renderDetail 函数体内，导致模块顶层 _prewarm
+// 访问时 ReferenceError）。这是缓存链强制刷新（?v=）的版本号，所有 import 依赖此值。
+const _WSL_VER = '4.64.4';
 
 // 模组注册表（后续新模组在此追加即可）
 const MODS = [
@@ -166,7 +169,16 @@ function renderDetail() {
     // 2026-08-11 v2.97 加 ?v= 版本号强制 cache-busting：用户浏览器 ESM 缓存会复用旧版 survival.js，
     // 导致 showAllDeadChoices 找不到 → ReferenceError 循环僵死。版本号变更必须同步。
     // v4.10 升级缓存号（v4.9 后进位 v4.10：V一键切武器全自动/半自动 + 横幅键位凝练 + 横幅版本号同步 + 缓存链强制刷新）
-    const _WSL_VER = '4.15';
+    // v4.16 升级缓存号（室内相机大房间玩家居中 + 存档最近登录时间读取修复 + 横幅版本号同步）
+    // v4.17 升级缓存号（修复"室内到不了室外"：enterInterior/exitInterior 同步主控 inInterior）
+    // v4.18 升级缓存号（修复"切队友视角后原主控直接死亡"：switchControl 不清濒死血 + 切视角并入 _downedMembers + 恶意NPC补刀倒地队员扣时）
+    // v4.19 升级缓存号（集合信号最高命令：T 键/召唤打断成员所有工作——搜刮/采药/营地/游荡/追敌）
+    // v4.20 升级缓存号（倒地系统修复：僵尸啃咬+病饿走 npcDowned/成员倒地不能移动/主控倒地不能动）
+    // v4.21 升级缓存号（背包格子统一 normBag 三处 + 队友屏幕外指引覆盖原主角/倒地成员）
+    // v4.22 升级缓存号（感染系统完善：NPC con 天赋加成血上限 + 队员感染自动增长/满→尸化/属性削弱/粒子效果）
+    // v4.23 升级缓存号（倒地系统完善：hp 不为负/倒地被攻击按伤害量扣 10 秒/僵尸优先追倒地/死亡不立刻移除队伍+待尸变尸体补刀 UI/全灭死亡明细用击倒原因）
+    // v4.24 升级缓存号（NPC 侵蚀效果修复 maybeInfectNpc 写 n.infection + 敌对生物对倒地有效伤害防血负 + 僵尸索敌倒地与站立同优先级按距离）
+    // v4.45 _WSL_VER 已移至模块顶层（之前误放在 renderDetail 函数体内）
     const launchWasteland = (opts) => {
         import('../mod-wasteland/survival.js?v=' + _WSL_VER).then(m => {
             m.enterWasteland(opts);
@@ -219,7 +231,7 @@ function renderDetail() {
     // 联机启动：动态加载联机层（供开始界面「多人联机」调用）
     const onLaunchMP = (role, opts) => {
         // v3.80 加 ?v= cache-busting（与 _WSL_VER 同步，防止加载缓存的旧 mpWasteland.js → 旧 survival.js）
-        import('../mod-wasteland/mpWasteland.js?v=4.15').then(m => {
+        import('../mod-wasteland/mpWasteland.js?v=4.64.4').then(m => {
             m.startWastelandMP(role, opts || getModState(mod.id).opts);
         }).catch(err => {
             console.error('[wasteland-mp] 启动失败', err);
@@ -547,37 +559,13 @@ function hintMsg(text) {
 // opts.onCovered：沙面盖满时调用，返回 Promise（开始 UI 建立完成）——UI 就绪才吹散。
 // 关键时序：点击时只后台预热 import；【盖满后】才创建开始 UI（此前创意工坊界面一直显示、
 // 被黄沙像素侵蚀覆盖），避免"创意工坊瞬间消失直接跳过渡"。
-export function playSandTransition(opts) {
-    const readyPromise = (opts && opts.readyPromise) || null;
-    const onCovered = (opts && opts.onCovered) || null;
-    if (document.getElementById('wsl-sand-trans')) return;
-    const ov = document.createElement('div');
-    ov.id = 'wsl-sand-trans';
-    // v3.80 播放过渡期间【拦截所有点击】：pointer-events:auto 挡住下层一切 UI 按钮，
-    // 动画结束 ov.remove() 时自动恢复。之前 pointer-events:none 会漏点到创意工坊按钮。
-    ov.style.cssText = 'position:fixed;inset:0;z-index:1250;pointer-events:auto;overflow:hidden;cursor:default;';
-    const cv = document.createElement('canvas');
-    cv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;';
-    ov.appendChild(cv);
-    document.body.appendChild(ov);
-    // v3.80 开始 UI 显隐同步：侵蚀阶段（未盖满）隐藏 #wsl-start；
-    // 盖满后可见（opacity 由 bg-fx 渐显驱动，见 tick）。
-    const syncStartUI = () => {
-        const s = document.getElementById('wsl-start');
-        if (!s) return;
-        const covered = ov.dataset.covered === '1';
-        s.style.visibility = covered ? 'visible' : 'hidden';
-    };
-    syncStartUI();
-    const dpr = Math.max(1, (window.devicePixelRatio || 1));
-    const W = window.innerWidth, H = window.innerHeight;
-    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-    const ctx = cv.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    // —— 像素格点：仿"角色被侵蚀"（render.js drawPixelPlayerBody 的 peelAt 算法）——
-    // 每格一个侵蚀阈值 peelAt（边缘系数 + 确定性噪声 → 边缘先被沙覆盖、颗粒感）；
-    // 每格一个吹散延迟 delay（左→右 + 噪声 → 风扫过时从左到右被吹走）。
+// v4.36 黄沙格子数组预计算 + 缓存：首次点击开始游戏时不再同步算 57600 格 × 4 次哈希
+// （原实现在 playSandTransition 内同步计算，大屏全屏下约 10-30ms，与 rAF 首帧竞争主线程）。
+// 预热阶段（模块加载后 setTimeout(0)）调 prepareSandGrid 算好缓存，点击直接复用；
+// 窗口尺寸变化（resize）时 key 不匹配自动重算。
+let _sandGridCache = null;
+function prepareSandGrid(W, H) {
+    if (_sandGridCache && _sandGridCache.W === W && _sandGridCache.H === H) return _sandGridCache;
     const CELL = 6;                                    // 每格 6px（性能与颗粒感平衡）
     const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
     const nPx = cols * rows;
@@ -607,6 +595,65 @@ export function playSandTransition(opts) {
         // v3.80 沙色变体：4 种色调加权随机（亮沙/沙/橙沙/深褐），颜色更丰富自然
         const tn = hash2(cx * 3 + cy * 29, (cx << 5) ^ (cy * 11));
         sandTone[i] = tn < 0.34 ? 0 : tn < 0.62 ? 1 : tn < 0.85 ? 2 : 3;
+    }
+    _sandGridCache = { W, H, CELL, cols, rows, nPx, peel, delay, shade, sandTone };
+    return _sandGridCache;
+}
+
+export function playSandTransition(opts) {
+    const readyPromise = (opts && opts.readyPromise) || null;
+    const onCovered = (opts && opts.onCovered) || null;
+    if (document.getElementById('wsl-sand-trans')) return;
+    const ov = document.createElement('div');
+    ov.id = 'wsl-sand-trans';
+    // v3.80 播放过渡期间【拦截所有点击】：pointer-events:auto 挡住下层一切 UI 按钮，
+    // 动画结束 ov.remove() 时自动恢复。之前 pointer-events:none 会漏点到创意工坊按钮。
+    ov.style.cssText = 'position:fixed;inset:0;z-index:1250;pointer-events:auto;overflow:hidden;cursor:default;';
+    const cv = document.createElement('canvas');
+    cv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;';
+    ov.appendChild(cv);
+    document.body.appendChild(ov);
+    // v3.80 开始 UI 显隐同步：侵蚀阶段（未盖满）隐藏 #wsl-start；
+    // 盖满后可见（opacity 由 bg-fx 渐显驱动，见 tick）。
+    const syncStartUI = () => {
+        const s = document.getElementById('wsl-start');
+        if (!s) return;
+        const covered = ov.dataset.covered === '1';
+        s.style.visibility = covered ? 'visible' : 'hidden';
+    };
+    syncStartUI();
+    const dpr = Math.max(1, (window.devicePixelRatio || 1));
+    const W = window.innerWidth, H = window.innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // —— 像素格点：仿"角色被侵蚀"（render.js drawPixelPlayerBody 的 peelAt 算法）——
+    // v4.36 格子数组抽为 prepareSandGrid() 并缓存（点击瞬间不再同步计算 57600 格 × 4 次哈希）：
+    // 预热阶段（模块加载后 setTimeout(0)）已算好并缓存，playSandTransition 直接复用 → 首帧更顺滑。
+    // v4.62 每像素亮度模板预计算：drawSandPx 原实现在每像素循环里算 rad=Math.sqrt(dx²+dy²)+fall+br，
+    // 全屏 4K dpr=2 下每帧 ≈138 万像素 × 5 次浮点 → 动画全程每帧都重（用户"每次点击都卡"）。
+    // 亮度模板（dw×dw）只依赖格子内相对位置、与帧无关 → 预计算一次，每帧只做乘法/加法。
+    const grid = prepareSandGrid(W, H);
+    const CELL = grid.CELL, cols = grid.cols, rows = grid.rows, nPx = grid.nPx;
+    const peel = grid.peel, delay = grid.delay, shade = grid.shade, sandTone = grid.sandTone;
+    const _dpr = dpr, _CELL = CELL, _cvW = cv.width;
+    let _shadeTmpl = null;
+    {
+        // 预计算格子内亮度模板：br = 1 + 0 + (fall - 0.7)*0.5 的增量部分（与 shade 无关）
+        const dw = Math.round(_CELL * _dpr);
+        const half = dw / 2;
+        _shadeTmpl = new Float32Array(dw * dw);
+        for (let yy = 0; yy < dw; yy++) {
+            const dyN = ((yy + 0.5) - half) / half;
+            const yb = yy * dw;
+            for (let xx = 0; xx < dw; xx++) {
+                const dxN = ((xx + 0.5) - half) / half;
+                const rad = Math.sqrt(dxN * dxN + dyN * dyN);
+                const fall = Math.max(0.45, 1 - rad * 0.75);
+                _shadeTmpl[yb + xx] = (fall - 0.7) * 0.5;   // 仅亮度增量（0 位置已在乘法里加 1+sh）
+            }
+        }
     }
     // ImageData 直绘像素（比几千次 fillRect 快；沙色像素直接写 buffer）
     // v3.80 修复 dpr bug：putImageData 忽略变换矩阵按设备像素放置，imgData 必须用
@@ -662,6 +709,13 @@ export function playSandTransition(opts) {
         // —— 阶段换算：侵蚀 level（0→1）、消失 wind（0→1）——
         const level = covered ? 1 : Math.min(1, t / 0.4);
         const wind = covered ? Math.min(1, (t - 0.4) / 0.6) : 0;
+        // v4.62 等待 UI 就绪期间画面完全不变（沙面全盖、level=1、wind=0）→ 跳过重绘，
+        // 只保留 rAF 心跳（onCovered 创建开始 UI 是异步 import，可能耗时数百 ms，
+        // 之前每帧重画 138 万像素纯浪费主线程，还拖慢 UI 构建）。恢复绘制前 imgData 已是最新覆盖态。
+        if (covered && !uiReady) {
+            requestAnimationFrame(tick);
+            return;
+        }
         // —— 逐格构建画面：沙色像素格被侵蚀覆盖 / 随机消失（透明格露出下层）——
         pxBuf.fill(0);
         for (let cy = 0; cy < rows; cy++) {
@@ -723,21 +777,27 @@ export function playSandTransition(opts) {
         const dw = Math.round(CELL * dpr);
         // v3.80 沙粒渲染：①格子内部径向明暗（中心亮、边缘暗 → 颗粒立体感）；
         // ②每格按 sandTone 选色（暮橙/黄褐/橙褐/深褐，与末世废土背景契合）。
+        // v4.62 优化：rad/fall/br 的亮度增量已预计算到 _shadeTmpl（只依赖格子内位置），
+        // 每帧仅做 br = 1 + sh + tmpl[i] 的加法和一次字节写入，去掉每像素 Math.sqrt/Math.round。
         const T = SAND_TONES[tone & 3];
         const tr = T[0], tg = T[1], tb = T[2];
-        const half = dw / 2;
-        for (let yy = y0; yy < y0 + dw && yy < cv.height; yy++) {
-            const rowBase = yy * cv.width;
-            const dyN = ((yy - y0) - half) / half;      // -1~1
-            for (let xx = x0; xx < x0 + dw && xx < cv.width; xx++) {
-                const dxN = ((xx - x0) - half) / half;  // -1~1
-                const rad = Math.sqrt(dxN * dxN + dyN * dyN);   // 0~1.4（中心0边缘~1）
-                const fall = Math.max(0.45, 1 - rad * 0.75);    // 中心1 → 边缘0.45
-                const br = 1 + sh + (fall - 0.7) * 0.5;         // 色差 + 径向明暗
-                const j = (rowBase + xx) * 4;
-                pxBuf[j]     = Math.min(255, Math.max(0, Math.round(tr * br)));
-                pxBuf[j + 1] = Math.min(255, Math.max(0, Math.round(tg * br)));
-                pxBuf[j + 2] = Math.min(255, Math.max(0, Math.round(tb * br)));
+        const dwW = dw;
+        // 越界裁剪（边缘格子）：clamp x0/y0 与读取范围
+        let xStart = x0, yStart = y0;
+        let xLen = dwW, yLen = dwW;
+        if (xStart + xLen > _cvW) xLen = _cvW - xStart;
+        if (yStart + yLen > cv.height) yLen = cv.height - yStart;
+        const baseBr = 1 + sh;   // 亮度基数（含 shade 色差）
+        for (let yy = 0; yy < yLen; yy++) {
+            const rowBase = (yStart + yy) * _cvW;
+            const tRow = yy * dwW;
+            for (let xx = 0; xx < xLen; xx++) {
+                const br = baseBr + _shadeTmpl[tRow + xx];
+                const j = (rowBase + xStart + xx) * 4;
+                // 直接写字节（br 固定 [0.45+sh, 1.6+sh]，clamp 用常量边界快速判断）
+                let v = tr * br; pxBuf[j] = v > 255 ? 255 : v;
+                v = tg * br; pxBuf[j + 1] = v > 255 ? 255 : v;
+                v = tb * br; pxBuf[j + 2] = v > 255 ? 255 : v;
                 pxBuf[j + 3] = alpha;
             }
         }
@@ -753,5 +813,40 @@ export function refresh() {
 // v3.80 全局钩子：开始游戏 UI 内创建世界/角色后调用，让创意工坊存档管理列表立即刷新
 // （无需刷新页面）。这样返回创意工坊时新存档立刻可见。
 if (typeof window !== 'undefined') window.__wslWorkshopRefresh = refresh;
+
+// v4.34/v4.36 预热荒原模块：修复"每次打开浏览器，首次点开始游戏时过渡动画卡顿"——
+// 点击瞬间 `import('../mod-wasteland/survival.js')` 需解析+执行 40+ 模块的顶层代码
+// （主线程数百 ms），与黄沙过渡的 rAF 逐像素动画竞争主线程 → 动画掉帧卡顿。
+// v4.36 升级（v4.34 的 requestIdleCallback 在浏览器繁忙/用户快速点击时可能未触发，
+// timeout 4s 兜底太晚 → 首次点击仍现场 import）：
+//   ① setTimeout(0) 立即预热 import（下个宏任务，页面初始渲染不阻塞；用户从页面加载
+//      到点「开始游戏」至少有几百 ms 间隔 → 模块必已缓存）；
+//   ② 预热时顺带预计算黄沙格子数组（prepareSandGrid）——点击瞬间不再同步算 57600 格 × 4 次哈希；
+//   ③ requestIdleCallback(timeout 2000) 作二次兜底（极端情况 setTimeout 被长任务抢占）。
+// 预热失败静默（点击时仍走正常 import 兜底）。
+if (typeof window !== 'undefined') {
+    const _prewarm = () => {
+        import('../mod-wasteland/survival.js?v=' + _WSL_VER).catch(() => { /* 预热失败静默，点击时再加载 */ });
+        // 预计算黄沙格子数组（尺寸变化时 playSandTransition 内按 key 自动重算）
+        try { prepareSandGrid(window.innerWidth, window.innerHeight); } catch (e) { /* 忽略 */ }
+        // 离屏预热 2d context + ImageData 大块分配 + putImageData（首次播放黄沙动画时不再冷启动）：
+        // 全屏 4K dpr=2 下 ImageData ≈ 3300 万字节，首次分配 + 逐像素 JIT 编译约 30-60ms，
+        // 预热后点击瞬间复用内存池与已编译代码路径 → 首帧不卡。
+        try {
+            const _pv = document.createElement('canvas');
+            _pv.width = Math.max(1, Math.round(window.innerWidth * (window.devicePixelRatio || 1)));
+            _pv.height = Math.max(1, Math.round(window.innerHeight * (window.devicePixelRatio || 1)));
+            const _pc = _pv.getContext('2d');
+            const _pd = _pc.createImageData(_pv.width, _pv.height);
+            _pd.data.fill(0);
+            _pc.putImageData(_pd, 0, 0);
+        } catch (e) { /* 忽略 */ }
+    };
+    setTimeout(_prewarm, 0);
+    const _warmIdle = window.requestIdleCallback
+        ? (cb) => window.requestIdleCallback(cb, { timeout: 2000 })
+        : (cb) => setTimeout(cb, 1000);
+    _warmIdle(_prewarm);
+}
 
 export default { refresh, getModState };

@@ -2316,36 +2316,24 @@ body {
 
 .wsl-cell-n { position: absolute; right: 4px; bottom: 2px; font-size: 11px; color: #ffd700; }
 
-.wsl-death {
-
-    position: absolute;
-
-    inset: 0;
-
-    z-index: 70;
-
-    background: rgba(0, 0, 0, 0.9);
-
-    display: flex;
-
-    flex-direction: column;
-
-    align-items: center;
-
-    justify-content: center;
-
-    gap: 20px;
-
-}
-
 .wsl-death.hidden { display: none !important; }
 
-/* 2026-08-11 v2.98 用户需求：游戏结束/全员阵亡时，画面渐渐变黑（眼睛闭上的感觉），再慢慢弹出游戏结束 UI。
-   .wsl-death 从透明渐黑（约 1.6s，模拟画面消失）；内容 .wsl-scaler 在全黑后渐入（延迟 1.6s，约 0.8s 浮现）。 */
+/* v4.37 死亡弹窗全屏 fixed + 高 z-index（按 v4.6 全屏 UI 教训）：
+   原 absolute inset:0 仅 game-container 范围内，被 bg-fx z-index:1095 黑沙遮住 →
+   玩家看不见弹窗，按 Enter 直接默认点了 primary 按钮"切队友"。
+   改 fixed inset:0 + z-index 1300 必显示在所有图层之上（含 bg-fx 背景层 z-index:1095）。 */
 .wsl-death {
+    position: fixed;
+    left: 0; right: 0; top: 0; bottom: 0;
+    z-index: 1300;
     opacity: 0;
     transition: opacity 1.6s ease;
     background: rgba(0, 0, 0, 0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
 }
 .wsl-death.show {
     opacity: 1;
